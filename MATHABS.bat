@@ -1,0 +1,149 @@
+@echo off
+setlocal
+
+REM --- INICIO DE CONFIGURACION ---
+REM Ruta preferida donde se espera encontrar la carpeta MATABS con los archivos de la aplicacion
+set PREFERRED_APP_DIR=D:\APPS\MATABS
+
+REM Directorio padre para la ubicacion de fallback (es el directorio donde se encuentra este script .bat)
+set FALLBACK_PARENT_DIR=%~dp0
+
+REM Nombre de la subcarpeta que contiene los archivos de la aplicacion (requirements, main_app.py)
+set APP_SUBFOLDER_NAME=MATABS
+
+REM Nombre del directorio del entorno virtual (se creara dentro de la carpeta APP_ROOT_DIR encontrada)
+set VENV_NAME=matabs_env
+
+REM Nombres de los archivos clave de la aplicacion
+set REQUIREMENTS_FILE_NAME=requirements_matabs.txt
+set MAIN_APP_FILE_NAME=matlab_main_app.py
+REM --- FIN DE CONFIGURACION ---
+
+echo Verificando Python...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Python no esta instalado o no se encuentra en el PATH.
+    echo Por favor, instala Python y asegurate de que este en el PATH.
+    pause
+    exit /b 1
+)
+echo Python encontrado.
+echo.
+
+REM --- DETERMINAR EL DIRECTORIO RAIZ DE LA APLICACION (APP_ROOT_DIR) ---
+REM APP_ROOT_DIR sera la carpeta (ej. D:\APPS\MATABS o %~dp0\MATABS) que contiene requirements.txt y main_app.py
+set APP_ROOT_DIR=
+
+REM Intento 1: Ruta preferida (ej. D:\APPS\MATABS)
+echo Buscando la aplicacion en la ruta preferida: "%PREFERRED_APP_DIR%"
+if exist "%PREFERRED_APP_DIR%\%REQUIREMENTS_FILE_NAME%" (
+    if exist "%PREFERRED_APP_DIR%\%MAIN_APP_FILE_NAME%" (
+        echo   + Aplicacion encontrada en la ruta preferida.
+        set APP_ROOT_DIR=%PREFERRED_APP_DIR%
+    ) else (
+        echo   - Archivo principal "%MAIN_APP_FILE_NAME%" no encontrado en "%PREFERRED_APP_DIR%".
+    )
+) else (
+    echo   - Archivo de requerimientos "%REQUIREMENTS_FILE_NAME%" no encontrado en "%PREFERRED_APP_DIR%".
+    if not exist "%PREFERRED_APP_DIR%" (
+        echo     (Ademas, el directorio "%PREFERRED_APP_DIR%" no existe.)
+    )
+)
+echo.
+
+REM Intento 2: Subcarpeta APP_SUBFOLDER_NAME relativa al script batch (ej. %~dp0\MATABS)
+if "%APP_ROOT_DIR%"=="" (
+    REM %FALLBACK_PARENT_DIR% es %~dp0 y ya tiene la barra invertida al final.
+    set FALLBACK_APP_DIR=%FALLBACK_PARENT_DIR%%APP_SUBFOLDER_NAME%
+    
+    echo Buscando la aplicacion en la ruta relativa al script: "%FALLBACK_APP_DIR%"
+    
+    if exist "%FALLBACK_APP_DIR%\%REQUIREMENTS_FILE_NAME%" (
+        if exist "%FALLBACK_APP_DIR%\%MAIN_APP_FILE_NAME%" (
+            echo   + Aplicacion encontrada en la ruta relativa al script.
+            set APP_ROOT_DIR=%FALLBACK_APP_DIR%
+        ) else (
+            echo   - Archivo principal "%MAIN_APP_FILE_NAME%" no encontrado en "%FALLBACK_APP_DIR%".
+        )
+    ) else (
+        echo   - Archivo de requerimientos "%REQUIREMENTS_FILE_NAME%" no encontrado en "%FALLBACK_APP_DIR%".
+        if not exist "%FALLBACK_APP_DIR%" (
+            echo     (Ademas, el directorio "%FALLBACK_APP_DIR%" no existe.)
+        )
+    )
+    echo.
+)
+
+REM Comprobacion final
+if "%APP_ROOT_DIR%"=="" (
+    echo ERROR: No se pudo encontrar la aplicacion MATABS.
+    echo Se busco una carpeta que contenga "%REQUIREMENTS_FILE_NAME%" y "%MAIN_APP_FILE_NAME%" en:
+    echo   1. Ruta preferida: "%PREFERRED_APP_DIR%"
+    echo   2. Ruta relativa al script: "%FALLBACK_PARENT_DIR%%APP_SUBFOLDER_NAME%"
+    echo.
+    echo Por favor, asegurese de que la estructura de archivos exista en una de estas ubicaciones.
+    echo Ejemplo de estructura esperada dentro de la ubicacion encontrada:
+    echo   [Ubicacion_MATABS]\%REQUIREMENTS_FILE_NAME%
+    echo   [Ubicacion_MATABS]\%MAIN_APP_FILE_NAME%
+    pause
+    exit /b 1
+)
+
+echo Directorio raiz de la aplicacion (MATABS) establecido en: "%APP_ROOT_DIR%"
+echo.
+
+REM --- CONFIGURACION DEL ENTORNO VIRTUAL ---
+set VENV_DIR=%APP_ROOT_DIR%\%VENV_NAME%
+echo Directorio del entorno virtual: "%VENV_DIR%"
+
+if not exist "%VENV_DIR%" (
+    echo Creando entorno virtual en "%VENV_DIR%"...
+    python -m venv "%VENV_DIR%"
+    if errorlevel 1 (
+        echo ERROR: No se pudo crear el entorno virtual en "%VENV_DIR%".
+        pause
+        exit /b 1
+    )
+    echo Entorno virtual creado.
+) else (
+    echo El entorno virtual "%VENV_DIR%" ya existe.
+)
+echo.
+
+echo Activando entorno virtual...
+call "%VENV_DIR%\Scripts\activate.bat"
+if errorlevel 1 (
+    echo ERROR: No se pudo activar el entorno virtual.
+    echo Verifica que "%VENV_DIR%\Scripts\activate.bat" existe y es ejecutable.
+    pause
+    exit /b 1
+)
+echo Entorno virtual activado.
+echo.
+
+set REQUIREMENTS_PATH=%APP_ROOT_DIR%\%REQUIREMENTS_FILE_NAME%
+echo Instalando dependencias desde "%REQUIREMENTS_PATH%"...
+pip install -r "%REQUIREMENTS_PATH%"
+if errorlevel 1 (
+    echo ERROR: No se pudieron instalar las dependencias. Revisa el archivo "%REQUIREMENTS_PATH%" y la salida de pip.
+    pause
+    exit /b 1
+)
+echo Dependencias instaladas correctamente.
+echo.
+
+set MAIN_APP_SCRIPT_PATH_IN_ROOT=%MAIN_APP_FILE_NAME%
+echo Ejecutando la aplicacion: "%APP_ROOT_DIR%\%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
+echo.
+
+REM Cambiamos al directorio de la aplicacion para que las rutas relativas dentro del script de Python funcionen correctamente.
+pushd "%APP_ROOT_DIR%"
+python "%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
+popd
+
+echo.
+echo La aplicacion ha finalizado.
+pause
+
+endlocal
+exit /b 0

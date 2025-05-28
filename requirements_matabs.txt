@@ -1,0 +1,16 @@
+bottleneck
+factor_analyzer
+flask
+geopandas
+lifelines
+matplotlib
+numexpr
+numpy<2.0
+openpyxl
+pandas
+pyarrow
+scikit-learn
+scipy
+seaborn
+statsmodels
+plotly
