@@ -24,8 +24,21 @@ def create_scrollable_frame(container):
     return scrollable_frame
 
 class TablasCat(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, log_callback=None):
         super().__init__(master)
+        
+        if log_callback:
+            self.log_func = log_callback
+        elif hasattr(master, 'log_func') and callable(master.log_func): # Prefer 'log_func' if available
+            self.log_func = master.log_func
+        elif hasattr(master, 'log') and callable(master.log): # Fallback to 'log'
+            self.log_func = master.log
+        else:
+            # Basic print-based logger if no callback is provided
+            def default_logger(message, level="INFO"): # Add level for compatibility
+                print(f"[{level}] TablasCat: {message}") # Add class context to default print
+            self.log_func = default_logger
+            
         self.data = None
         self.file_path = None
 
@@ -191,16 +204,7 @@ class TablasCat(ttk.Frame):
             # Actualizar combos y listboxes
             self.cmb_cat['values'] = [""] + cols # Actualizar combo de agrupación
             self.cmb_cat.set("")
-            # FilterComponent removido.
-            # Actualizar combos de filtros generales
-            filter_cols_options = [''] + cols
-            if hasattr(self, 'filter_col_1_combo'): # Verificar si los widgets ya existen
-                self.filter_col_1_combo['values'] = filter_cols_options
-                if not self.filter_col_1_var.get() and cols: self.filter_col_1_var.set('')
-            if hasattr(self, 'filter_col_2_combo'):
-                self.filter_col_2_combo['values'] = filter_cols_options
-                if not self.filter_col_2_var.get() and cols: self.filter_col_2_var.set('')
-
+            
             self.lst_quant.delete(0, tk.END)
             for c in cols:
                 if pd.api.types.is_numeric_dtype(self.data[c]):
@@ -216,8 +220,6 @@ class TablasCat(ttk.Frame):
             self.txt_output.insert(tk.END, msg)
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el archivo:\n{e}")
-            # FilterComponent removido.
-            # Limpiar combos de filtros generales en caso de error
             if hasattr(self, 'filter_col_1_combo'): self.filter_col_1_combo['values'] = ['']
             if hasattr(self, 'filter_col_2_combo'): self.filter_col_2_combo['values'] = ['']
 
@@ -231,113 +233,34 @@ class TablasCat(ttk.Frame):
     # --------------------------------------------------------------------------------
     # Aplicar filtros y categorización principal
     # --------------------------------------------------------------------------------
-    def _apply_general_filters(self, df):
-        """Aplica los filtros generales configurados en la UI al DataFrame."""
-        df_filtered = df.copy()
-        # Esta clase no tiene self.log, usamos print
-        print("[INFO] TablasCat: Aplicando filtros generales...")
-
-        filter_configs = [
-            (self.filter_active_1_var, self.filter_col_1_var, self.filter_op_1_var, self.filter_val_1_var),
-            (self.filter_active_2_var, self.filter_col_2_var, self.filter_op_2_var, self.filter_val_2_var)
-        ]
-
-        for i, (active_var, col_var, op_var, val_var) in enumerate(filter_configs, 1):
-            if active_var.get():
-                col_name = col_var.get()
-                op = op_var.get()
-                val_str = val_var.get()
-
-                if not col_name:
-                    print(f"[WARN] TablasCat: Filtro {i}: Columna no seleccionada, omitiendo.")
-                    continue
-                if col_name not in df_filtered.columns:
-                    print(f"[ERROR] TablasCat: Filtro {i}: Columna '{col_name}' no encontrada en los datos, omitiendo.")
-                    continue
-                
-                print(f"[DEBUG] TablasCat: Filtro {i}: Col='{col_name}', Op='{op}', Val='{val_str}'")
-
-                try:
-                    col_series = df_filtered[col_name]
-                    
-                    if op == "es NaN":
-                        df_filtered = df_filtered[col_series.isna()]
-                    elif op == "no es NaN":
-                        df_filtered = df_filtered[col_series.notna()]
-                    else:
-                        if val_str == "" and op not in ["es NaN", "no es NaN"]:
-                             print(f"[WARN] TablasCat: Filtro {i}: Valor vacío para operador '{op}', omitiendo.")
-                             continue
-
-                        if pd.api.types.is_numeric_dtype(col_series) and op in ["==", "!=", ">", "<", ">=", "<="]:
-                            try:
-                                val_num = float(val_str)
-                                if op == "==": df_filtered = df_filtered[col_series == val_num]
-                                elif op == "!=": df_filtered = df_filtered[col_series != val_num]
-                                elif op == ">": df_filtered = df_filtered[col_series > val_num]
-                                elif op == "<": df_filtered = df_filtered[col_series < val_num]
-                                elif op == ">=": df_filtered = df_filtered[col_series >= val_num]
-                                elif op == "<=": df_filtered = df_filtered[col_series <= val_num]
-                            except ValueError:
-                                print(f"[WARN] TablasCat: Filtro {i}: Valor '{val_str}' no es numérico para columna numérica '{col_name}'. Omitiendo filtro.")
-                                continue
-                        elif pd.api.types.is_string_dtype(col_series) or col_series.dtype == 'object':
-                            if op == "==": df_filtered = df_filtered[col_series.astype(str) == val_str]
-                            elif op == "!=": df_filtered = df_filtered[col_series.astype(str) != val_str]
-                            elif op == "contiene": df_filtered = df_filtered[col_series.astype(str).str.contains(val_str, case=False, na=False)]
-                            elif op == "no contiene": df_filtered = df_filtered[~col_series.astype(str).str.contains(val_str, case=False, na=False)]
-                            else:
-                                print(f"[WARN] TablasCat: Filtro {i}: Operador '{op}' no recomendado para columna de texto '{col_name}'. Intentando comparación directa.")
-                                if op == ">": df_filtered = df_filtered[col_series.astype(str) > val_str]
-                                elif op == "<": df_filtered = df_filtered[col_series.astype(str) < val_str]
-                                elif op == ">=": df_filtered = df_filtered[col_series.astype(str) >= val_str]
-                                elif op == "<=": df_filtered = df_filtered[col_series.astype(str) <= val_str]
-                        else:
-                             print(f"[WARN] TablasCat: Filtro {i}: Tipo de columna '{col_series.dtype}' no manejado explícitamente para operador '{op}'. Intentando comparación directa.")
-                             if op == "==": df_filtered = df_filtered[col_series == val_str]
-                             elif op == "!=": df_filtered = df_filtered[col_series != val_str]
-                except Exception as e:
-                    print(f"[ERROR] TablasCat: Filtro {i}: Error aplicando filtro Col='{col_name}', Op='{op}', Val='{val_str}': {e}")
-                    traceback.print_exc()
-        
-        print(f"[INFO] TablasCat: Datos después de filtros generales: {df_filtered.shape[0]} filas.")
-        return df_filtered
-
     def _apply_filters_and_categorization(self):
         """
-        Aplica filtros generales y luego el filtro/etiquetado de la variable de agrupación.
+        Aplica el filtro/etiquetado de la variable de agrupación.
         Devuelve el DataFrame resultante y las categorías ordenadas (si aplica).
         """
         if self.data is None:
-            # self.log("No hay datos originales cargados.", "WARN") # self.log no existe en esta clase
-            print("Advertencia: No hay datos originales cargados en _apply_filters_and_categorization.")
+            self.log_func("Advertencia: No hay datos originales cargados en _apply_filters_and_categorization.", "WARN")
+            messagebox.showwarning("Datos no cargados", "Por favor, cargue un archivo de datos primero.")
             return None, None
 
-        # 1. FilterComponent ha sido removido. Se trabaja directamente con una copia de self.data.
         df_initial = self.data.copy()
-        # self.log("Usando datos originales para filtrar y categorizar.", "INFO") # self.log no existe
-        print("Info: Usando datos originales (antes de filtros generales) en _apply_filters_and_categorization.")
+        self.log_func("Info: Usando datos originales para categorización en _apply_filters_and_categorization.", "INFO")
+        
+        df = df_initial.copy() # Start with the initial data (copy for modification)
 
-        # Aplicar filtros generales definidos en la UI
-        df_filtered = self._apply_general_filters(df_initial)
-
-        if df_filtered is None or df_filtered.empty:
-            # self.log("DataFrame vacío después de la copia inicial.", "WARN") # self.log no existe
-            print("Advertencia: DataFrame vacío después de aplicar filtros generales en _apply_filters_and_categorization.")
-            return df_filtered, None
-
-        # 2. Aplicar filtro/etiquetado/orden de la variable de agrupación principal
-        df = df_filtered.copy() # Trabajar con copia para categorización
+        if df.empty: 
+            self.log_func("Advertencia: DataFrame vacío después de la copia inicial.", "WARN")
+            messagebox.showwarning("Datos Vacíos", "El DataFrame está vacío inicialmente.")
+            return df, None 
+        
+        # Aplicar filtro/etiquetado/orden de la variable de agrupación principal
         cat_var = self.cmb_cat.get().strip()
         filtro_etiquetas = self.entry_filter.get().strip()
         ordered_categories = None # Reiniciar orden
 
         if cat_var and cat_var in df.columns and filtro_etiquetas:
             col_is_num = pd.api.types.is_numeric_dtype(df[cat_var])
-            # Lógica de parseo de filtro_etiquetas (valor:etiqueta, rango, lista, valor único)
-            # Esta lógica ahora actúa sobre el DataFrame ya filtrado por el componente
-            # y su propósito principal es definir el orden y las etiquetas,
-            # aunque también puede filtrar *más* si se especifican solo algunos valores.
+            
             if ":" in filtro_etiquetas:
                 mapping = {}
                 parts = [p.strip() for p in filtro_etiquetas.split(",") if p.strip()]
@@ -349,23 +272,36 @@ class TablasCat(ttk.Frame):
                         key = key.strip(); label = label.strip()
                         mapping[key] = label; typed_order_labels.append(label)
                         keys_to_keep.append(key)
-                # Filtrar para mantener solo las claves especificadas
+                
                 if col_is_num:
                     numeric_keys = []
                     numeric_mapping = {}
-                    for k in keys_to_keep:
-                        try: nk = float(k); numeric_keys.append(nk); numeric_mapping[nk] = mapping[k]
-                        except: numeric_keys.append(k); numeric_mapping[k] = mapping[k]
-                    df = df[df[cat_var].isin(numeric_keys)]
-                    df[cat_var] = df[cat_var].map(numeric_mapping)
-                else:
+                    for k_str in keys_to_keep:
+                        try: 
+                            nk = float(k_str)
+                            numeric_keys.append(nk)
+                            numeric_mapping[nk] = mapping[k_str]
+                        except ValueError: # Si la clave no es numérica, tratarla como string
+                            numeric_keys.append(k_str) 
+                            numeric_mapping[k_str] = mapping[k_str]
+
+                    # Asegurar que la columna original es del tipo correcto antes de isin
+                    if pd.api.types.is_numeric_dtype(df[cat_var].dtype):
+                        df = df[df[cat_var].isin(numeric_keys)]
+                        df[cat_var] = df[cat_var].map(numeric_mapping)
+                    else: # Si la columna no es numérica pero se dieron claves numéricas
+                        df = df[df[cat_var].astype(str).isin(map(str, numeric_keys))]
+                        # Mapear usando strings para las claves originales
+                        df[cat_var] = df[cat_var].astype(str).map({str(k):v for k,v in numeric_mapping.items()})
+                else: # Columna no numérica
                     df = df[df[cat_var].astype(str).isin(keys_to_keep)]
                     df[cat_var] = df[cat_var].astype(str).map(mapping)
-                # Aplicar orden
+                
                 if typed_order_labels:
                     cat_dtype = pd.CategoricalDtype(categories=typed_order_labels, ordered=True)
                     df[cat_var] = df[cat_var].astype(cat_dtype)
                     ordered_categories = typed_order_labels
+
             elif "-" in filtro_etiquetas and "," not in filtro_etiquetas: # Rango
                 parts = filtro_etiquetas.split("-")
                 if len(parts) == 2 and col_is_num:
@@ -377,18 +313,20 @@ class TablasCat(ttk.Frame):
                 vals = [p.strip() for p in filtro_etiquetas.split(",") if p.strip()]
                 if col_is_num:
                     numeric_vals = []
-                    for val in vals:
-                        try: numeric_vals.append(float(val))
-                        except: numeric_vals.append(val)
+                    for val_str in vals:
+                        try: numeric_vals.append(float(val_str))
+                        except: numeric_vals.append(val_str) # Mantener como string si no es convertible
                     df = df[df[cat_var].isin(numeric_vals)]
-                    cat_dtype = pd.CategoricalDtype(categories=numeric_vals, ordered=True)
-                    df[cat_var] = df[cat_var].astype(cat_dtype)
-                    ordered_categories = vals
+                    # El orden se basa en la lista de valores si son numéricos
+                    ordered_categories = [v for v in numeric_vals if pd.api.types.is_number(v)]
                 else:
                     df = df[df[cat_var].astype(str).isin(vals)]
-                    cat_dtype = pd.CategoricalDtype(categories=vals, ordered=True)
+                    ordered_categories = vals # El orden es el de la lista de strings
+                
+                if ordered_categories:
+                    cat_dtype = pd.CategoricalDtype(categories=ordered_categories, ordered=True)
                     df[cat_var] = df[cat_var].astype(cat_dtype)
-                    ordered_categories = vals
+
             else: # Valor único
                 if col_is_num:
                     try: val_f = float(filtro_etiquetas); df = df[df[cat_var] == val_f]
@@ -418,11 +356,8 @@ class TablasCat(ttk.Frame):
         df, _ = self._apply_filters_and_categorization() # Usar la nueva función
         if df is None:
             return "Error al aplicar filtros o no hay datos."
-        # Los filtros adicionales y globales ya se aplicaron en _apply_filters_and_categorization
-        # (Nota: apply_global_filters se llama dentro de generate_composite_table,
-        #  quizás debería llamarse también aquí o refactorizar para que se llame una sola vez)
-        # Por ahora, lo llamaremos aquí también para consistencia con el código original.
-        df = self.apply_global_filters(df)
+        
+        df = self.apply_global_filters(df) # Aplicar filtros globales después de la categorización
         if df.empty:
             return "No hay datos para resumir tras aplicar filtros."
         lines = []
@@ -540,23 +475,25 @@ class TablasCat(ttk.Frame):
             messagebox.showwarning("Aviso", "Primero carga los datos.")
             return
 
-        # 1) Filtro principal
-        df_filtered = self.get_filtered_data()
-        if df_filtered is None or df_filtered.empty:
-            messagebox.showwarning("Aviso", "No hay datos luego del filtro principal.")
+        # 1) Filtro principal y categorización
+        df_filtered, ordered_categories_from_filter = self._apply_filters_and_categorization()
+        # The variable 'ordered_categories_from_filter' will be used later if needed,
+        # replacing the potentially unreliable self.ordered_categories for this specific run.
+        
+        if df_filtered is None: # self._apply_filters_and_categorization can return None
+            messagebox.showwarning("Aviso", "No hay datos después de aplicar los filtros y la categorización inicial.")
+            return
+        
+        if df_filtered.empty: # Adicionalmente chequear si está vacío post categorización
+            messagebox.showwarning("Aviso", "No hay datos después de aplicar los filtros y la categorización inicial.")
             return
 
-        # 2) Filtros adicionales
-        for (cmb, ent) in self.extra_filters:
-            v_ = cmb.get().strip()
-            f_ = ent.get().strip()
-            if v_ and f_:
-                df_filtered = self.apply_filter_criteria(df_filtered, v_, f_)
+        # 2) Filtros adicionales (ELIMINADO)
         
         # 3) Aplicar los filtros globales (excluir blancos y no numéricos)
         df_filtered = self.apply_global_filters(df_filtered)
         if df_filtered.empty:
-            messagebox.showwarning("Aviso", "No quedan datos tras aplicar los filtros.")
+            messagebox.showwarning("Aviso", "No quedan datos tras aplicar los filtros globales.")
             return
 
         # 4) Selección de variables
@@ -571,29 +508,31 @@ class TablasCat(ttk.Frame):
 
         # 5) Determinar categorías (según dataset filtrado)
         cat_var = self.cmb_cat.get().strip()
+        cat_values = ["(Sin categoría)"] # Default
+
         if cat_var and cat_var in df_filtered.columns:
             # Usar las categorías ordenadas obtenidas de _apply_filters_and_categorization
-            if ordered_categories:
+            if ordered_categories_from_filter: # Use the variable from the function call
                  # Asegurarse que las categorías ordenadas realmente existen en los datos finales
-                 cat_values = [c for c in ordered_categories if c in df_filtered[cat_var].unique()]
-            elif self.chk_all_categories.get():
+                 cat_values = [c for c in ordered_categories_from_filter if c in df_filtered[cat_var].unique()]
+            elif self.chk_all_categories.get(): # Fallback to existing logic if no specific order came from the function
                  # Si se piden todas y no hay orden, tomar del DF original (antes de filtros de valor)
-                 # Esto es complejo, podría ser mejor tomar del df_filtered y ordenar alfabéticamente
+                 self.log_func("Usando todas las categorías del archivo original (orden alfabético).", "INFO")
                  cat_values = sorted(list(self.data[cat_var].dropna().astype(str).unique()))
-                 self.log("Usando todas las categorías del archivo original (orden alfabético).", "INFO")
             else:
                  # Tomar del DF filtrado y ordenar alfabéticamente
                  cat_values = sorted(list(df_filtered[cat_var].dropna().astype(str).unique()))
-        else:
-            cat_values = ["(Sin categoría)"]
-
-        cat_values = list(dict.fromkeys(cat_values))
+            
+            if not cat_values: # Si la lista de categorías resultante está vacía
+                cat_values = ["(Sin categoría / Datos filtrados)"]
+        
+        cat_values = list(dict.fromkeys(cat_values)) # Asegurar unicidad manteniendo orden
 
         big_list = []
 
         # 6) Recorremos cada categoría para generar filas
         for catv in cat_values:
-            if cat_var and cat_var in df_filtered.columns and catv != "(Sin categoría)":
+            if cat_var and cat_var in df_filtered.columns and catv != "(Sin categoría)" and catv != "(Sin categoría / Datos filtrados)":
                 # Comparar directamente (ya debería ser string o categorical)
                 sub = df_filtered[df_filtered[cat_var] == catv]
             else:
@@ -841,12 +780,13 @@ class TablasCat(ttk.Frame):
         btn_export.grid(row=2, column=0, pady=5, sticky="w")
 
     def save_graph_directly(self):
-        """Método opcional (no se usa aquí)."""
-        pass
+        # """Método opcional (no se usa aquí).""" # Docstring can be kept or removed.
+        messagebox.showinfo("Función No Implementada", 
+                            "La funcionalidad para 'Guardar Gráfica Directamente' no está implementada todavía en esta pestaña.")
 
 # Tab para scripts externos (no modificado)
 class ExternalScriptsTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master): # Removed log_callback as it's not used here
         super().__init__(master)
         lbl = ttk.Label(self, text="Aquí se cargarían scripts externos.")
         lbl.pack(pady=20)
@@ -861,7 +801,11 @@ if __name__ == "__main__":
     notebook = ttk.Notebook(root)
     notebook.pack(fill=tk.BOTH, expand=True)
 
-    app = TablasCat(notebook)
+    # Example of passing a simple print-based logger to TablasCat
+    def main_app_logger(message, level="INFO"):
+        print(f"[{level}] MainApp->TablasCat: {message}")
+
+    app = TablasCat(notebook, log_callback=main_app_logger) # Pass the logger
     notebook.add(app, text="Filtros/Estadísticas")
 
     ext_tab = ExternalScriptsTab(notebook)

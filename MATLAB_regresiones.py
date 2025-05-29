@@ -821,7 +821,19 @@ class RegresionesTab(ttk.Frame):
             self.log_message("Carga cancelada")
             return
         try:
-            df = pd.read_excel(file_path)
+            _, file_extension = os.path.splitext(file_path)
+            file_extension = file_extension.lower()
+
+            if file_extension == '.csv':
+                df = pd.read_csv(file_path)
+            elif file_extension in ['.xls', '.xlsx']:
+                df = pd.read_excel(file_path)
+            else:
+                error_message = f"Tipo de archivo no soportado: {file_extension}. Por favor, seleccione un archivo CSV o Excel."
+                self.log_message(error_message)
+                messagebox.showerror("Tipo de Archivo No Soportado", error_message)
+                return
+            
             if df.columns[0].lower().startswith("unnamed: 0") or df.columns[0].lower() == "":
                 df = df.iloc[:, 1:]
             
@@ -838,7 +850,23 @@ class RegresionesTab(ttk.Frame):
 
             # Actualizar componente de filtro
             if hasattr(self, 'filter_component') and self.filter_component:
-                self.filter_component.set_dataframe(self.data)
+                try:
+                    self.filter_component.set_dataframe(self.data)
+                except TypeError as te_filter_comp:
+                    self.log_message(f"TypeError específico al llamar a FilterComponent.set_dataframe: {te_filter_comp}")
+                    messagebox.showerror("Error de Tipo en Componente Filtro", 
+                                         f"Se produjo un error de tipo (argumentos) al configurar el componente de filtro.\n"
+                                         f"Detalle: {te_filter_comp}\n\n"
+                                         "Esto puede indicar una incompatibilidad o un problema interno en FilterComponent al procesar los datos cargados.")
+                    # Decide if you want to re-raise, or if other cleanup is needed.
+                    # For now, logging and showing the error is the primary goal for diagnostics.
+                    # If this error occurs, subsequent operations relying on filter_component might be affected.
+                except Exception as e_filter_comp_other:
+                    # Catch other potential errors from set_dataframe too
+                    self.log_message(f"Otra excepción al llamar a FilterComponent.set_dataframe: {e_filter_comp_other}")
+                    messagebox.showerror("Error en Componente Filtro",
+                                         f"Se produjo una excepción general al configurar el componente de filtro.\n"
+                                         f"Detalle: {e_filter_comp_other}")
 
             # Actualizar selectores de variables de regresión
             self.entry_dep_var_spec.delete(0, tk.END)
@@ -854,6 +882,9 @@ class RegresionesTab(ttk.Frame):
         except Exception as e:
             self.log_message(f"Error al cargar datos: {e}")
             traceback.print_exc()
+            # Add the messagebox here
+            messagebox.showerror("Error al Cargar Archivo", 
+                                 f"Ocurrió un error detallado al intentar cargar el archivo:\n\n{e}\n\nConsulte la consola para ver el traceback completo si es necesario.")
             self.data = None
             self.lbl_file.config(text="Ningún archivo cargado.")
             self.entry_dep_var_spec.delete(0, tk.END)

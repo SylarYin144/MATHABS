@@ -5,7 +5,6 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, StringVar
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import plotly.express as px
 import seaborn as sns
 import os # <--- AÑADIDO
 import csv # <--- AÑADIDO
@@ -107,6 +106,11 @@ class GeneralChartsApp(ttk.Frame):
                 "descripcion": "Un círculo dividido en secciones, donde cada sección representa una proporción del total.",
                 "parametros_clave": "Columna de valores, columna de etiquetas.",
                 "recomendaciones": "Generalmente desaconsejado para comparaciones precisas. Usar con pocas categorías. Evitar versiones 3D."
+            },
+            "Histogramas": {
+                "descripcion": "Muestra la distribución de una variable numérica dividiendo los datos en 'bins' (intervalos) y contando las observaciones en cada bin.",
+                "parametros_clave": "Variable (numérica), Número de bins (opcional), Mostrar KDE (opcional).",
+                "recomendaciones": "Útil para entender la forma de la distribución de los datos (simetría, picos, etc.). Experimentar con el número de bins."
             }
             # ... Añadir descripciones para todos los demás gráficos
         }

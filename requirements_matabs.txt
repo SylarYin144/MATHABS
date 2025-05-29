@@ -5,7 +5,7 @@ geopandas
 lifelines
 matplotlib
 numexpr
-numpy<2.0
+numpy<2.0  # Important for compatibility with older pandas or specific lifelines versions
 openpyxl
 pandas
 pyarrow
