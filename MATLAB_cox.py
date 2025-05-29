@@ -34,7 +34,6 @@ import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
 
 # --- Importaciones de Lifelines ---
-# from lifelines.statistics import proportional_hazard_test #
 # check_assumptions lo reemplaza en gran medida
 
 try:
@@ -60,16 +59,13 @@ except ImportError:
     PATSY_AVAILABLE = False
     print("ADVERTENCIA: 'patsy' no instalada. Funciones de Spline y manejo avanzado de categóricas limitadas.")
 
-filter_component_path = r"D:\APPS\MATABS"
-if filter_component_path not in sys.path:
-    sys.path.insert(0, filter_component_path)
 try:
     from MATLAB_filter_component import FilterComponent
     FILTER_COMPONENT_AVAILABLE = True
 except ImportError:
     FilterComponent = None
     FILTER_COMPONENT_AVAILABLE = False
-    print(f"ERROR: No se pudo importar MATLAB_filter_component desde '{filter_component_path}'. Filtros avanzados no disponibles.")
+    print(f"INFO: MATLAB_filter_component not found in standard Python paths. Advanced filters may be unavailable.")
 except Exception as e:
     FilterComponent = None
     FILTER_COMPONENT_AVAILABLE = False
@@ -1520,6 +1516,29 @@ class CoxModelingApp(ttk.Frame):
 
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
         method_vs = self.var_selection_method_var.get()
+
+        if method_vs in ["Backward", "Forward", "Stepwise (Fwd luego Bwd)"]:
+            self.log(f"INFO: {method_vs} selection is currently bypassed. All initial features will be used.", "INFO")
+            
+            # Extract original variable names from terms_initial_vs
+            # terms_initial_vs contains patsy-generated names like "Q('var1')", "cr(Q('var2'), df=4)[0]", etc.
+            # We need to find all unique original names quoted by Q('').
+            # import re # Already imported at the top
+            
+            selected_covs_orig_names_bypassed = []
+            regex_q_var = re.compile(r"Q\('([^']+)'\)") # Regex to find Q('var_name')
+            
+            if terms_initial_vs is None: # Should not happen if X_design_initial_vs was not empty
+                terms_initial_vs = []
+
+            for term in terms_initial_vs:
+                matches = regex_q_var.findall(term) # findall returns a list of all matched groups
+                for original_var_name in matches:
+                    if original_var_name not in selected_covs_orig_names_bypassed:
+                        selected_covs_orig_names_bypassed.append(original_var_name)
+            
+            self.log(f"Bypassed selection, returning initial original covariates: {selected_covs_orig_names_bypassed}", "DEBUG")
+            return selected_covs_orig_names_bypassed
         
         if method_vs == "Ninguno (usar todas)":
             self.log("Selección Variables: 'Ninguno'. Usando todas.", "INFO")
@@ -1657,11 +1676,17 @@ class CoxModelingApp(ttk.Frame):
             if not X_design_rm.empty: 
                 if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
                     try:
-                        from lifelines.statistics import proportional_hazard_test
-                        ph_test_obj = proportional_hazard_test(cph_main_rm, df_for_fit_main, time_transform='log')
-                        model_data_rm["schoenfeld_results"] = ph_test_obj.summary
-                        self.log("Test Schoenfeld completado.", "INFO")
-                    except Exception as e_sch: self.log(f"Error Test Schoenfeld: {e_sch}", "ERROR"); model_data_rm["schoenfeld_results"] = None
+                        # Proportional hazard assumption check using the new method
+                        # results_check_assumptions is a list: [p_value_summary, summary_df, plots]
+                        results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main, time_transform='log')
+                        # The summary_df (second element) contains the Schoenfeld test results
+                        model_data_rm["schoenfeld_results"] = results_check_assumptions[1] 
+                        self.log("Test Schoenfeld (check_assumptions) completado.", "INFO")
+                    except Exception as e_sch: 
+                        self.log(f"Error Test Schoenfeld (check_assumptions): {e_sch}", "ERROR")
+                        model_data_rm["schoenfeld_results"] = None
+                        import traceback
+                        self.log(traceback.format_exc(), "DEBUG") # Log full traceback for debugging
                 else:
                     self.log("Modelo sin parámetros (covariables), no se calcula Test Schoenfeld.", "INFO")
             else: self.log("Modelo nulo (sin X_design), no Test Schoenfeld.", "INFO")
