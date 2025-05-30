@@ -53,18 +53,39 @@ class MapTab(ttk.Frame):
         self.geojson_state_column_name = None
 
         self.default_population_data = {
-            "AGUASCALIENTES": 1425607, "BAJA CALIFORNIA": 3769020, "BAJA CALIFORNIA SUR": 798447,
-            "CAMPECHE": 928363, "CHIAPAS": 5543828, "CHIHUAHUA": 3741869,
-            "COAHUILA DE ZARAGOZA": 3146771, "COLIMA": 731391, "CIUDAD DE MÉXICO": 9209944,
-            "DISTRITO FEDERAL": 9209944, # Alias for CDMX
-            "DURANGO": 1832650, "GUANAJUATO": 6166934, "GUERRERO": 3540685,
-            "HIDALGO": 3082841, "JALISCO": 8348151, "MÉXICO": 16992418,
-            "MICHOACÁN DE OCAMPO": 4748846, "MORELOS": 1971520, "NAYARIT": 1235456,
-            "NUEVO LEÓN": 5784442, "OAXACA": 4132148, "PUEBLA": 6583278,
-            "QUERÉTARO": 2368467, "QUINTANA ROO": 1857985, "SAN LUIS POTOSÍ": 2822255,
-            "SINALOA": 3026943, "SONORA": 2944840, "TABASCO": 2402598,
-            "TAMAULIPAS": 3527735, "TLAXCALA": 1342977, "VERACRUZ DE IGNACIO DE LA LLAVE": 8062579,
-            "YUCATÁN": 2320898, "ZACATECAS": 1622138
+            "AGUASCALIENTES": 1434635,
+            "BAJA CALIFORNIA": 3769020,
+            "BAJA CALIFORNIA SUR": 798447,
+            "CAMPECHE": 928363,
+            "CHIAPAS": 5543828,
+            "CHIHUAHUA": 3741869,
+            "CIUDAD DE MÉXICO": 9209944,  # From user "DistritoFederal"
+            "COAHUILA DE ZARAGOZA": 3146771, # From user "Coahuila"
+            "COLIMA": 731391,
+            "DURANGO": 1868996,
+            "GUANAJUATO": 6166934,
+            "GUERRERO": 3540685,
+            "HIDALGO": 3082841,
+            "JALISCO": 8348151,
+            "MÉXICO": 17363387, # From user "México" (Estado de Mexico)
+            "MICHOACÁN DE OCAMPO": 4748846, # From user "Michoacán"
+            "MORELOS": 1971520,
+            "NAYARIT": 1235456,
+            "NUEVO LEÓN": 5784442, # From user "NuevoLeón"
+            "OAXACA": 4132148,
+            "PUEBLA": 6583278,
+            "QUERÉTARO": 2368467, # From user "Querétaro"
+            "QUINTANA ROO": 1857985, # From user "QuintanaRoo"
+            "SAN LUIS POTOSÍ": 2822255, # From user "SanLuisPotosí"
+            "SINALOA": 3026943,
+            "SONORA": 2944840,
+            "TABASCO": 2240881,
+            "TAMAULIPAS": 3527735,
+            "TLAXCALA": 1342977,
+            "VERACRUZ DE IGNACIO DE LA LLAVE": 8062579, # From user "Veracruz"
+            "YUCATÁN": 2320898,
+            "ZACATECAS": 1622138,
+            "DISTRITO FEDERAL": 9209944  # Alias for CIUDAD DE MÉXICO, ensure it has the same value
         }
         self.create_widgets()
 
