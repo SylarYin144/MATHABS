@@ -1211,36 +1211,43 @@ class CoxModelingApp(ttk.Frame):
 
         selected_var_names = [self.listbox_covariables_disponibles.get(i) for i in sel_indices]
         
-        new_var_type_bulk = self.var_tipo_covariable_seleccionada.get()
-        use_spline_bulk = self.var_usar_spline_seleccionada.get()
-        spline_type_bulk = self.combo_tipo_spline_seleccionada.get()
-        spline_df_bulk = self.var_df_spline_seleccionada.get()
+        new_var_type_bulk = self.var_tipo_covariable_seleccionada.get() # Type from main panel
+        use_spline_bulk = self.var_usar_spline_seleccionada.get()      # Spline use from main panel
+        spline_type_bulk = self.combo_tipo_spline_seleccionada.get()  # Spline type from main panel
+        spline_df_bulk = self.var_df_spline_seleccionada.get()        # Spline DF from main panel
         
-        # Para la UI principal, la categoría de referencia solo se toma si UNA variable está seleccionada.
-        # Si múltiples variables son cambiadas a Cualitativa, se les asignará un default después.
         ref_category_for_single_selection = None
         if len(selected_var_names) == 1 and new_var_type_bulk == "Cualitativa" and self.combo_ref_categoria_seleccionada.cget('state') != 'disabled':
             ref_category_for_single_selection = self.combo_ref_categoria_seleccionada.get()
             if not ref_category_for_single_selection:
-                messagebox.showwarning("Ref. Vacía", "Seleccione una categoría de referencia para la variable cualitativa.", parent=self.parent_for_dialogs)
+                messagebox.showwarning("Ref. Vacía",
+                                       f"Para '{selected_var_names[0]}', seleccione una categoría de referencia o use el diálogo detallado.",
+                                       parent=self.parent_for_dialogs)
                 return
 
         num_applied = 0
         for var_name_apply in selected_var_names:
             log_msgs_for_var = [f"Aplicando config (panel simple) a '{var_name_apply}':"]
             
+            # 1. Set the new type
             self.covariables_type_config[var_name_apply] = new_var_type_bulk
             log_msgs_for_var.append(f"Tipo='{new_var_type_bulk}'")
 
+            # 2. Clean up and set defaults based on the new type
             if new_var_type_bulk == "Cualitativa":
+                # Remove spline config if it exists
                 if var_name_apply in self.spline_config_details:
                     del self.spline_config_details[var_name_apply]
-                    log_msgs_for_var.append("Config. spline eliminada.")
+                    log_msgs_for_var.append("Config. spline eliminada (tipo cambiado a Cualitativa).")
                 
+                # Set reference category
                 if len(selected_var_names) == 1 and ref_category_for_single_selection is not None:
+                    # This case is for single selection where ref_cat is taken from main panel
                     self.ref_categories_config[var_name_apply] = ref_category_for_single_selection
                     log_msgs_for_var.append(f"Ref.Cat.='{ref_category_for_single_selection}'")
-                elif var_name_apply not in self.ref_categories_config: # Set default only if not already configured (e.g. by detailed dialog)
+                elif var_name_apply not in self.ref_categories_config:
+                    # For multiple selections, or single if ref_cat wasn't set from panel,
+                    # set a default if data is available and no prior ref_cat exists
                     if self.data is not None and var_name_apply in self.data.columns:
                         try:
                             unique_cats = sorted(list(self.data[var_name_apply].astype(str).unique()))
@@ -1253,19 +1260,22 @@ class CoxModelingApp(ttk.Frame):
                              log_msgs_for_var.append(f"Error obteniendo Ref.Cat.(default): {e_unique_cats}")
                     else:
                         log_msgs_for_var.append("No hay datos para determinar Ref.Cat.(default).")
+                # If var_name_apply IS in ref_categories_config and it's a multiple selection, we keep the existing one.
             
             elif new_var_type_bulk == "Cuantitativa":
+                # Remove ref category config if it exists
                 if var_name_apply in self.ref_categories_config:
                     del self.ref_categories_config[var_name_apply]
-                    log_msgs_for_var.append("Config. Ref.Cat. eliminada.")
+                    log_msgs_for_var.append("Config. Ref.Cat. eliminada (tipo cambiado a Cuantitativa).")
                 
+                # Apply or remove spline config based on main panel's "Usar Spline"
                 if use_spline_bulk:
                     self.spline_config_details[var_name_apply] = {'type': spline_type_bulk, 'df': spline_df_bulk}
                     log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
-                else: # Not using spline
+                else: # Not using spline via main panel
                     if var_name_apply in self.spline_config_details:
                         del self.spline_config_details[var_name_apply]
-                        log_msgs_for_var.append("Config. spline eliminada (desmarcado).")
+                        log_msgs_for_var.append("Config. spline eliminada (desmarcado en panel simple).")
             
             self.log(" ".join(log_msgs_for_var), "CONFIG")
             num_applied += 1
