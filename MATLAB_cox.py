@@ -1487,7 +1487,14 @@ class CoxModelingApp(ttk.Frame):
                 if ref_cat_bd and str(ref_cat_bd).strip():
                     ref_cat_str_bd = str(ref_cat_bd)
                     if ref_cat_str_bd in df_for_patsy_bd[orig_cov_name_bd].astype(str).unique():
-                        term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment(Q('{ref_cat_str_bd}')))"
+                        # For string literals like 'F', Patsy expects Treatment('F')
+                        # If ref_cat_str_bd could be numeric, further type checking might be needed,
+                        # but for now, assuming string reference categories are common.
+                        # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
+                        if re.match(r"^-?\d+(\.\d+)?$", ref_cat_str_bd): # Check if it looks like a number
+                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
+                        else: # Assume string, enclose in quotes for Patsy
+                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
                     else:
                         self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
                         term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
@@ -1668,17 +1675,29 @@ class CoxModelingApp(ttk.Frame):
             if not X_design_rm.empty: 
                 if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
                     try:
-                        # Proportional hazard assumption check using the new method
-                        # results_check_assumptions is a list: [p_value_summary, summary_df, plots]
+                        self.log(f"DEBUG: Calling check_assumptions with df_for_fit_main shape: {df_for_fit_main.shape}", "DEBUG")
                         results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main, time_transform='log')
-                        # The summary_df (second element) contains the Schoenfeld test results
-                        model_data_rm["schoenfeld_results"] = results_check_assumptions[1] 
-                        self.log("Test Schoenfeld (check_assumptions) completado.", "INFO")
+
+                        if isinstance(results_check_assumptions, list) and len(results_check_assumptions) >= 2:
+                            schoenfeld_df = results_check_assumptions[1]
+                            if isinstance(schoenfeld_df, pd.DataFrame):
+                                model_data_rm["schoenfeld_results"] = schoenfeld_df
+                                self.log(f"Test Schoenfeld (check_assumptions) completado. Resulting DataFrame shape: {schoenfeld_df.shape}", "INFO")
+                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df.columns.tolist()}", "DEBUG")
+                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df.head().to_string()}", "DEBUG")
+                            else:
+                                self.log(f"Error Test Schoenfeld: results_check_assumptions[1] is not a DataFrame. Type: {type(schoenfeld_df)}", "ERROR")
+                                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame to prevent downstream errors
+                        else:
+                            self.log(f"Error Test Schoenfeld: check_assumptions did not return the expected list structure. Returned: {type(results_check_assumptions)}", "ERROR")
+                            model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame
+
                     except Exception as e_sch: 
-                        self.log(f"Error Test Schoenfeld (check_assumptions): {e_sch}", "ERROR")
-                        model_data_rm["schoenfeld_results"] = None
+                        self.log(f"Error during Test Schoenfeld (check_assumptions call): {e_sch}", "ERROR")
+                        model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame on error
+                        # Ensure traceback is imported if this is a separate subtask run / context
                         import traceback
-                        self.log(traceback.format_exc(), "DEBUG") # Log full traceback for debugging
+                        self.log(traceback.format_exc(), "DEBUG")
                 else:
                     self.log("Modelo sin parámetros (covariables), no se calcula Test Schoenfeld.", "INFO")
             else: self.log("Modelo nulo (sin X_design), no Test Schoenfeld.", "INFO")
@@ -2235,7 +2254,23 @@ class CoxModelingApp(ttk.Frame):
             survival_probability_calibration(cph_cal, df_actually_used_for_fit, t0=t0_val_cal, ax=ax_cal)
             opts_cal = self.current_plot_options.copy(); opts_cal['title'] = opts_cal.get('title') or f"Calibración en t0={t0_val_cal} ({name_cal})"; apply_plot_options(ax_cal, opts_cal, self.log)
             self._create_plot_window(fig_cal, f"Calibración t0={t0_val_cal}: {name_cal}")
-        except Exception as e_cal: self.log(f"Error gráf.calibración '{name_cal}': {e_cal}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Gráfico",f"Error gráf.calibración:\n{e_cal}",parent=self.parent_for_dialogs)
+        except Exception as e_cal:
+            self.log(f"Error gráf.calibración '{name_cal}': {e_cal}","ERROR")
+            import traceback # Explicitly import traceback here
+            self.log(traceback.format_exc(), "DEBUG") # Log the full traceback for debugging this specific error
+            messagebox.showerror("Error Gráfico",f"Error al generar gráfico de calibración para '{name_cal}':\n{e_cal}",parent=self.parent_for_dialogs)
+
+            # Ensure figure created by plt.subplots is closed if an error occurs
+            # before it's properly managed by _create_plot_window or if _create_plot_window itself fails.
+            if 'fig_cal' in locals():
+                try:
+                    # Check if the window for this figure still exists or was ever created.
+                    # This is a bit tricky as canvas might not be there if plt.subplots() itself failed,
+                    # or if _create_plot_window was never reached.
+                    # A simpler plt.close(fig_cal) is often sufficient.
+                    plt.close(fig_cal)
+                except Exception as e_close_fig:
+                    self.log(f"DEBUG: Minor error trying to close fig_cal during calibration error handling: {e_close_fig}", "DEBUG")
 
     def show_variable_impact_plot(self):
         if not self._check_model_selected_and_valid(check_params=True):
