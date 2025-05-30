@@ -5,13 +5,21 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 try:
-    from sample_size.sample_size import SampleSize
-    from sample_size.metrics import ProportionMetric, MeanMetric
-except ImportError:
-    messagebox.showerror("Error de Importación", "La librería 'sample-size' o sus componentes no están instalados. Por favor, instálala para continuar.")
-    SampleSize = None
-    ProportionMetric = None
-    MeanMetric = None
+    from statsmodels.stats.power import TTestIndPower, NormalIndPower
+    from statsmodels.stats.proportion import effectsize_proportions, samplesize_confint_proportion
+    from scipy.stats import norm # Already should be here for precision calculations
+except ImportError as e:
+    # It's crucial that statsmodels is installed. If not, many functions will fail.
+    messagebox.showerror("Error de Importación Crítico",
+                         f"No se pudieron importar componentes de 'statsmodels' o 'scipy': {e}. "
+                         "Estas librerías son esenciales. Por favor, asegúrese de que estén instaladas.")
+    # Optionally, disable the calculate button or the entire tab here.
+    # For now, we'll let it proceed, but calculations will likely fail if imports are missing.
+    TTestIndPower = None
+    NormalIndPower = None
+    effectsize_proportions = None
+    samplesize_confint_proportion = None # Added this
+    norm = None # Though norm is usually available with scipy, which is a core dep.
 
 class SampleSizeCalculatorTab(ttk.Frame):
     def __init__(self, notebook, main_app_instance=None):
@@ -237,8 +245,12 @@ class SampleSizeCalculatorTab(ttk.Frame):
             self.p0_rr_entry.grid(row=0, column=3, padx=2, pady=2, sticky=tk.W)
 
     def calculate_sample_size(self):
-        if SampleSize is None or ProportionMetric is None or MeanMetric is None:
-            messagebox.showerror("Error", "La librería 'sample-size' o sus métricas no están cargadas.")
+        # Check for critical imports for calculation
+        # Updated check to include samplesize_confint_proportion
+        if TTestIndPower is None or NormalIndPower is None or effectsize_proportions is None or norm is None or samplesize_confint_proportion is None:
+            messagebox.showerror("Error de Librería",
+                                 "Faltan componentes esenciales de 'statsmodels' o 'scipy' que no se pudieron importar al inicio. "
+                                 "El cálculo no puede continuar. Verifique la instalación de estas librerías.")
             return
 
         study_type = self.study_design_var.get()
@@ -260,13 +272,13 @@ class SampleSizeCalculatorTab(ttk.Frame):
                     if not (0 < margin_of_error < 1):
                         messagebox.showerror("Error de Entrada", "El margen de error para proporciones debe estar entre 0 y 1.")
                         return
-                    # Formula: n = (Z_alpha/2)^2 * P * (1-P) / E^2
-                    # SampleSize library doesn't have a direct precision based calculation for single proportion out of the box in the main class
-                    # We might need to implement the formula or use statsmodels if available/added
-                    # For now, let's use the standard formula.
-                    from scipy.stats import norm
-                    z_score = norm.ppf(1 - (alpha_precision / 2))
-                    calculated_sample_size = (z_score**2 * estimated_p * (1 - estimated_p)) / (margin_of_error**2)
+
+                    calculated_sample_size = samplesize_confint_proportion(
+                        proportion=estimated_p,
+                        half_length=margin_of_error,
+                        alpha=alpha_precision,
+                        method='normal'
+                    )
 
                 elif "cuantitativos" in var_type:
                     estimated_sd = float(self.estimated_sd_var.get())
@@ -277,7 +289,7 @@ class SampleSizeCalculatorTab(ttk.Frame):
                         messagebox.showerror("Error de Entrada", "El margen de error para medias debe ser positivo.")
                         return
                     # Formula: n = (Z_alpha/2 * sigma / E)^2
-                    from scipy.stats import norm
+                    # from scipy.stats import norm # This line is removed, norm is imported globally
                     z_score = norm.ppf(1 - (alpha_precision / 2))
                     calculated_sample_size = (z_score * estimated_sd / margin_of_error)**2
                 else:
@@ -300,23 +312,38 @@ class SampleSizeCalculatorTab(ttk.Frame):
                         if p1 == p2:
                              messagebox.showerror("Error de Entrada", "P1 y P2 no pueden ser iguales para este cálculo.")
                              return
-                        metric = ProportionMetric()
-                        calculated_sample_size = metric.solve_sample_size(power=power, alpha=alpha, p1=p1, p2=p2, effect_size=abs(p1-p2))
-                    # ... (OR, RR placeholders remain)
+
+                        es = effectsize_proportions(p1, p2, method='normal')
+                        power_analysis = NormalIndPower()
+                        calculated_sample_size = power_analysis.solve_power(
+                            effect_size=es,
+                            alpha=alpha,
+                            power=power,
+                            ratio=1.0,
+                            alternative='two-sided',
+                            nobs=None
+                        )
                     elif effect_type_selected in ["Odds Ratio (OR)", "Riesgo Relativo (RR)"]:
-                         messagebox.showinfo("Información", f"Cálculo para {effect_type_selected} aún no implementado con 'sample-size'.")
+                         messagebox.showinfo("Información", f"Cálculo para {effect_type_selected} aún no implementado con 'statsmodels' en esta interfaz.")
                          self.sample_size_result_var.set("---")
                          return
                     else:
-                        messagebox.showinfo("Información", "Seleccione un tipo de tamaño del efecto válido.")
+                        messagebox.showinfo("Información", "Seleccione un tipo de tamaño del efecto válido para variables categóricas/binarias.")
                         self.sample_size_result_var.set("---")
                         return
 
                 elif "cuantitativos" in var_type:
                     if effect_type_selected == "d de Cohen (Diferencia de Medias)":
                         cohen_d = float(self.cohen_d_var.get())
-                        metric = MeanMetric()
-                        calculated_sample_size = metric.solve_sample_size(power=power, alpha=alpha, effect_size=cohen_d)
+                        power_analysis = TTestIndPower()
+                        calculated_sample_size = power_analysis.solve_power(
+                            effect_size=cohen_d,
+                            alpha=alpha,
+                            power=power,
+                            ratio=1.0,
+                            alternative='two-sided',
+                            nobs=None
+                        )
                     elif effect_type_selected == "Diferencia de Medias (Absoluta)":
                         mean1 = float(self.mean1_var.get())
                         mean2 = float(self.mean2_var.get())
@@ -324,15 +351,23 @@ class SampleSizeCalculatorTab(ttk.Frame):
                         if common_sd <= 0:
                              messagebox.showerror("Error de Entrada", "La DE Común debe ser positiva.")
                              return
-                        effect_size_raw = abs(mean1 - mean2)
-                        metric = MeanMetric(variance=common_sd**2)
-                        calculated_sample_size = metric.solve_sample_size(power=power, alpha=alpha, effect_size=effect_size_raw)
+
+                        cohen_d_calculated = abs(mean1 - mean2) / common_sd
+                        power_analysis = TTestIndPower()
+                        calculated_sample_size = power_analysis.solve_power(
+                            effect_size=cohen_d_calculated,
+                            alpha=alpha,
+                            power=power,
+                            ratio=1.0,
+                            alternative='two-sided',
+                            nobs=None
+                        )
                     else:
-                        messagebox.showinfo("Información", "Seleccione un tipo de tamaño del efecto válido.")
+                        messagebox.showinfo("Información", "Seleccione un tipo de tamaño del efecto válido para variables cuantitativas.")
                         self.sample_size_result_var.set("---")
                         return
                 else:
-                    messagebox.showinfo("Información", "Tipo de variable no soportado para cálculo de potencia.")
+                    messagebox.showinfo("Información", "Tipo de variable no soportado para cálculo de potencia con los parámetros actuales.")
                     self.sample_size_result_var.set("---")
                     return
 

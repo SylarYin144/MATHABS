@@ -14,4 +14,3 @@ scipy
 seaborn
 statsmodels
 plotly
-sample-size
