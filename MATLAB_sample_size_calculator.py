@@ -6,7 +6,7 @@ from tkinter import ttk
 from tkinter import messagebox
 try:
     from statsmodels.stats.power import TTestIndPower, NormalIndPower
-    from statsmodels.stats.proportion import effectsize_proportions, samplesize_confint_proportion
+    from statsmodels.stats.proportion import proportion_effectsize, samplesize_confint_proportion
     from scipy.stats import norm # Already should be here for precision calculations
 except ImportError as e:
     # It's crucial that statsmodels is installed. If not, many functions will fail.
@@ -17,8 +17,8 @@ except ImportError as e:
     # For now, we'll let it proceed, but calculations will likely fail if imports are missing.
     TTestIndPower = None
     NormalIndPower = None
-    effectsize_proportions = None
-    samplesize_confint_proportion = None # Added this
+    proportion_effectsize = None # Changed from effectsize_proportions
+    samplesize_confint_proportion = None
     norm = None # Though norm is usually available with scipy, which is a core dep.
 
 class SampleSizeCalculatorTab(ttk.Frame):
@@ -246,8 +246,8 @@ class SampleSizeCalculatorTab(ttk.Frame):
 
     def calculate_sample_size(self):
         # Check for critical imports for calculation
-        # Updated check to include samplesize_confint_proportion
-        if TTestIndPower is None or NormalIndPower is None or effectsize_proportions is None or norm is None or samplesize_confint_proportion is None:
+        # Updated check to include samplesize_confint_proportion and use proportion_effectsize
+        if TTestIndPower is None or NormalIndPower is None or proportion_effectsize is None or norm is None or samplesize_confint_proportion is None:
             messagebox.showerror("Error de Librería",
                                  "Faltan componentes esenciales de 'statsmodels' o 'scipy' que no se pudieron importar al inicio. "
                                  "El cálculo no puede continuar. Verifique la instalación de estas librerías.")
@@ -313,7 +313,7 @@ class SampleSizeCalculatorTab(ttk.Frame):
                              messagebox.showerror("Error de Entrada", "P1 y P2 no pueden ser iguales para este cálculo.")
                              return
 
-                        es = effectsize_proportions(p1, p2, method='normal')
+                        es = proportion_effectsize(p1, p2, method='normal') # Changed here
                         power_analysis = NormalIndPower()
                         calculated_sample_size = power_analysis.solve_power(
                             effect_size=es,
