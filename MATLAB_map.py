@@ -118,11 +118,10 @@ class MapTab(ttk.Frame):
         self.state_data_frame.bind("<Configure>", lambda e: state_data_canvas.configure(scrollregion=state_data_canvas.bbox("all")))
 
         restore_button = ttk.Button(state_data_lf, text="Restaurar Población por Defecto", command=self.restore_default_population)
-        restore_button.pack(pady=(5,0)) # Add some padding top, none bottom
+        restore_button.pack(pady=(5,0))
 
-        # MODIFIED FOR STEP 5: Add Load Population from CSV button
         load_csv_button = ttk.Button(state_data_lf, text="Cargar Población desde CSV", command=self.load_population_from_csv)
-        load_csv_button.pack(pady=(2,5)) # Add some padding top and bottom
+        load_csv_button.pack(pady=(2,5))
 
         ctrl_appearance = ttk.LabelFrame(frm_left, text="Apariencia del Mapa"); ctrl_appearance.pack(fill=tk.X, padx=5, pady=5)
         appearance_row1 = ttk.Frame(ctrl_appearance); appearance_row1.pack(fill=tk.X, pady=2)
@@ -132,7 +131,6 @@ class MapTab(ttk.Frame):
         ttk.Label(appearance_row1, text="N° colores:").pack(side=tk.LEFT, padx=5)
         self.ent_pal_n = ttk.Entry(appearance_row1, width=5); self.ent_pal_n.pack(side=tk.LEFT, padx=5); self.ent_pal_n.insert(0,"0")
         ttk.Checkbutton(appearance_row1, text="Invertir", variable=self.invert_cmap).pack(side=tk.LEFT, padx=5)
-        # ... (rest of create_widgets method remains largely the same) ...
         appearance_row2 = ttk.Frame(ctrl_appearance); appearance_row2.pack(fill=tk.X, pady=2)
         ttk.Label(appearance_row2, text="Escala:").pack(side=tk.LEFT, padx=5)
         self.cmb_scale = ttk.Combobox(appearance_row2, values=["Regular","Logarítmica"], state="readonly", width=10); self.cmb_scale.pack(side=tk.LEFT, padx=5); self.cmb_scale.set("Logarítmica")
@@ -246,6 +244,7 @@ class MapTab(ttk.Frame):
                     matched_entry_widget = None
                     matched_original_geojson_state_name = None
 
+                    # Iterate through the state_entries dictionary (keys are original GeoJSON names)
                     for geojson_name_key_original, entry_widget_val in self.state_entries.items():
                         if str(geojson_name_key_original).upper() == csv_state_name_normalized:
                             matched_entry_widget = entry_widget_val
@@ -256,8 +255,9 @@ class MapTab(ttk.Frame):
                         matched_entry_widget.delete(0, tk.END)
                         matched_entry_widget.insert(0, str(population_val))
 
-                        if matched_original_geojson_state_name: # Should always be true if matched_entry_widget is true
-                             self.default_population_data[matched_original_geojson_state_name] = population_val
+                        # Update default_population_data using the original casing from GeoJSON state name
+                        if matched_original_geojson_state_name:
+                             self.default_population_data[matched_original_geojson_state_name] = float(population_val) # Store as number
                         updated_count += 1
                     else:
                         not_found_in_map.append(str(csv_state_name_original))
@@ -282,7 +282,8 @@ class MapTab(ttk.Frame):
         path = filedialog.askopenfilename(title="GeoJSON", filetypes=[("GeoJSON","*.json"),("All","*.*")])
         if not path: return
         try:
-            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
+            # UNIQUE COMMENT TO TEST OVERWRITE 123
+            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists(): # This is the line that was flagged
                 for widget in self.state_data_frame.winfo_children():
                     widget.destroy()
             if hasattr(self, 'state_entries'):
@@ -325,13 +326,13 @@ class MapTab(ttk.Frame):
                 entry.grid(row=index, column=1, padx=5, pady=2, sticky="ew")
 
                 normalized_state_name = state_name.upper()
-                default_pop = self.default_population_data.get(normalized_state_name, "0")
+                default_pop = self.default_population_data.get(normalized_state_name, "0") # Use .get for safety
                 entry.insert(0, str(default_pop))
 
                 if hasattr(self, 'state_entries'):
                     self.state_entries[state_name] = entry
 
-            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists()):
+            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
                  self.state_data_frame.update_idletasks()
 
             self.txt_out.insert(tk.END, f"Shapefile: {os.path.basename(path)} (Columna Estado GeoJSON: {self.geojson_state_column_name})\n")
@@ -343,7 +344,7 @@ class MapTab(ttk.Frame):
             messagebox.showerror("Error al cargar GeoJSON", f"Detalles: {str(e)}")
             self.gdf_mex = None
             self.geojson_state_column_name = None
-            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
+            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists(): # This is the other instance
                 for widget in self.state_data_frame.winfo_children():
                     widget.destroy()
             if hasattr(self, 'state_entries'):
@@ -358,10 +359,11 @@ class MapTab(ttk.Frame):
         num_restored = 0
         for state_name, entry_widget in self.state_entries.items():
             normalized_state_name_lookup = state_name.upper()
-            default_pop = self.default_population_data.get(normalized_state_name_lookup, "0")
+            # Ensure default_pop is string for Entry widget, even if it was stored as float/int
+            default_pop = str(self.default_population_data.get(normalized_state_name_lookup, "0"))
 
             entry_widget.delete(0, tk.END)
-            entry_widget.insert(0, str(default_pop))
+            entry_widget.insert(0, default_pop)
             num_restored += 1
 
         self.log(f"{num_restored} campos de población restaurados a valores por defecto.", "INFO")
@@ -392,7 +394,7 @@ class MapTab(ttk.Frame):
         if self.df_original is not None:
             numeric_cols = self.df_original.select_dtypes(include=np.number).columns.tolist()
             current_value_options.extend(numeric_cols)
-        if self.MANUAL_STATE_DATA_OPTION not in current_value_options:
+        if hasattr(self, 'MANUAL_STATE_DATA_OPTION') and self.MANUAL_STATE_DATA_OPTION not in current_value_options: # Check if attr exists
             current_value_options.append(self.MANUAL_STATE_DATA_OPTION)
         self.value_col_combo['values'] = current_value_options
         filter_cols_options = [''] + cols
@@ -400,10 +402,8 @@ class MapTab(ttk.Frame):
         if hasattr(self, 'filter_col_2_combo'): self.filter_col_2_combo['values'] = filter_cols_options
         if not self.state_col_var.get() and cols: self.state_col_var.set("")
         if not self.value_col_var.get() and current_value_options: self.value_col_var.set("")
-        # Ensure filter selections are preserved or reset gracefully
         if self.filter_col_1_var.get() not in filter_cols_options: self.filter_col_1_var.set('')
         if self.filter_col_2_var.get() not in filter_cols_options: self.filter_col_2_var.set('')
-
 
     def _get_aggregated_data(self):
         selected_value_col = self.value_col_var.get()
@@ -447,13 +447,11 @@ class MapTab(ttk.Frame):
 
     def _apply_general_filters(self, df):
         df_to_filter = df.copy()
-        def apply_filter_row(df, active_var, col_var, op_var, val_var, filter_num_str): # Shortened for brevity
-            if active_var.get() and col_var.get(): col = col_var.get(); op = op_var.get(); val_str = val_var.get() # ... (rest of filter logic)
-            # (Assuming full filter logic from previous step is here)
+        def apply_filter_row(df, active_var, col_var, op_var, val_var, filter_num_str):
             if active_var.get() and col_var.get():
                 col = col_var.get(); op = op_var.get(); val_str = val_var.get()
                 if col not in df.columns: self.log(f"Columna de filtro {filter_num_str} '{col}' no encontrada.", "WARNING"); return df
-                original_col_dtype = df[col].dtype; val = val_str
+                original_col_dtype = df[col].dtype; val = val_str # Default val to string original
                 try:
                     if op not in ["es NaN", "no es NaN", "contiene", "no contiene"]:
                         if pd.api.types.is_numeric_dtype(original_col_dtype):
@@ -462,9 +460,10 @@ class MapTab(ttk.Frame):
                         elif pd.api.types.is_datetime64_any_dtype(original_col_dtype):
                              if val_str == '': self.log(f"Valor vacío para filtro de fecha {filter_num_str} en '{col}'. No se aplicará.", "INFO"); return df
                              val = pd.to_datetime(val_str)
-                        # else val remains str(val_str) - already handled
+                        # else val remains str(val_str) - it's already a string
                 except ValueError: self.log(f"No se pudo convertir '{val_str}' para filtro {filter_num_str} en '{col}'. Se usará como string.", "WARNING")
-                # self.log(f"Aplicando filtro {filter_num_str}: {col} {op} {val if op not in ['es NaN', 'no es NaN'] else ''}", "INFO")
+
+                # self.log(f"Aplicando filtro {filter_num_str}: {col} {op} {val if op not in ['es NaN', 'no es NaN'] else ''}", "INFO") # Reduced logging verbosity
                 try:
                     if op == "==": df = df[df[col] == val]
                     elif op == "!=": df = df[df[col] != val]
