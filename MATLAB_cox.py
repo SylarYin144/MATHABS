@@ -191,6 +191,209 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
 
 # --- CLASES AUXILIARES PARA LA UI ---
 
+class DetailedCovariateConfigDialog(tk.Toplevel):
+    def __init__(self, parent, app_instance, selected_covariates):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title("Configuración Detallada de Covariables")
+        self.app_instance = app_instance
+        self.selected_covariates = selected_covariates
+        self.row_configs = {}
+
+        # Main frame
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Scrolled Frame
+        scrolled_frame = ScrolledFrame(main_frame)
+        scrolled_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.controls_frame = scrolled_frame.interior
+
+        # Dynamically create configuration rows
+        for cov_name in self.selected_covariates:
+            self.row_configs[cov_name] = {}
+
+            row_labelframe = ttk.LabelFrame(self.controls_frame, text=cov_name, padding="10")
+            row_labelframe.pack(fill=tk.X, pady=5, padx=5)
+
+            # Tipo Variable
+            ttk.Label(row_labelframe, text="Tipo:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+            type_var = tk.StringVar(value="Cuantitativa") # Default, will be refined
+            self.row_configs[cov_name]['type_var'] = type_var
+
+            rb_cuant = ttk.Radiobutton(row_labelframe, text="Cuantitativa", variable=type_var, value="Cuantitativa",
+                                       command=lambda c=cov_name: self._toggle_row_controls_state(c))
+            rb_cuant.grid(row=0, column=1, sticky=tk.W, padx=2)
+            self.row_configs[cov_name]['rb_cuant'] = rb_cuant
+
+            rb_cual = ttk.Radiobutton(row_labelframe, text="Cualitativa", variable=type_var, value="Cualitativa",
+                                      command=lambda c=cov_name: self._toggle_row_controls_state(c))
+            rb_cual.grid(row=0, column=2, sticky=tk.W, padx=2)
+            self.row_configs[cov_name]['rb_cual'] = rb_cual
+
+            # Ref. Cat.
+            ttk.Label(row_labelframe, text="Ref. Cat.:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+            ref_combo = ttk.Combobox(row_labelframe, state="disabled", width=15)
+            ref_combo.grid(row=1, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            self.row_configs[cov_name]['ref_combo'] = ref_combo
+
+            # Usar Spline
+            ttk.Label(row_labelframe, text="Spline:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+            spline_var = tk.BooleanVar(value=False)
+            self.row_configs[cov_name]['spline_var'] = spline_var
+            cb_spline = ttk.Checkbutton(row_labelframe, text="Usar", variable=spline_var,
+                                        command=lambda c=cov_name: self._toggle_row_controls_state(c))
+            cb_spline.grid(row=2, column=1, sticky=tk.W, padx=5)
+            self.row_configs[cov_name]['cb_spline'] = cb_spline
+
+            # Spline Tipo
+            ttk.Label(row_labelframe, text="  Tipo Spline:").grid(row=3, column=0, sticky=tk.W, padx=15, pady=2)
+            spline_type_combo = ttk.Combobox(row_labelframe, values=["Natural", "B-spline"], state="disabled", width=10)
+            spline_type_combo.set("Natural")
+            spline_type_combo.grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            self.row_configs[cov_name]['spline_type_combo'] = spline_type_combo
+
+            # Spline DF
+            ttk.Label(row_labelframe, text="  Spline DF:").grid(row=4, column=0, sticky=tk.W, padx=15, pady=2)
+            spline_df_var = tk.IntVar(value=4)
+            self.row_configs[cov_name]['spline_df_var'] = spline_df_var
+            spline_df_spinbox = ttk.Spinbox(row_labelframe, from_=2, to=10, textvariable=spline_df_var, width=5, state="disabled")
+            spline_df_spinbox.grid(row=4, column=1, sticky=tk.W, padx=5)
+            self.row_configs[cov_name]['spline_df_spinbox'] = spline_df_spinbox
+
+            # --- Load existing or inferred configuration for the row ---
+            # Type
+            current_type = self.app_instance.covariables_type_config.get(cov_name)
+            if not current_type and self.app_instance.data is not None and cov_name in self.app_instance.data:
+                current_type = "Cuantitativa" if pd.api.types.is_numeric_dtype(self.app_instance.data[cov_name]) else "Cualitativa"
+            else: # Fallback if data is somehow not available or column not present (should be caught by caller)
+                current_type = "Cuantitativa"
+            type_var.set(current_type)
+
+            # Ref. Cat. (if Cualitativa)
+            if current_type == "Cualitativa":
+                if self.app_instance.data is not None and cov_name in self.app_instance.data:
+                    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
+                    ref_combo['values'] = unique_vals
+                    stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+                    if stored_ref_cat in unique_vals:
+                        ref_combo.set(stored_ref_cat)
+                    elif unique_vals:
+                        ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
+
+            # Spline (if Cuantitativa)
+            if current_type == "Cuantitativa":
+                if cov_name in self.app_instance.spline_config_details:
+                    spline_var.set(True)
+                    spl_conf = self.app_instance.spline_config_details[cov_name]
+                    spline_type_combo.set(spl_conf.get('type', 'Natural'))
+                    spline_df_var.set(spl_conf.get('df', 4))
+                else:
+                    spline_var.set(False)
+
+            # Update control states based on loaded/inferred config
+            self._toggle_row_controls_state(cov_name)
+
+
+        # OK/Cancel Buttons
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10,0))
+        ttk.Button(buttons_frame, text="OK/Aplicar", command=self.apply_configurations).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def _toggle_row_controls_state(self, cov_name):
+        if not cov_name in self.row_configs: return
+
+        config = self.row_configs[cov_name]
+        var_type = config['type_var'].get()
+        use_spline = config['spline_var'].get()
+
+        # Ref Cat Combo
+        if var_type == "Cualitativa":
+            config['ref_combo'].config(state="readonly")
+            # TODO: Populate ref_combo with unique values from self.app_instance.data[cov_name]
+            # For now, keeping it simple as per subtask instructions.
+            # Example: if self.app_instance.data is not None and cov_name in self.app_instance.data:
+            #    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
+            #    config['ref_combo']['values'] = unique_vals
+            #    if unique_vals: config['ref_combo'].set(unique_vals[0])
+        else:
+            config['ref_combo'].config(state="disabled")
+            config['ref_combo'].set("")
+
+        # Spline Checkbutton (itself)
+        config['cb_spline'].config(state=tk.NORMAL if var_type == "Cuantitativa" else tk.DISABLED)
+        if var_type == "Cualitativa": # If type is changed to Cualitativa, uncheck "Usar Spline"
+            config['spline_var'].set(False)
+            use_spline = False # Update local var for subsequent logic
+
+        # Spline Type and DF
+        spline_details_state = tk.NORMAL if (var_type == "Cuantitativa" and use_spline) else tk.DISABLED
+        config['spline_type_combo'].config(state=spline_details_state)
+        config['spline_df_spinbox'].config(state=spline_details_state)
+        if spline_details_state == tk.DISABLED:
+            config['spline_type_combo'].set("Natural")
+            config['spline_df_var'].set(4)
+
+    def apply_configurations(self):
+        self.app_instance.log("Aplicando configuraciones detalladas de covariables...", "INFO")
+        for cov_name, config_widgets in self.row_configs.items():
+            new_type = config_widgets['type_var'].get()
+            self.app_instance.covariables_type_config[cov_name] = new_type
+
+            if new_type == "Cualitativa":
+                selected_ref_cat = config_widgets['ref_combo'].get()
+                if selected_ref_cat: # Ensure a selection was made if combobox is active
+                    self.app_instance.ref_categories_config[cov_name] = selected_ref_cat
+                else: # Handle case where combobox might be empty but type is Cualitativa
+                    self.app_instance.log(f"Advertencia: No se seleccionó categoría de referencia para '{cov_name}' (tipo Cualitativa). Se podría usar default de Patsy.", "WARN")
+                    if cov_name in self.app_instance.ref_categories_config: # Remove if it was set and now is invalid
+                        del self.app_instance.ref_categories_config[cov_name]
+
+                if cov_name in self.app_instance.spline_config_details:
+                    del self.app_instance.spline_config_details[cov_name]
+                    self.app_instance.log(f"Config. spline eliminada para '{cov_name}' (cambiado a Cualitativa).", "DEBUG")
+
+            elif new_type == "Cuantitativa":
+                use_spline = config_widgets['spline_var'].get()
+                if use_spline:
+                    spline_type = config_widgets['spline_type_combo'].get()
+                    spline_df = config_widgets['spline_df_var'].get()
+                    self.app_instance.spline_config_details[cov_name] = {'type': spline_type, 'df': spline_df}
+                    self.app_instance.log(f"Config. spline aplicada para '{cov_name}': Tipo={spline_type}, DF={spline_df}.", "DEBUG")
+                else:
+                    if cov_name in self.app_instance.spline_config_details:
+                        del self.app_instance.spline_config_details[cov_name]
+                        self.app_instance.log(f"Config. spline eliminada para '{cov_name}' (desmarcado).", "DEBUG")
+
+                if cov_name in self.app_instance.ref_categories_config:
+                    del self.app_instance.ref_categories_config[cov_name]
+                    self.app_instance.log(f"Config. ref.cat. eliminada para '{cov_name}' (cambiado a Cuantitativa).", "DEBUG")
+
+            self.app_instance.log(f"Configuración para '{cov_name}' actualizada: Tipo='{new_type}'.", "CONFIG")
+
+        self.app_instance.log("Todas las configuraciones detalladas han sido procesadas.", "INFO")
+
+        # Refresh the main UI's simple config panel if any of the configured variables are currently selected there
+        # This is a simple way to trigger a refresh, assuming on_covariate_select_for_config handles it.
+        current_main_selections = self.app_instance.listbox_covariables_disponibles.curselection()
+        if current_main_selections:
+            # Get the name of the first selected item in the main listbox to trigger its config UI update
+            first_selected_idx_main = current_main_selections[0]
+            # Check if listbox is not empty and index is valid
+            if self.app_instance.listbox_covariables_disponibles.size() > 0 and first_selected_idx_main < self.app_instance.listbox_covariables_disponibles.size() :
+                 self.app_instance.on_covariate_select_for_config()
+            else: #If selection is somehow invalid or listbox empty, call with no specific event
+                 self.app_instance.on_covariate_select_for_config()
+        else: #If nothing selected in main listbox, still call it to reset the simple panel
+            self.app_instance.on_covariate_select_for_config()
+
+        self.destroy()
+
 
 class PlotOptionsDialog(Toplevel):
     def __init__(self, parent, current_options=None, apply_callback=None):
@@ -636,6 +839,12 @@ class CoxModelingApp(ttk.Frame):
         self.listbox_covariables_disponibles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.listbox_covariables_disponibles.bind("<<ListboxSelect>>", self.on_covariate_select_for_config)
 
+        # Botón para configuración detallada
+        btn_config_detallada = ttk.Button(frame_lista_covariables, text="Configurar Seleccionadas Detalladamente...",
+                                          command=self.open_detailed_configuration_dialog)
+        btn_config_detallada.pack(pady=5, padx=5, fill=tk.X)
+
+
         frame_config_covariable_seleccionada = ttk.LabelFrame(paned_covariables_config, text="Configurar Variable(s) Seleccionada(s)")
         paned_covariables_config.add(frame_config_covariable_seleccionada, weight=1)
 
@@ -1002,58 +1211,61 @@ class CoxModelingApp(ttk.Frame):
 
         selected_var_names = [self.listbox_covariables_disponibles.get(i) for i in sel_indices]
         
-        new_var_type = self.var_tipo_covariable_seleccionada.get()
-        use_spline_config = self.var_usar_spline_seleccionada.get()
-        spline_type_config = self.combo_tipo_spline_seleccionada.get()
-        spline_df_config = self.var_df_spline_seleccionada.get()
+        new_var_type_bulk = self.var_tipo_covariable_seleccionada.get()
+        use_spline_bulk = self.var_usar_spline_seleccionada.get()
+        spline_type_bulk = self.combo_tipo_spline_seleccionada.get()
+        spline_df_bulk = self.var_df_spline_seleccionada.get()
         
-        ref_category_config = None
-        if len(selected_var_names) == 1 and new_var_type == "Cualitativa" and self.combo_ref_categoria_seleccionada.cget('state') != 'disabled':
-            ref_category_config = self.combo_ref_categoria_seleccionada.get()
-            if not ref_category_config: # Si está vacío pero debería haber uno
+        # Para la UI principal, la categoría de referencia solo se toma si UNA variable está seleccionada.
+        # Si múltiples variables son cambiadas a Cualitativa, se les asignará un default después.
+        ref_category_for_single_selection = None
+        if len(selected_var_names) == 1 and new_var_type_bulk == "Cualitativa" and self.combo_ref_categoria_seleccionada.cget('state') != 'disabled':
+            ref_category_for_single_selection = self.combo_ref_categoria_seleccionada.get()
+            if not ref_category_for_single_selection:
                 messagebox.showwarning("Ref. Vacía", "Seleccione una categoría de referencia para la variable cualitativa.", parent=self.parent_for_dialogs)
                 return
 
-
         num_applied = 0
         for var_name_apply in selected_var_names:
-            log_msgs_for_var = [f"Aplicando config a '{var_name_apply}':"]
+            log_msgs_for_var = [f"Aplicando config (panel simple) a '{var_name_apply}':"]
             
-            # Aplicar Tipo
-            self.covariables_type_config[var_name_apply] = new_var_type
-            log_msgs_for_var.append(f"Tipo='{new_var_type}'")
+            self.covariables_type_config[var_name_apply] = new_var_type_bulk
+            log_msgs_for_var.append(f"Tipo='{new_var_type_bulk}'")
 
-            if new_var_type == "Cualitativa":
-                # Limpiar config de spline si existía
+            if new_var_type_bulk == "Cualitativa":
                 if var_name_apply in self.spline_config_details:
                     del self.spline_config_details[var_name_apply]
-                    log_msgs_for_var.append("Spline eliminado.")
+                    log_msgs_for_var.append("Config. spline eliminada.")
                 
-                # Aplicar categoría de referencia (solo si es la única seleccionada y se configuró)
-                if len(selected_var_names) == 1 and ref_category_config is not None:
-                    self.ref_categories_config[var_name_apply] = ref_category_config
-                    log_msgs_for_var.append(f"Ref.Cat.='{ref_category_config}'")
-                elif var_name_apply not in self.ref_categories_config and self.data is not None and var_name_apply in self.data.columns:
-                    # Si no hay ref explícita y no es selección única, asignar default (primera alfabéticamente)
-                    # Esto asegura que todas las cualitativas tengan una ref.
-                    cats_apply = sorted(list(self.data[var_name_apply].astype(str).unique()))
-                    if cats_apply:
-                        self.ref_categories_config[var_name_apply] = cats_apply[0]
-                        log_msgs_for_var.append(f"Ref.Cat.(default)='{cats_apply[0]}'")
+                if len(selected_var_names) == 1 and ref_category_for_single_selection is not None:
+                    self.ref_categories_config[var_name_apply] = ref_category_for_single_selection
+                    log_msgs_for_var.append(f"Ref.Cat.='{ref_category_for_single_selection}'")
+                elif var_name_apply not in self.ref_categories_config: # Set default only if not already configured (e.g. by detailed dialog)
+                    if self.data is not None and var_name_apply in self.data.columns:
+                        try:
+                            unique_cats = sorted(list(self.data[var_name_apply].astype(str).unique()))
+                            if unique_cats:
+                                self.ref_categories_config[var_name_apply] = unique_cats[0]
+                                log_msgs_for_var.append(f"Ref.Cat.(default)='{unique_cats[0]}'")
+                            else:
+                                log_msgs_for_var.append("No hay valores únicos para Ref.Cat.(default).")
+                        except Exception as e_unique_cats:
+                             log_msgs_for_var.append(f"Error obteniendo Ref.Cat.(default): {e_unique_cats}")
+                    else:
+                        log_msgs_for_var.append("No hay datos para determinar Ref.Cat.(default).")
             
-            elif new_var_type == "Cuantitativa":
-                # Limpiar config de ref. categoría si existía
+            elif new_var_type_bulk == "Cuantitativa":
                 if var_name_apply in self.ref_categories_config:
                     del self.ref_categories_config[var_name_apply]
-                    log_msgs_for_var.append("Ref.Cat. eliminada.")
+                    log_msgs_for_var.append("Config. Ref.Cat. eliminada.")
                 
-                # Aplicar o limpiar config de Spline
-                if use_spline_config:
-                    self.spline_config_details[var_name_apply] = {'type': spline_type_config, 'df': spline_df_config}
-                    log_msgs_for_var.append(f"Spline: Tipo='{spline_type_config}', DF={spline_df_config}")
-                elif var_name_apply in self.spline_config_details: # No usar spline, pero existía config
-                    del self.spline_config_details[var_name_apply]
-                    log_msgs_for_var.append("Spline eliminado.")
+                if use_spline_bulk:
+                    self.spline_config_details[var_name_apply] = {'type': spline_type_bulk, 'df': spline_df_bulk}
+                    log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
+                else: # Not using spline
+                    if var_name_apply in self.spline_config_details:
+                        del self.spline_config_details[var_name_apply]
+                        log_msgs_for_var.append("Config. spline eliminada (desmarcado).")
             
             self.log(" ".join(log_msgs_for_var), "CONFIG")
             num_applied += 1
@@ -1598,7 +1810,8 @@ class CoxModelingApp(ttk.Frame):
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
-            "c_index_cv_mean": None, "c_index_cv_std": None
+            "c_index_cv_mean": None, "c_index_cv_std": None,
+            "schoenfeld_status_message": None # Initialize status message
         }
  
         try:
@@ -1626,35 +1839,67 @@ class CoxModelingApp(ttk.Frame):
             self.log(f"Modelo '{model_name_rm}' ajustado.", "SUCCESS")
 
             # Test de Schoenfeld
-            if not X_design_rm.empty: 
+            if not X_design_rm.empty:
                 if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
+                    self.log(f"--- Iniciando Test de Schoenfeld para Modelo: '{model_name_rm}' ---", "INFO")
+                    self.log(f"Pre-check_assumptions: df_for_fit_main shape: {df_for_fit_main.shape}", "DEBUG")
+                    self.log(f"Pre-check_assumptions: df_for_fit_main dtypes:\n{df_for_fit_main.dtypes.to_string()}", "DEBUG")
+                    self.log(f"Pre-check_assumptions: df_for_fit_main columns: {df_for_fit_main.columns.tolist()}", "DEBUG")
+                    self.log(f"Pre-check_assumptions: duration_col: {time_col_rm}, event_col: {event_col_rm}", "DEBUG")
+                    self.log(f"Pre-check_assumptions: formula for cph_main_rm.fit: {actual_formula_for_fit}", "DEBUG")
+                    self.log(f"Pre-check_assumptions: X_design_rm is empty: {X_design_rm.empty}", "DEBUG")
+                    params_empty = not hasattr(cph_main_rm, 'params_') or cph_main_rm.params_ is None or cph_main_rm.params_.empty
+                    self.log(f"Pre-check_assumptions: cph_main_rm.params_ is empty: {params_empty}", "DEBUG")
+
+                    results_check_assumptions = None # Initialize
+                    model_data_rm["schoenfeld_results"] = pd.DataFrame() # Initialize to empty DF
+                    # model_data_rm["schoenfeld_status_message"] is already None via dict initialization
+
                     try:
-                        self.log(f"DEBUG: Calling check_assumptions with df_for_fit_main shape: {df_for_fit_main.shape}", "DEBUG")
+                        self.log("Calling cph_main_rm.check_assumptions(df_for_fit_main)...", "DEBUG")
                         results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main)
+                        self.log("Post-check_assumptions: Call completed.", "DEBUG")
 
-                        if isinstance(results_check_assumptions, list) and len(results_check_assumptions) >= 2:
-                            schoenfeld_df = results_check_assumptions[1]
-                            if isinstance(schoenfeld_df, pd.DataFrame):
-                                model_data_rm["schoenfeld_results"] = schoenfeld_df
-                                self.log(f"Test Schoenfeld (check_assumptions) completado. Resulting DataFrame shape: {schoenfeld_df.shape}", "INFO")
-                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df.columns.tolist()}", "DEBUG")
-                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df.head().to_string()}", "DEBUG")
-                            else:
-                                self.log(f"Error Test Schoenfeld: results_check_assumptions[1] is not a DataFrame. Type: {type(schoenfeld_df)}", "ERROR")
-                                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame to prevent downstream errors
+                        self.log(f"Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
+                        if not isinstance(results_check_assumptions, list):
+                            self.log(f"WARN: Post-check_assumptions: results_check_assumptions was not a list (type: {type(results_check_assumptions)}). Schoenfeld results will be empty.", "WARN")
+                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
+                        elif len(results_check_assumptions) < 2:
+                            self.log(f"WARN: Post-check_assumptions: results_check_assumptions list has length {len(results_check_assumptions)}, expected at least 2. Schoenfeld results will be empty.", "WARN")
+                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
                         else:
-                            self.log(f"Error Test Schoenfeld: check_assumptions did not return the expected list structure. Returned: {type(results_check_assumptions)}", "ERROR")
-                            model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame
+                            schoenfeld_df_candidate = results_check_assumptions[1]
+                            self.log(f"Post-check_assumptions: Type of results_check_assumptions[1] (Schoenfeld candidate): {type(schoenfeld_df_candidate)}", "DEBUG")
+                            if not isinstance(schoenfeld_df_candidate, pd.DataFrame):
+                                self.log(f"WARN: Post-check_assumptions: results_check_assumptions[1] was not a DataFrame (type: {type(schoenfeld_df_candidate)}). Schoenfeld results will be empty.", "WARN")
+                                model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
+                            elif schoenfeld_df_candidate.empty:
+                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign the empty DF
+                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos (posiblemente por datos insuficientes o varianza cero en covariable)."
+                                self.log(f"INFO: Post-check_assumptions: Schoenfeld DataFrame (results_check_assumptions[1]) is empty. Shape: {schoenfeld_df_candidate.shape}.", "INFO")
+                            else:
+                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate
+                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld calculado exitosamente."
+                                self.log(f"Test Schoenfeld (check_assumptions) completado. Resulting DataFrame assigned. Shape: {schoenfeld_df_candidate.shape}", "INFO")
+                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df_candidate.columns.tolist()}", "DEBUG")
+                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df_candidate.head().to_string()}", "DEBUG")
 
-                    except Exception as e_sch: 
-                        self.log(f"Error during Test Schoenfeld (check_assumptions call): {e_sch}", "ERROR")
-                        model_data_rm["schoenfeld_results"] = pd.DataFrame() # Store empty DataFrame on error
-                        # Ensure traceback is imported if this is a separate subtask run / context
+                    except Exception as e_sch_detailed:
+                        self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}", "ERROR")
+                        model_data_rm["schoenfeld_status_message"] = "Error durante cálculo del Test de Schoenfeld."
                         import traceback
-                        self.log(traceback.format_exc(), "DEBUG")
+                        detailed_tb = traceback.format_exc()
+                        self.log(f"Traceback for Schoenfeld error:\n{detailed_tb}", "ERROR")
+                        # model_data_rm["schoenfeld_results"] is already an empty DF due to initialization
+                    self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado ---", "INFO")
                 else:
-                    self.log("Modelo sin parámetros (covariables), no se calcula Test Schoenfeld.", "INFO")
-            else: self.log("Modelo nulo (sin X_design), no Test Schoenfeld.", "INFO")
+                    self.log("Modelo sin parámetros (covariables) o cph_main_rm.params_ no disponible/vacío, no se calcula Test Schoenfeld.", "INFO")
+                    model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure empty DF
+                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo sin covariables)."
+            else:
+                self.log("Modelo nulo (X_design_rm está vacío), no se calcula Test Schoenfeld.", "INFO")
+                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure empty DF
+                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
 
             # C-Index CV
             if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
@@ -1915,13 +2160,13 @@ class CoxModelingApp(ttk.Frame):
         md_sch = self.selected_model_in_treeview
         cph_sch = md_sch.get('model')
         name_sch = md_sch.get('model_name', 'N/A')
+        schoenfeld_status_msg = md_sch.get("schoenfeld_status_message", "No se generaron resultados detallados del test de Schoenfeld o el test no fue aplicable.")
 
         schoenfeld_results_data = md_sch.get("schoenfeld_results")
         if schoenfeld_results_data is None or not isinstance(schoenfeld_results_data, pd.DataFrame) or schoenfeld_results_data.empty:
-            self.log(f"No hay datos de Schoenfeld válidos para el modelo '{name_sch}'. No se generará el gráfico.", "WARN")
-            messagebox.showwarning("Sin Datos Schoenfeld",
-                                   f"No se encontraron resultados del test de Schoenfeld válidos para el modelo '{name_sch}'.\n"
-                                   "Esto puede ocurrir si el test falló durante el ajuste del modelo o si el modelo no tiene covariables.",
+            self.log(f"No se puede generar gráfico de Schoenfeld para '{name_sch}'. Motivo: {schoenfeld_status_msg}", "WARN")
+            messagebox.showwarning("Gráfico Schoenfeld No Disponible",
+                                   f"No se puede generar el gráfico de Schoenfeld para '{name_sch}'.\nMotivo: {schoenfeld_status_msg}",
                                    parent=self.parent_for_dialogs)
             return
         
@@ -2391,20 +2636,25 @@ class CoxModelingApp(ttk.Frame):
             if isinstance(v,pd.DataFrame): continue
             s_txt_gst += f"  {k}: {f'{v:.4f}' if isinstance(v,(float,np.floating)) else (str(v)[:200] if pd.notna(v) else 'N/A')}\n"
         s_txt_gst += "\nTest Schoenfeld (Riesgos Proporcionales):\n"
-        sch_df_gst = model_dict_gst.get("schoenfeld_results") 
-        metrics_gst = model_dict_gst.get('metrics',{}) # Ensure metrics_gst is defined if not already
+        sch_df_gst = model_dict_gst.get("schoenfeld_results")
+        # metrics_gst should be defined earlier in the function if sch_p_g_gst is to be used from there.
+        # Assuming metrics_gst is already available from the loop above.
         sch_p_g_gst = metrics_gst.get('Schoenfeld p-value (global)')
+        schoenfeld_status_msg = model_dict_gst.get("schoenfeld_status_message", "Estado del test de Schoenfeld no especificado.")
 
-        # Use self.log for consistency as this is a class method
-        self.log(f"DEBUG: _generate_text_summary: sch_df_gst (type: {type(sch_df_gst)}). Is DataFrame: {isinstance(sch_df_gst, pd.DataFrame)}. Empty: {sch_df_gst.empty if isinstance(sch_df_gst, pd.DataFrame) else 'N/A'}", "DEBUG")
-        if isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty:
-            self.log(f"DEBUG: _generate_text_summary: sch_df_gst head:\n{sch_df_gst.head().to_string()}", "DEBUG")
-        self.log(f"DEBUG: _generate_text_summary: metrics_gst content: {list(metrics_gst.keys())}", "DEBUG")
-        self.log(f"DEBUG: _generate_text_summary: sch_p_g_gst value: {sch_p_g_gst}, type: {type(sch_p_g_gst)}", "DEBUG")
+        # Debug logging (can be removed or commented out in production)
+        self.log(f"DEBUG (_generate_text_summary): sch_df_gst type: {type(sch_df_gst)}, is_df: {isinstance(sch_df_gst, pd.DataFrame)}, empty: {sch_df_gst.empty if isinstance(sch_df_gst, pd.DataFrame) else 'N/A'}", "DEBUG")
+        self.log(f"DEBUG (_generate_text_summary): sch_p_g_gst: {sch_p_g_gst}", "DEBUG")
+        self.log(f"DEBUG (_generate_text_summary): schoenfeld_status_msg: {schoenfeld_status_msg}", "DEBUG")
 
-        if sch_df_gst is not None and isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty: s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n{sch_df_gst.to_string()}\n"
-        elif pd.notna(sch_p_g_gst): s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n  (Detalles no disponibles en este resumen, o Test no retornó DataFrame)\n"
-        else: s_txt_gst += "  (No calculado/disponible o no aplica)\n"
+        if sch_df_gst is not None and isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty:
+            s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n{sch_df_gst.to_string()}\n"
+        else:
+            # Display status message. If global p-value exists, show it too.
+            if pd.notna(sch_p_g_gst):
+                s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n"
+            s_txt_gst += f"  {schoenfeld_status_msg}\n"
+
         s_txt_gst += "\n--- Fin Resumen ---\n"; return s_txt_gst
 
     def save_model(self):
@@ -2468,6 +2718,22 @@ class CoxModelingApp(ttk.Frame):
         self.results_display_area_rc.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         ttk.Label(self.results_display_area_rc, text="Seleccione modelo en Pestaña 2 y use botones de acción para ver resultados.", wraplength=600, justify=tk.CENTER, font=("TkDefaultFont",10,"italic")).pack(pady=20,padx=10)
         self.log("Controles Resultados creados.", "DEBUG")
+
+    def open_detailed_configuration_dialog(self):
+        selected_indices = self.listbox_covariables_disponibles.curselection()
+        if not selected_indices:
+            messagebox.showinfo("Sin Selección", "Seleccione una o más covariables de la lista para configurar detalladamente.", parent=self.parent_for_dialogs)
+            return
+
+        selected_covs = [self.listbox_covariables_disponibles.get(i) for i in selected_indices]
+
+        # Check if data is loaded, as it's needed by the dialog for context (e.g., populating ref categories)
+        if self.data is None:
+            messagebox.showerror("Error de Datos", "No hay datos cargados. Cargue un archivo de datos primero.", parent=self.parent_for_dialogs)
+            self.log("Intento de abrir diálogo de config detallada sin datos cargados.", "WARN")
+            return
+
+        DetailedCovariateConfigDialog(self.parent_for_dialogs, self, selected_covs)
 
     def _open_global_plot_options_dialog(self):
         PlotOptionsDialog(self.parent_for_dialogs, self.current_plot_options.copy(), self._update_global_plot_options)
