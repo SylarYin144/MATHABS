@@ -1862,54 +1862,63 @@ class CoxModelingApp(ttk.Frame):
                     self.log(f"Pre-check_assumptions: cph_main_rm.params_ is empty: {params_empty}", "DEBUG")
 
                     results_check_assumptions = None # Initialize
-                    model_data_rm["schoenfeld_results"] = pd.DataFrame() # Initialize to empty DF
-                    # model_data_rm["schoenfeld_status_message"] is already None via dict initialization
+                    model_data_rm["schoenfeld_results"] = pd.DataFrame()
+                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no se ejecutó o no aplicó inicialmente." # Default status
 
                     try:
                         self.log("Calling cph_main_rm.check_assumptions(df_for_fit_main)...", "DEBUG")
                         results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main)
                         self.log("Post-check_assumptions: Call completed.", "DEBUG")
 
-                        self.log(f"Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
-                        if not isinstance(results_check_assumptions, list):
-                            self.log(f"WARN: Post-check_assumptions: results_check_assumptions was not a list (type: {type(results_check_assumptions)}). Schoenfeld results will be empty.", "WARN")
-                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
-                        elif len(results_check_assumptions) < 2:
-                            self.log(f"WARN: Post-check_assumptions: results_check_assumptions list has length {len(results_check_assumptions)}, expected at least 2. Schoenfeld results will be empty.", "WARN")
-                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
-                        else:
-                            schoenfeld_df_candidate = results_check_assumptions[1]
-                            self.log(f"Post-check_assumptions: Type of results_check_assumptions[1] (Schoenfeld candidate): {type(schoenfeld_df_candidate)}", "DEBUG")
-                            if not isinstance(schoenfeld_df_candidate, pd.DataFrame):
-                                self.log(f"WARN: Post-check_assumptions: results_check_assumptions[1] was not a DataFrame (type: {type(schoenfeld_df_candidate)}). Schoenfeld results will be empty.", "WARN")
-                                model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado."
-                            elif schoenfeld_df_candidate.empty:
-                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign the empty DF
-                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos (posiblemente por datos insuficientes o varianza cero en covariable)."
-                                self.log(f"INFO: Post-check_assumptions: Schoenfeld DataFrame (results_check_assumptions[1]) is empty. Shape: {schoenfeld_df_candidate.shape}.", "INFO")
-                            else:
-                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate
-                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld calculado exitosamente."
-                                self.log(f"Test Schoenfeld (check_assumptions) completado. Resulting DataFrame assigned. Shape: {schoenfeld_df_candidate.shape}", "INFO")
-                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df_candidate.columns.tolist()}", "DEBUG")
-                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df_candidate.head().to_string()}", "DEBUG")
+                        self.log(f"DEBUG: Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
 
+                        if not isinstance(results_check_assumptions, list):
+                            self.log("WARN: `check_assumptions` no devolvió una lista.", "WARN")
+                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (estructura principal no es lista)."
+                        else:
+                            list_len = len(results_check_assumptions)
+                            self.log(f"DEBUG: Post-check_assumptions: Longitud de la lista results_check_assumptions: {list_len}", "DEBUG")
+                            if list_len == 0:
+                                self.log("INFO: `check_assumptions` devolvió una lista vacía. No hay datos de Schoenfeld detallados.", "INFO")
+                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (función de librería devolvió lista vacía)."
+                            elif list_len == 1: # Specifically check for length 1
+                                self.log("WARN: `check_assumptions` devolvió una lista con 1 elemento, se esperaban >=2 para resultados detallados.", "WARN")
+                                model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (lista de resultados con un solo elemento)."
+                            else: # list_len >= 2
+                                schoenfeld_df_candidate = results_check_assumptions[1]
+                                self.log(f"DEBUG: Post-check_assumptions: Tipo de results_check_assumptions[1] (candidato Schoenfeld): {type(schoenfeld_df_candidate)}", "DEBUG")
+                                if not isinstance(schoenfeld_df_candidate, pd.DataFrame):
+                                    self.log("WARN: results_check_assumptions[1] no es un DataFrame.", "WARN")
+                                    model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (componente de resultados detallados no es DataFrame)."
+                                elif schoenfeld_df_candidate.empty:
+                                    model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign the empty DataFrame
+                                    self.log("INFO: Test de Schoenfeld devolvió un DataFrame vacío.", "INFO")
+                                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (DataFrame de librería vacío)."
+                                else:
+                                    model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign the non-empty DataFrame
+                                    self.log("INFO: Test de Schoenfeld calculado exitosamente y DataFrame no está vacío.", "INFO")
+                                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld calculado exitosamente."
+                                    # Existing logging for shape, columns, head of schoenfeld_df_candidate should be preserved here
+                                    self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df_candidate.columns.tolist()}", "DEBUG")
+                                    self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df_candidate.head().to_string()}", "DEBUG")
                     except Exception as e_sch_detailed:
                         self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}", "ERROR")
                         model_data_rm["schoenfeld_status_message"] = "Error durante cálculo del Test de Schoenfeld."
+                        # Ensure traceback is logged:
                         import traceback
                         detailed_tb = traceback.format_exc()
                         self.log(f"Traceback for Schoenfeld error:\n{detailed_tb}", "ERROR")
-                        # model_data_rm["schoenfeld_results"] is already an empty DF due to initialization
+                        # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
+
                     self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado ---", "INFO")
-                else:
-                    self.log("Modelo sin parámetros (covariables) o cph_main_rm.params_ no disponible/vacío, no se calcula Test Schoenfeld.", "INFO")
-                    model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure empty DF
+                else: # No model parameters
+                    self.log("INFO: Modelo sin parámetros (covariables)...", "INFO") # Slightly more concise log
                     model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo sin covariables)."
-            else:
-                self.log("Modelo nulo (X_design_rm está vacío), no se calcula Test Schoenfeld.", "INFO")
-                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure empty DF
+                    # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
+            else: # No X_design (null model)
+                self.log("INFO: Modelo nulo (X_design_rm está vacío)...", "INFO") # Slightly more concise log
                 model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
+                # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
 
             # C-Index CV
             if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
