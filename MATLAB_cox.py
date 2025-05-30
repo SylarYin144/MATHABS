@@ -108,6 +108,15 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
             log_likelihood_val) else None
 
     schoenfeld_p_global = None
+    if log_func: # Ensure log_func is provided
+        log_func(f"DEBUG: compute_model_metrics: Received schoenfeld_results_df (type: {type(schoenfeld_results_df)}).", "DEBUG")
+        if isinstance(schoenfeld_results_df, pd.DataFrame):
+            log_func(f"DEBUG: compute_model_metrics: schoenfeld_results_df is DataFrame. Empty: {schoenfeld_results_df.empty}. Shape: {schoenfeld_results_df.shape}", "DEBUG")
+            if not schoenfeld_results_df.empty:
+                log_func(f"DEBUG: compute_model_metrics: schoenfeld_results_df head:\n{schoenfeld_results_df.head().to_string()}", "DEBUG")
+        else:
+            log_func(f"DEBUG: compute_model_metrics: schoenfeld_results_df is not DataFrame.", "DEBUG")
+
     if schoenfeld_results_df is not None and isinstance(
             schoenfeld_results_df,
             pd.DataFrame) and not schoenfeld_results_df.empty:
@@ -121,12 +130,12 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
             elif isinstance(schoenfeld_results_df.index, pd.MultiIndex) and ('all', '-') in schoenfeld_results_df.index:
                 schoenfeld_p_global = schoenfeld_results_df.loc[(
                     'all', '-'), 'p']
-            elif any(idx in schoenfeld_results_df.index.map(str).str.lower() for idx in ['test_statistic', 'global_test', 'overall']):
+            elif any(idx in schoenfeld_results_df.index.map(str).str.lower() for idx in ['test_statistic', 'global_test', 'overall']): # Use map(str) for safety
                 try:
                     schoenfeld_p_global = schoenfeld_results_df[schoenfeld_results_df.index.map(str).str.lower().isin(['test_statistic', 'global_test', 'overall'])]['p'].iloc[0]
                 except IndexError:
-                    pass
-        metrics["Schoenfeld details"] = schoenfeld_results_df.to_dict('index')
+                    pass # p-valor global no encontrado por estos métodos comunes
+        metrics["Schoenfeld details"] = schoenfeld_results_df.to_dict('index') # Esto es seguro incluso si está vacío
     metrics["Schoenfeld p-value (global)"] = schoenfeld_p_global
 
     if hasattr(
@@ -1525,104 +1534,49 @@ class CoxModelingApp(ttk.Frame):
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
         method_vs = self.var_selection_method_var.get()
 
+        selected_covs_orig_names = []
+        # Regex to extract original variable names from Q('var_name') in Patsy terms
+        regex_q_var = re.compile(r"Q\('([^']+)'\)")
+
+        if terms_initial_vs is None: # Ensure terms_initial_vs is iterable
+            terms_initial_vs = []
+
+        # Extract all potential original covariate names from the initial full model
+        all_initial_orig_covs = []
+        for term in terms_initial_vs:
+            matches = regex_q_var.findall(term)
+            for original_var_name in matches:
+                if original_var_name not in all_initial_orig_covs:
+                    all_initial_orig_covs.append(original_var_name)
+
         if method_vs == "Ninguno (usar todas)":
-            self.log("Selección Variables: 'Ninguno'. Usando todas.", "INFO")
-            selected_covs_orig_names_ninguno = []
-            regex_q_var = re.compile(r"Q\('([^']+)'\)")
-            if terms_initial_vs is None: terms_initial_vs = []
-            for term in terms_initial_vs:
-                matches = regex_q_var.findall(term)
-                for original_var_name in matches:
-                    if original_var_name not in selected_covs_orig_names_ninguno:
-                        selected_covs_orig_names_ninguno.append(original_var_name)
-            self.log(f"'Ninguno (usar todas)' selected, returning initial original covariates: {selected_covs_orig_names_ninguno}", "DEBUG")
-            return selected_covs_orig_names_ninguno
-
-        if X_design_initial_vs.empty:
-            self.log("X_design inicial vacía. No se puede seleccionar variables.", "WARN")
-            # Return empty list of original cov names, as other branches do
-            return []
-
-        try:
-            p_enter_vs = float(self.p_enter_var.get())
-            p_remove_vs = float(self.p_remove_var.get())
-            if not (0 <= p_enter_vs <= 1 and 0 <= p_remove_vs <= 1): raise ValueError("P fuera de [0,1]")
-        except ValueError:
-            self.log(f"P-valores inválidos para selección. Usando todas.", "ERROR"); messagebox.showerror("Error Paráms", "P-valores para selección deben ser numéricos entre 0 y 1.", parent=self.parent_for_dialogs)
-            return df_aligned_orig_vs, X_design_initial_vs, formula_initial_vs, terms_initial_vs
-
-        self.log(f"Selección Vars: Método='{method_vs}', P_Entrar={p_enter_vs}, P_Salir={p_remove_vs}", "INFO")
-
-        try:
-            df_for_selection_vs = X_design_initial_vs.copy()
-            df_for_selection_vs[time_col_vs] = df_aligned_orig_vs[time_col_vs]
-            df_for_selection_vs[event_col_vs] = df_aligned_orig_vs[event_col_vs]
-            
-            candidate_terms_vs = list(X_design_initial_vs.columns) 
-            if not candidate_terms_vs: self.log("No hay términos candidatos para selección.", "WARN"); return df_aligned_orig_vs, X_design_initial_vs, "0", []
-
-            # `tie_method` no se pasa a las funciones de selección. Se usará el de la instancia.
-            cph_selector = CoxPHFitter(penalizer=0.0) # REMOVED tie_method for selector instance
-            # The user-selected tie_method will be applied when the final selected model is fitted
-            # by the _run_model_and_get_metrics function.
-            # The selection functions (forward_select, etc.) will use the default tie_method (efron)
-            # for their internal trial fits.
-            selected_cph_after_selection = None
-            
-            if method_vs == "Forward":
-                cph_selector.forward_select(df_for_selection_vs, duration_col=time_col_vs, event_col=event_col_vs, 
-                                            features_to_include=candidate_terms_vs, p_enter=p_enter_vs, 
-                                            scoring_method="log_likelihood")
-                selected_cph_after_selection = cph_selector
-            elif method_vs == "Backward":
-                if candidate_terms_vs : 
-                    initial_formula_for_backward = " + ".join([f"`{term}`" for term in candidate_terms_vs]) 
-                    cph_selector.fit(df_for_selection_vs, duration_col=time_col_vs, event_col=event_col_vs, 
-                                     formula=initial_formula_for_backward) 
-                else: 
-                    cph_selector.fit(df_for_selection_vs, duration_col=time_col_vs, event_col=event_col_vs, 
-                                     formula="0") 
-                cph_selector.backward_select(features_to_remove=candidate_terms_vs, p_remove=p_remove_vs, scoring_method="log_likelihood") 
-                selected_cph_after_selection = cph_selector
-            elif method_vs == "Stepwise (Fwd luego Bwd)":
-                cph_selector.stepwise_select(df_for_selection_vs, duration_col=time_col_vs, event_col=event_col_vs, 
-                                             features_to_include=candidate_terms_vs, p_enter=p_enter_vs, p_remove=p_remove_vs, 
-                                             scoring_method="log_likelihood")
-                selected_cph_after_selection = cph_selector
-
-            if selected_cph_after_selection is None or not hasattr(selected_cph_after_selection, 'params_') or selected_cph_after_selection.params_.empty:
-                self.log(f"Selección '{method_vs}' no resultó en covariables. Modelo nulo.", "WARN")
-                return [] # Devolver lista vacía de covariables originales
-
-            final_selected_patsy_terms = list(selected_cph_after_selection.params_.index)
-            selected_covs_orig_names_final_vs = []
-            # Regex para extraer el nombre de la variable original de Q('var_name')
-            regex_q_var = re.compile(r"Q\('([^']+)'\)")
-
-            for term in final_selected_patsy_terms:
-                match = regex_q_var.search(term)
-                if match:
-                    original_var_name = match.group(1)
-                    if original_var_name not in selected_covs_orig_names_final_vs:
-                        selected_covs_orig_names_final_vs.append(original_var_name)
-                else:
-                    self.log(f"Advertencia: No se pudo extraer nombre de variable original de término Patsy: '{term}'. Se ignorará para la reconstrucción de la fórmula.", "WARN")
-            
-            if not selected_covs_orig_names_final_vs:
-                self.log(f"'{method_vs}' no retuvo covariables originales. Modelo nulo.", "WARN")
-                return [] # Devolver lista vacía si no se encontraron covariables originales
-
-            self.log(f"Selección completada. Covariables originales seleccionadas: {selected_covs_orig_names_final_vs}", "INFO")
-            return selected_covs_orig_names_final_vs # Devolver solo la lista de nombres de covariables originales
+            self.log("Selección Variables: 'Ninguno (usar todas)'. Usando todas las covariables iniciales.", "INFO")
+            selected_covs_orig_names = all_initial_orig_covs
         
-        except ImportError:
-            self.log("Error importando funciones de selección de Lifelines. ¿Versión antigua?", "ERROR"); messagebox.showerror("Error Lifelines", "Funciones de selección no encontradas. Verifique versión.", parent=self.parent_for_dialogs)
-        except AttributeError as ae:
-            self.log(f"Error de atributo en selección (posiblemente versión Lifelines): {ae}", "ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Lifelines", f"Error en selección (¿versión Lifelines incompatible?):\n{ae}", parent=self.parent_for_dialogs)
-        except Exception as e_vs:
-            self.log(f"Error en selección de variables: {e_vs}", "ERROR"); traceback.print_exc(limit=5)
-            messagebox.showerror("Error Selección", f"Error en selección de variables:\n{e_vs}", parent=self.parent_for_dialogs)
-        return [] # Fallback a lista vacía en caso de error
+        elif method_vs in ["Backward", "Forward", "Stepwise (Fwd luego Bwd)"]:
+            self.log(f"Selección Variables: '{method_vs}' no está soportado directamente en esta versión de Lifelines. "
+                       f"Se procederá usando todas las covariables iniciales, similar a 'Ninguno (usar todas)'.", "WARN")
+            messagebox.showwarning("Método No Soportado",
+                                   f"El método de selección de variables '{method_vs}' no está directamente disponible "
+                                   f"en la versión actual de la librería 'lifelines'.\n\n"
+                                   f"El modelo se ajustará utilizando todas las covariables seleccionadas inicialmente.",
+                                   parent=self.parent_for_dialogs)
+            selected_covs_orig_names = all_initial_orig_covs # Default to using all variables
+
+        else: # Should not happen given UI choices
+            self.log(f"Método de selección desconocido: {method_vs}. Usando todas las covariables.", "ERROR")
+            selected_covs_orig_names = all_initial_orig_covs
+
+        if not selected_covs_orig_names and all_initial_orig_covs:
+             # This case might occur if logic changes, but generally if all_initial_orig_covs is not empty,
+             # selected_covs_orig_names should also not be empty for the above paths.
+             self.log("Advertencia: No se seleccionaron covariables finales, pero había covariables iniciales. Esto podría ser un error.", "WARN")
+
+        # This function must return a list of original covariate names.
+        # The calling function _execute_cox_modeling_orchestrator will then use these names
+        # to call build_design_matrix again.
+        self.log(f"Covariables originales seleccionadas/pasadas para reconstrucción: {selected_covs_orig_names}", "DEBUG")
+        return selected_covs_orig_names
 
     def _run_model_and_get_metrics(self, df_lifelines_rm, X_design_rm, y_survival_rm, time_col_rm, event_col_rm, 
                                    formula_patsy_rm, model_name_rm, covariates_display_terms_rm, 
@@ -1959,12 +1913,24 @@ class CoxModelingApp(ttk.Frame):
     def show_schoenfeld(self):
         if not self._check_model_selected_and_valid(check_params=True): return
         md_sch = self.selected_model_in_treeview
-        cph_sch = md_sch.get('model'); name_sch = md_sch.get('model_name', 'N/A')
-        df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE') 
+        cph_sch = md_sch.get('model')
+        name_sch = md_sch.get('model_name', 'N/A')
+
+        schoenfeld_results_data = md_sch.get("schoenfeld_results")
+        if schoenfeld_results_data is None or not isinstance(schoenfeld_results_data, pd.DataFrame) or schoenfeld_results_data.empty:
+            self.log(f"No hay datos de Schoenfeld válidos para el modelo '{name_sch}'. No se generará el gráfico.", "WARN")
+            messagebox.showwarning("Sin Datos Schoenfeld",
+                                   f"No se encontraron resultados del test de Schoenfeld válidos para el modelo '{name_sch}'.\n"
+                                   "Esto puede ocurrir si el test falló durante el ajuste del modelo o si el modelo no tiene covariables.",
+                                   parent=self.parent_for_dialogs)
+            return
         
+        # Ensure df_for_schoenfeld is correctly defined as before:
+        df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE')
         if df_for_schoenfeld is None or df_for_schoenfeld.empty:
+            # This case should ideally be caught earlier or less likely if schoenfeld_results_data is present
             self.log(f"DataFrame para Schoenfeld no disponible o vacío para modelo '{name_sch}'.", "ERROR")
-            messagebox.showerror("Error Datos", "Datos para gráfico Schoenfeld no disponibles en el modelo.", parent=self.parent_for_dialogs)
+            messagebox.showerror("Error Datos", "Datos de ajuste para gráfico Schoenfeld no disponibles en el modelo.", parent=self.parent_for_dialogs)
             return
 
         try:
@@ -2426,8 +2392,17 @@ class CoxModelingApp(ttk.Frame):
             s_txt_gst += f"  {k}: {f'{v:.4f}' if isinstance(v,(float,np.floating)) else (str(v)[:200] if pd.notna(v) else 'N/A')}\n"
         s_txt_gst += "\nTest Schoenfeld (Riesgos Proporcionales):\n"
         sch_df_gst = model_dict_gst.get("schoenfeld_results") 
+        metrics_gst = model_dict_gst.get('metrics',{}) # Ensure metrics_gst is defined if not already
         sch_p_g_gst = metrics_gst.get('Schoenfeld p-value (global)')
-        if sch_df_gst is not None and not sch_df_gst.empty: s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n{sch_df_gst.to_string()}\n"
+
+        # Use self.log for consistency as this is a class method
+        self.log(f"DEBUG: _generate_text_summary: sch_df_gst (type: {type(sch_df_gst)}). Is DataFrame: {isinstance(sch_df_gst, pd.DataFrame)}. Empty: {sch_df_gst.empty if isinstance(sch_df_gst, pd.DataFrame) else 'N/A'}", "DEBUG")
+        if isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty:
+            self.log(f"DEBUG: _generate_text_summary: sch_df_gst head:\n{sch_df_gst.head().to_string()}", "DEBUG")
+        self.log(f"DEBUG: _generate_text_summary: metrics_gst content: {list(metrics_gst.keys())}", "DEBUG")
+        self.log(f"DEBUG: _generate_text_summary: sch_p_g_gst value: {sch_p_g_gst}, type: {type(sch_p_g_gst)}", "DEBUG")
+
+        if sch_df_gst is not None and isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty: s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n{sch_df_gst.to_string()}\n"
         elif pd.notna(sch_p_g_gst): s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n  (Detalles no disponibles en este resumen, o Test no retornó DataFrame)\n"
         else: s_txt_gst += "  (No calculado/disponible o no aplica)\n"
         s_txt_gst += "\n--- Fin Resumen ---\n"; return s_txt_gst
