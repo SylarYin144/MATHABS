@@ -1300,6 +1300,7 @@ class CoxModelingApp(ttk.Frame):
             ("Ver Resumen", self.show_selected_model_summary), ("Gráf. Schoenfeld", self.show_schoenfeld),
             ("Sup. Base", self.show_baseline_survival), ("Riesgo Acum. Base", self.show_baseline_hazard),
             ("Forest Plot", self.generar_forest_plot), ("Gráf. Calibración", self.generate_calibration_plot),
+            ("Gráf. Impacto Var (Log-HR)", self.show_variable_impact_plot), # New button
             ("Predicción", self.realizar_prediccion), ("Exportar Resumen", self.export_model_summary),
             ("Guardar Modelo", self.save_model), ("Cargar Modelo", self.load_model_from_file),
             ("Reporte Metod.", self.show_methodological_report)
@@ -1517,36 +1518,23 @@ class CoxModelingApp(ttk.Frame):
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
         method_vs = self.var_selection_method_var.get()
 
-        if method_vs in ["Backward", "Forward", "Stepwise (Fwd luego Bwd)"]:
-            self.log(f"INFO: {method_vs} selection is currently bypassed. All initial features will be used.", "INFO")
-            
-            # Extract original variable names from terms_initial_vs
-            # terms_initial_vs contains patsy-generated names like "Q('var1')", "cr(Q('var2'), df=4)[0]", etc.
-            # We need to find all unique original names quoted by Q('').
-            # import re # Already imported at the top
-            
-            selected_covs_orig_names_bypassed = []
-            regex_q_var = re.compile(r"Q\('([^']+)'\)") # Regex to find Q('var_name')
-            
-            if terms_initial_vs is None: # Should not happen if X_design_initial_vs was not empty
-                terms_initial_vs = []
-
-            for term in terms_initial_vs:
-                matches = regex_q_var.findall(term) # findall returns a list of all matched groups
-                for original_var_name in matches:
-                    if original_var_name not in selected_covs_orig_names_bypassed:
-                        selected_covs_orig_names_bypassed.append(original_var_name)
-            
-            self.log(f"Bypassed selection, returning initial original covariates: {selected_covs_orig_names_bypassed}", "DEBUG")
-            return selected_covs_orig_names_bypassed
-        
         if method_vs == "Ninguno (usar todas)":
             self.log("Selección Variables: 'Ninguno'. Usando todas.", "INFO")
-            return df_aligned_orig_vs, X_design_initial_vs, formula_initial_vs, terms_initial_vs
+            selected_covs_orig_names_ninguno = []
+            regex_q_var = re.compile(r"Q\('([^']+)'\)")
+            if terms_initial_vs is None: terms_initial_vs = []
+            for term in terms_initial_vs:
+                matches = regex_q_var.findall(term)
+                for original_var_name in matches:
+                    if original_var_name not in selected_covs_orig_names_ninguno:
+                        selected_covs_orig_names_ninguno.append(original_var_name)
+            self.log(f"'Ninguno (usar todas)' selected, returning initial original covariates: {selected_covs_orig_names_ninguno}", "DEBUG")
+            return selected_covs_orig_names_ninguno
 
         if X_design_initial_vs.empty:
             self.log("X_design inicial vacía. No se puede seleccionar variables.", "WARN")
-            return df_aligned_orig_vs, X_design_initial_vs, "0", [] 
+            # Return empty list of original cov names, as other branches do
+            return []
 
         try:
             p_enter_vs = float(self.p_enter_var.get())
@@ -1721,6 +1709,7 @@ class CoxModelingApp(ttk.Frame):
             elif self.calculate_cv_cindex_var.get(): self.log("C-Index CV no calculado (modelo nulo o sin X_design).", "INFO")
 
         except Exception as e_fit_main:
+            import traceback # Explicitly import traceback here
             self.log(f"Error ajuste modelo/métricas '{model_name_rm}': {e_fit_main}", "ERROR"); traceback.print_exc(limit=5); return None
 
         model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
@@ -2228,10 +2217,131 @@ class CoxModelingApp(ttk.Frame):
                  plt.close(fig_cal) 
                  return
 
-            survival_probability_calibration(cph_cal, md_cal.get('df_used_for_fit'), t0=t0_val_cal, ax=ax_cal)
+            df_actually_used_for_fit = md_cal.get('_df_for_fit_main_INTERNAL_USE')
+            if df_actually_used_for_fit is None:
+                self.log(f"DataFrame used for fitting ('_df_for_fit_main_INTERNAL_USE') not found in model data for calibration model '{name_cal}'. Calibration plot cannot be generated.", "ERROR")
+                messagebox.showerror("Error Calibración", f"Datos de ajuste no encontrados en el modelo '{name_cal}' para generar el gráfico de calibración.", parent=self.parent_for_dialogs)
+                plt.close(fig_cal) # Close the figure if data is missing
+                return
+
+            survival_probability_calibration(cph_cal, df_actually_used_for_fit, t0=t0_val_cal, ax=ax_cal)
             opts_cal = self.current_plot_options.copy(); opts_cal['title'] = opts_cal.get('title') or f"Calibración en t0={t0_val_cal} ({name_cal})"; apply_plot_options(ax_cal, opts_cal, self.log)
             self._create_plot_window(fig_cal, f"Calibración t0={t0_val_cal}: {name_cal}")
         except Exception as e_cal: self.log(f"Error gráf.calibración '{name_cal}': {e_cal}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Gráfico",f"Error gráf.calibración:\n{e_cal}",parent=self.parent_for_dialogs)
+
+    def show_variable_impact_plot(self):
+        if not self._check_model_selected_and_valid(check_params=True):
+            return
+
+        md_vip = self.selected_model_in_treeview
+        cph_model_vip = md_vip.get('model')
+        model_name_vip = md_vip.get('model_name', 'N/A')
+
+        if not hasattr(cph_model_vip, 'params_') or cph_model_vip.params_.empty:
+            messagebox.showinfo("Sin Parámetros", "El modelo seleccionado no tiene covariables (parámetros) para analizar.", parent=self.parent_for_dialogs)
+            return
+
+        available_covariates = list(cph_model_vip.params_.index)
+        if not available_covariates:
+            messagebox.showinfo("Sin Covariables", "No se encontraron covariables en los parámetros del modelo.", parent=self.parent_for_dialogs)
+            return
+
+        # Create a simple dialog to choose the covariate
+        # For simplicity, using simpledialog.askstring to list choices.
+        # A more complex dialog could use a Combobox.
+        choice_prompt = "Seleccione la covariable para analizar su impacto (escriba el nombre exacto):\n\n" + "\n".join(available_covariates)
+
+        # Use a Toplevel dialog for better control if simpledialog is too basic or problematic with many vars
+        dialog = Toplevel(self.parent_for_dialogs)
+        dialog.title("Seleccionar Covariable")
+        dialog.geometry("400x350") # Adjust size as needed
+
+        ttk.Label(dialog, text="Seleccione la covariable para el gráfico de impacto:", wraplength=380).pack(pady=10, padx=10)
+
+        covariate_var = StringVar()
+        # Populate combobox if there are few items, otherwise Listbox might be better
+        if len(available_covariates) < 20: # Arbitrary threshold
+            combo_covs = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
+            if available_covariates:
+                combo_covs.set(available_covariates[0])
+            combo_covs.pack(pady=5, padx=10)
+        else: # Use Listbox for many covariates
+            ttk.Label(dialog, text="Covariables disponibles:").pack(pady=(5,0))
+            listbox_frame = ttk.Frame(dialog)
+            listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+            listbox_covs = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
+            for cov_name_lb in available_covariates:
+                listbox_covs.insert(tk.END, cov_name_lb)
+            if available_covariates:
+                listbox_covs.selection_set(0) # Pre-select first
+
+            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs.yview)
+            listbox_covs.config(yscrollcommand=scrollbar_y_covs.set)
+            scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
+            listbox_covs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+
+        chosen_covariate = None # To store the result
+
+        def on_ok():
+            nonlocal chosen_covariate
+            if 'listbox_covs' in locals() and listbox_covs.curselection():
+                chosen_covariate = listbox_covs.get(listbox_covs.curselection()[0])
+            elif 'combo_covs' in locals():
+                chosen_covariate = covariate_var.get()
+
+            if not chosen_covariate:
+                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable.", parent=dialog)
+                 return
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
+
+        dialog.transient(self.parent_for_dialogs)
+        dialog.grab_set()
+        self.parent_for_dialogs.wait_window(dialog) # Wait for dialog to close
+
+        if not chosen_covariate:
+            self.log("Selección de covariable para gráfico de impacto cancelada o no realizada.", "INFO")
+            return
+
+        self.log(f"Generando gráfico de impacto para covariable: '{chosen_covariate}' del modelo '{model_name_vip}'.", "INFO")
+
+        try:
+            fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+
+            # plot_partial_effects_on_outcome plots log(HR) vs covariate value
+            # It automatically handles splines if the covariate was fitted with one.
+            cph_model_vip.plot_partial_effects_on_outcome(
+                chosen_covariate,
+                values=None,  # Let lifelines choose appropriate values based on data range
+                plot_baseline=False, # Focus on the effect of the covariate itself
+                ax=ax_vip
+            )
+
+            plot_title = f"Impacto de '{chosen_covariate}' sobre Log(Hazard Ratio)"
+            plot_title += f"\nModelo: {model_name_vip}"
+
+            current_opts_vip = self.current_plot_options.copy()
+            current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {chosen_covariate}")
+            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {chosen_covariate}")
+
+            apply_plot_options(ax_vip, current_opts_vip, self.log)
+            plt.tight_layout()
+            self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip})")
+
+        except Exception as e_vip:
+            self.log(f"Error al generar gráfico de impacto para '{chosen_covariate}': {e_vip}", "ERROR")
+            import traceback
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto:\n{e_vip}", parent=self.parent_for_dialogs)
 
     def export_model_summary(self):
         if not self._check_model_selected_and_valid(): return
