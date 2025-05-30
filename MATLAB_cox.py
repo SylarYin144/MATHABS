@@ -1630,7 +1630,7 @@ class CoxModelingApp(ttk.Frame):
                 if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
                     try:
                         self.log(f"DEBUG: Calling check_assumptions with df_for_fit_main shape: {df_for_fit_main.shape}", "DEBUG")
-                        results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main, time_transform='log')
+                        results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main)
 
                         if isinstance(results_check_assumptions, list) and len(results_check_assumptions) >= 2:
                             schoenfeld_df = results_check_assumptions[1]
