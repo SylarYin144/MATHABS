@@ -1555,7 +1555,11 @@ class CoxModelingApp(ttk.Frame):
             if not candidate_terms_vs: self.log("No hay términos candidatos para selección.", "WARN"); return df_aligned_orig_vs, X_design_initial_vs, "0", []
 
             # `tie_method` no se pasa a las funciones de selección. Se usará el de la instancia.
-            cph_selector = CoxPHFitter(penalizer=0.0, tie_method=self.tie_handling_method_var.get()) # Correcto
+            cph_selector = CoxPHFitter(penalizer=0.0) # REMOVED tie_method for selector instance
+            # The user-selected tie_method will be applied when the final selected model is fitted
+            # by the _run_model_and_get_metrics function.
+            # The selection functions (forward_select, etc.) will use the default tie_method (efron)
+            # for their internal trial fits.
             selected_cph_after_selection = None
             
             if method_vs == "Forward":
@@ -1964,10 +1968,14 @@ class CoxModelingApp(ttk.Frame):
                     ax_s_curr = axes_s_flat[idx]
                     self.log(f"DEBUG: Graficando Schoenfeld para '{cov_name_s}'. df_for_schoenfeld shape: {df_for_schoenfeld.shape}", "DEBUG")
                     try:
-                        cph_sch.plot_residuals(training_df=df_for_schoenfeld, kind="schoenfeld", columns=[cov_name_s], ax=ax_s_curr)
+                        # Let plot_residuals use the training_df stored in the cph_sch model object
+                        cph_sch.plot_residuals(kind="schoenfeld", columns=[cov_name_s], ax=ax_s_curr)
                         ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}")
-                        # apply_plot_options(ax_s_curr, self.current_plot_options, self.log) # Comentado para depuración
-                    except Exception as e_plot_s_cov: self.log(f"Error plot Schoenfeld para {cov_name_s}: {e_plot_s_cov}", "ERROR")
+                        # apply_plot_options(ax_s_curr, self.current_plot_options, self.log) # Keep commented or manage based on testing
+                    except Exception as e_plot_s_cov:
+                        self.log(f"Error plot Schoenfeld para {cov_name_s}: {e_plot_s_cov}", "ERROR")
+                        # Optionally, provide feedback on the plot itself if it fails for a specific variable
+                        ax_s_curr.text(0.5, 0.5, f"Error al graficar Schoenfeld para\n{cov_name_s}", ha='center', va='center', color='red')
             for i_empty_s in range(num_params_sch, len(axes_s_flat)): axes_s_flat[i_empty_s].set_visible(False)
             fig_s.suptitle(f"Residuos de Schoenfeld ({name_sch})", fontsize=14); plt.tight_layout(rect=[0,0,1,0.96])
             self._create_plot_window(fig_s, f"Schoenfeld: {name_sch}", is_single_plot=False)
@@ -2259,41 +2267,49 @@ class CoxModelingApp(ttk.Frame):
         ttk.Label(dialog, text="Seleccione la covariable para el gráfico de impacto:", wraplength=380).pack(pady=10, padx=10)
 
         covariate_var = StringVar()
+        combo_covs_widget = None # Initialize reference
+        listbox_covs_widget = None # Initialize reference
+
         # Populate combobox if there are few items, otherwise Listbox might be better
         if len(available_covariates) < 20: # Arbitrary threshold
-            combo_covs = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
+            combo_covs_widget = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
             if available_covariates:
-                combo_covs.set(available_covariates[0])
-            combo_covs.pack(pady=5, padx=10)
+                combo_covs_widget.set(available_covariates[0])
+            combo_covs_widget.pack(pady=5, padx=10)
         else: # Use Listbox for many covariates
             ttk.Label(dialog, text="Covariables disponibles:").pack(pady=(5,0))
             listbox_frame = ttk.Frame(dialog)
             listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
-            listbox_covs = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
+            listbox_covs_widget = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
             for cov_name_lb in available_covariates:
-                listbox_covs.insert(tk.END, cov_name_lb)
+                listbox_covs_widget.insert(tk.END, cov_name_lb)
             if available_covariates:
-                listbox_covs.selection_set(0) # Pre-select first
+                listbox_covs_widget.selection_set(0) # Pre-select first
 
-            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs.yview)
-            listbox_covs.config(yscrollcommand=scrollbar_y_covs.set)
+            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
+            listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
             scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
-            listbox_covs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
 
         chosen_covariate = None # To store the result
 
         def on_ok():
-            nonlocal chosen_covariate
-            if 'listbox_covs' in locals() and listbox_covs.curselection():
-                chosen_covariate = listbox_covs.get(listbox_covs.curselection()[0])
-            elif 'combo_covs' in locals():
-                chosen_covariate = covariate_var.get()
+            nonlocal chosen_covariate # chosen_covariate is defined outside on_ok
+            selected_value = None
+            if listbox_covs_widget is not None and listbox_covs_widget.winfo_exists():
+                if listbox_covs_widget.curselection():
+                    selected_value = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
+            elif combo_covs_widget is not None and combo_covs_widget.winfo_exists():
+                selected_value = covariate_var.get() # covariate_var is the textvariable of combo_covs_widget
 
-            if not chosen_covariate:
-                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable.", parent=dialog)
-                 return
-            dialog.destroy()
+            if selected_value and selected_value.strip():
+                chosen_covariate = selected_value
+                dialog.destroy()
+            else:
+                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable de la lista.", parent=dialog)
+                 # chosen_covariate remains None or its previous value (None if first try)
+                 # Do not destroy dialog, let user correct.
 
         def on_cancel():
             dialog.destroy()
