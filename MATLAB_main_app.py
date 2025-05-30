@@ -25,6 +25,7 @@ try:
     from MATLAB_logistic_regression import LogisticRegressionTab # Pestaña para Regresión Logística
     from MATLAB_general_charts import GeneralChartsApp # NUEVA PESTAÑA DE GRÁFICAS
     from MATLAB_combined_analysis import CombinedAnalysisTab # NUEVA PESTAÑA COMBINADA
+    from MATLAB_sample_size_calculator import SampleSizeCalculatorTab
 except ImportError as e:
     print("Error al importar uno o más módulos:", e)
     sys.exit(1)
