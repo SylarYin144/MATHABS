@@ -52,19 +52,40 @@ class MapTab(ttk.Frame):
         self.MANUAL_STATE_DATA_OPTION = "(Usar Datos de Estado Manuales)"
         self.geojson_state_column_name = None
 
+        # MODIFIED: Using user-provided exact keys
         self.default_population_data = {
-            "AGUASCALIENTES": 1425607, "BAJA CALIFORNIA": 3769020, "BAJA CALIFORNIA SUR": 798447,
-            "CAMPECHE": 928363, "CHIAPAS": 5543828, "CHIHUAHUA": 3741869,
-            "COAHUILA DE ZARAGOZA": 3146771, "COLIMA": 731391, "CIUDAD DE MÉXICO": 9209944,
-            "DISTRITO FEDERAL": 9209944, # Alias for CDMX
-            "DURANGO": 1832650, "GUANAJUATO": 6166934, "GUERRERO": 3540685,
-            "HIDALGO": 3082841, "JALISCO": 8348151, "MÉXICO": 16992418,
-            "MICHOACÁN DE OCAMPO": 4748846, "MORELOS": 1971520, "NAYARIT": 1235456,
-            "NUEVO LEÓN": 5784442, "OAXACA": 4132148, "PUEBLA": 6583278,
-            "QUERÉTARO": 2368467, "QUINTANA ROO": 1857985, "SAN LUIS POTOSÍ": 2822255,
-            "SINALOA": 3026943, "SONORA": 2944840, "TABASCO": 2402598,
-            "TAMAULIPAS": 3527735, "TLAXCALA": 1342977, "VERACRUZ DE IGNACIO DE LA LLAVE": 8062579,
-            "YUCATÁN": 2320898, "ZACATECAS": 1622138
+            "DistritoFederal": 9209944,
+            "México": 17363387,
+            "Veracruz": 8062579,
+            "Aguascalientes": 1434635,
+            "Oaxaca": 4132148,
+            "Guanajuato": 6166934,
+            "Jalisco": 8348151,
+            "Hidalgo": 3082841,
+            "Tamaulipas": 3527735,
+            "Sinaloa": 3026943,
+            "Tlaxcala": 1342977,
+            "Puebla": 6583278,
+            "NuevoLeón": 5784442,
+            "Chiapas": 5543828,
+            "SanLuisPotosí": 2822255,
+            "Morelos": 1971520,
+            "Guerrero": 3540685,
+            "QuintanaRoo": 1857985,
+            "Michoacán": 4748846,
+            "Chihuahua": 3741869,
+            "BajaCalifornia": 3769020,
+            "Nayarit": 1235456,
+            "Sonora": 2944840,
+            "BajaCaliforniaSur": 798447,
+            "Yucatán": 2320898,
+            "Campeche": 928363,
+            "Tabasco": 2240881,
+            "Querétaro": 2368467,
+            "Coahuila": 3146771,
+            "Colima": 731391,
+            "Durango": 1868996,
+            "Zacatecas": 1622138
         }
         self.create_widgets()
 
@@ -256,8 +277,29 @@ class MapTab(ttk.Frame):
                         matched_entry_widget.insert(0, str(population_val))
 
                         # Update default_population_data using the original casing from GeoJSON state name
-                        if matched_original_geojson_state_name:
-                             self.default_population_data[matched_original_geojson_state_name] = float(population_val) # Store as number
+                        key_to_use_for_defaults_update = None
+                        # Try to find an existing key in self.default_population_data that matches the GeoJSON state name case-insensitively.
+                        if matched_original_geojson_state_name: # Ensure we have a name to match
+                            for existing_default_key in self.default_population_data.keys():
+                                if str(existing_default_key).lower() == str(matched_original_geojson_state_name).lower():
+                                    key_to_use_for_defaults_update = existing_default_key # Preserve casing of existing key
+                                    break
+
+                        if key_to_use_for_defaults_update:
+                            self.default_population_data[key_to_use_for_defaults_update] = float(population_val)
+                        else:
+                            # If no case-insensitive match was found in the keys of self.default_population_data,
+                            # (and matched_original_geojson_state_name is valid)
+                            # it implies this state (from GeoJSON) was not in the user's initial list for default_population_data,
+                            # or its key casing is entirely different from any existing default key.
+                            # Add/update using the GeoJSON's original state name as the key.
+                            if matched_original_geojson_state_name: # Ensure we have a name for the key
+                                self.default_population_data[matched_original_geojson_state_name] = float(population_val)
+                                self.log(f"State '{matched_original_geojson_state_name}' from CSV/GeoJSON was not initially in default_population_data keys or matched case-insensitively. It has been added/updated using its GeoJSON name as the key.", "INFO")
+                            else:
+                                # This case should be rare if matched_entry_widget was true.
+                                self.log(f"Could not determine key for updating default_population_data for CSV state {csv_state_name_original}.", "WARNING")
+
                         updated_count += 1
                     else:
                         not_found_in_map.append(str(csv_state_name_original))
@@ -283,7 +325,7 @@ class MapTab(ttk.Frame):
         if not path: return
         try:
             # UNIQUE COMMENT TO TEST OVERWRITE 123
-            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists(): # This is the line that was flagged
+            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
                 for widget in self.state_data_frame.winfo_children():
                     widget.destroy()
             if hasattr(self, 'state_entries'):
@@ -314,23 +356,32 @@ class MapTab(ttk.Frame):
             self.geojson_state_column_name = identified_geojson_col
 
             for index, row_data in self.gdf_mex.iterrows():
-                state_name = row_data[self.geojson_state_column_name]
+                state_name_from_geojson = row_data[self.geojson_state_column_name] # Renamed for clarity
 
-                if not isinstance(state_name, str):
-                    state_name = str(state_name)
+                if not isinstance(state_name_from_geojson, str):
+                    state_name_from_geojson = str(state_name_from_geojson)
 
-                lbl = ttk.Label(self.state_data_frame, text=f"{state_name}:")
+                lbl = ttk.Label(self.state_data_frame, text=f"{state_name_from_geojson}:")
                 lbl.grid(row=index, column=0, padx=5, pady=2, sticky="w")
 
                 entry = ttk.Entry(self.state_data_frame, width=15)
                 entry.grid(row=index, column=1, padx=5, pady=2, sticky="ew")
 
-                normalized_state_name = state_name.upper()
-                default_pop = self.default_population_data.get(normalized_state_name, "0") # Use .get for safety
-                entry.insert(0, str(default_pop))
+                # MODIFIED: New logic for default population lookup
+                default_pop_to_insert = "0"
+                found_match = False
+                for key_from_dict in self.default_population_data.keys():
+                    if str(key_from_dict).lower() == state_name_from_geojson.lower():
+                        default_pop_to_insert = str(self.default_population_data[key_from_dict])
+                        found_match = True
+                        break
+                if not found_match:
+                    self.log(f"No default population data found for GeoJSON state: '{state_name_from_geojson}' using case-insensitive matching against new default keys.", "WARNING")
+
+                entry.insert(0, default_pop_to_insert)
 
                 if hasattr(self, 'state_entries'):
-                    self.state_entries[state_name] = entry
+                    self.state_entries[state_name_from_geojson] = entry # Use original name from GeoJSON as key
 
             if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
                  self.state_data_frame.update_idletasks()
@@ -344,7 +395,7 @@ class MapTab(ttk.Frame):
             messagebox.showerror("Error al cargar GeoJSON", f"Detalles: {str(e)}")
             self.gdf_mex = None
             self.geojson_state_column_name = None
-            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists(): # This is the other instance
+            if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
                 for widget in self.state_data_frame.winfo_children():
                     widget.destroy()
             if hasattr(self, 'state_entries'):
@@ -357,13 +408,22 @@ class MapTab(ttk.Frame):
             return
 
         num_restored = 0
-        for state_name, entry_widget in self.state_entries.items():
-            normalized_state_name_lookup = state_name.upper()
-            # Ensure default_pop is string for Entry widget, even if it was stored as float/int
-            default_pop = str(self.default_population_data.get(normalized_state_name_lookup, "0"))
+        # state_name_key is the original name from GeoJSON (used as key in self.state_entries)
+        for state_name_key, entry_widget in self.state_entries.items():
+            default_pop_to_insert = "0"
+            found_match = False
+            # Iterate through the potentially mixed-case keys of the new self.default_population_data
+            for dict_key in self.default_population_data.keys():
+                if str(dict_key).lower() == str(state_name_key).lower(): # Case-insensitive match
+                    default_pop_to_insert = str(self.default_population_data[dict_key])
+                    found_match = True
+                    break
+
+            if not found_match:
+                 self.log(f"No default population data found for state: '{state_name_key}' during restore (using new mixed-case keys).", "WARNING")
 
             entry_widget.delete(0, tk.END)
-            entry_widget.insert(0, default_pop)
+            entry_widget.insert(0, default_pop_to_insert)
             num_restored += 1
 
         self.log(f"{num_restored} campos de población restaurados a valores por defecto.", "INFO")
@@ -394,7 +454,7 @@ class MapTab(ttk.Frame):
         if self.df_original is not None:
             numeric_cols = self.df_original.select_dtypes(include=np.number).columns.tolist()
             current_value_options.extend(numeric_cols)
-        if hasattr(self, 'MANUAL_STATE_DATA_OPTION') and self.MANUAL_STATE_DATA_OPTION not in current_value_options: # Check if attr exists
+        if hasattr(self, 'MANUAL_STATE_DATA_OPTION') and self.MANUAL_STATE_DATA_OPTION not in current_value_options:
             current_value_options.append(self.MANUAL_STATE_DATA_OPTION)
         self.value_col_combo['values'] = current_value_options
         filter_cols_options = [''] + cols
@@ -451,7 +511,7 @@ class MapTab(ttk.Frame):
             if active_var.get() and col_var.get():
                 col = col_var.get(); op = op_var.get(); val_str = val_var.get()
                 if col not in df.columns: self.log(f"Columna de filtro {filter_num_str} '{col}' no encontrada.", "WARNING"); return df
-                original_col_dtype = df[col].dtype; val = val_str # Default val to string original
+                original_col_dtype = df[col].dtype; val = val_str
                 try:
                     if op not in ["es NaN", "no es NaN", "contiene", "no contiene"]:
                         if pd.api.types.is_numeric_dtype(original_col_dtype):
@@ -460,10 +520,7 @@ class MapTab(ttk.Frame):
                         elif pd.api.types.is_datetime64_any_dtype(original_col_dtype):
                              if val_str == '': self.log(f"Valor vacío para filtro de fecha {filter_num_str} en '{col}'. No se aplicará.", "INFO"); return df
                              val = pd.to_datetime(val_str)
-                        # else val remains str(val_str) - it's already a string
                 except ValueError: self.log(f"No se pudo convertir '{val_str}' para filtro {filter_num_str} en '{col}'. Se usará como string.", "WARNING")
-
-                # self.log(f"Aplicando filtro {filter_num_str}: {col} {op} {val if op not in ['es NaN', 'no es NaN'] else ''}", "INFO") # Reduced logging verbosity
                 try:
                     if op == "==": df = df[df[col] == val]
                     elif op == "!=": df = df[df[col] != val]
