@@ -681,9 +681,8 @@ class RegresionesTab(ttk.Frame):
         frm_filters_outer = ttk.LabelFrame(container, text="Filtros de Datos (Opcional)")
         frm_filters_outer.pack(fill="x", padx=10, pady=5)
         if FilterComponent:
-            self.filter_component = FilterComponent(frm_filters_outer, max_unique_cat=50)
+            self.filter_component = FilterComponent(frm_filters_outer, max_unique_cat=50, log_callback=self.log_message)
             self.filter_component.pack(fill="both", expand=True) # Usar fill="both" y expand=True
-            self.filter_component.log = self.log_message # Pasar método de log
         else:
             ttk.Label(frm_filters_outer, text="Error: Componente de filtro no cargado.").pack()
         
@@ -811,7 +810,7 @@ class RegresionesTab(ttk.Frame):
         btn_save = ttk.Button(frm_buttons_bottom, text="Guardar Gráfica", command=self.save_graph_directly)
         btn_save.pack(side="left", padx=5, expand=True, fill="x")
 
-    def log_message(self, msg):
+    def log_message(self, msg, level=None):
         self.msg_label.config(text=msg)
 
     def load_data(self):
