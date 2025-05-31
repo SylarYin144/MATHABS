@@ -1899,16 +1899,16 @@ class CoxModelingApp(ttk.Frame):
                                     model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign the non-empty DataFrame
                                     self.log("INFO: Test de Schoenfeld calculado exitosamente y DataFrame no está vacío.", "INFO")
                                     model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld calculado exitosamente."
-                                    # Existing logging for shape, columns, head of schoenfeld_df_candidate should be preserved here
+                                    # Explicit logging for shape, columns, head of non-empty schoenfeld_df_candidate
+                                    self.log(f"DEBUG: Schoenfeld DataFrame shape: {schoenfeld_df_candidate.shape}", "DEBUG")
                                     self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df_candidate.columns.tolist()}", "DEBUG")
                                     self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df_candidate.head().to_string()}", "DEBUG")
                     except Exception as e_sch_detailed:
-                        self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}", "ERROR")
                         model_data_rm["schoenfeld_status_message"] = "Error durante cálculo del Test de Schoenfeld."
                         # Ensure traceback is logged:
-                        import traceback
+                        # import traceback # Already imported at the top of the file
                         detailed_tb = traceback.format_exc()
-                        self.log(f"Traceback for Schoenfeld error:\n{detailed_tb}", "ERROR")
+                        self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}\nTraceback:\n{detailed_tb}", "ERROR")
                         # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
 
                     self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado ---", "INFO")
