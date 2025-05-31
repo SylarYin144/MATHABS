@@ -1821,7 +1821,8 @@ class CoxModelingApp(ttk.Frame):
             "tie_method_used": ui_selected_tie_method,
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
-            "schoenfeld_status_message": None # Initialize status message
+            "schoenfeld_status_message": None, # Initialize status message
+            "proportional_hazard_test_summary": None # Initialize new key
         }
  
         try:
@@ -1919,6 +1920,59 @@ class CoxModelingApp(ttk.Frame):
                 self.log("INFO: Modelo nulo (X_design_rm está vacío)...", "INFO") # Slightly more concise log
                 model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
                 # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
+
+            # Fallback or alternative: proportional_hazard_test
+            current_schoenfeld_status = model_data_rm.get("schoenfeld_status_message", "")
+            should_try_ph_test = False
+            if "función de librería devolvió lista vacía" in current_schoenfeld_status or \
+               "lista de resultados con un solo elemento" in current_schoenfeld_status or \
+               "componente de resultados detallados no es DataFrame" in current_schoenfeld_status or \
+               (isinstance(model_data_rm.get("schoenfeld_results"), pd.DataFrame) and model_data_rm.get("schoenfeld_results").empty and "DataFrame de librería vacío" in current_schoenfeld_status) :
+                should_try_ph_test = True
+
+            if should_try_ph_test and not (hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty): # Ensure model has params for ph_test
+                self.log("INFO: `proportional_hazard_test` no se intentará porque el modelo no tiene parámetros (similar a check_assumptions).", "INFO")
+                should_try_ph_test = False
+
+
+            if should_try_ph_test:
+                self.log("INFO: `check_assumptions` no proporcionó resultados detallados de Schoenfeld. Intentando `proportional_hazard_test` por separado.", "INFO")
+                try:
+                    from lifelines.statistics import proportional_hazard_test
+
+                    # df_for_fit_main is the DataFrame used for cph_main_rm.fit()
+                    # cph_main_rm is the fitted model object
+                    ph_test_results_obj = proportional_hazard_test(cph_main_rm, df_for_fit_main, time_transform='log')
+
+                    if ph_test_results_obj is not None and hasattr(ph_test_results_obj, 'summary') and isinstance(ph_test_results_obj.summary, pd.DataFrame) and not ph_test_results_obj.summary.empty:
+                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results_obj.summary
+                        self.log("INFO: `proportional_hazard_test` ejecutado exitosamente y su resumen ha sido almacenado.", "INFO")
+                        self.log(f"DEBUG: Resumen de proportional_hazard_test (shape: {ph_test_results_obj.summary.shape}):\n{ph_test_results_obj.summary.head().to_string()}", "DEBUG")
+
+                        # Update status message to reflect this new information
+                        if "lista vacía" in current_schoenfeld_status: # Keep the original reason but add to it
+                             model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) no arrojó datos detallados (lista vacía), pero se obtuvieron resultados de proportional_hazard_test."
+                        elif "DataFrame de librería vacío" in current_schoenfeld_status : # If check_assumptions gave empty DF, but ph_test gave summary
+                             model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) arrojó DataFrame vacío, pero se obtuvieron resultados de proportional_hazard_test."
+                        else: # For other cases where check_assumptions didn't give detailed residuals
+                             model_data_rm["schoenfeld_status_message"] = "Resultados detallados de Schoenfeld no disponibles vía check_assumptions, pero se obtuvieron resultados de proportional_hazard_test."
+                    else:
+                        self.log("WARN: `proportional_hazard_test` no devolvió un resumen válido (DataFrame no vacío).", "WARN")
+                        original_status_suffix = " El intento adicional con proportional_hazard_test tampoco arrojó un resumen."
+                        if any(phrase in current_schoenfeld_status for phrase in ["lista vacía", "DataFrame de librería vacío", "formato esperado"]):
+                            # Append only if the original status was one indicating lack of detailed data from check_assumptions
+                            model_data_rm["schoenfeld_status_message"] = current_schoenfeld_status.replace(".","") + original_status_suffix
+                        # else, if it was an error from check_assumptions, that message is probably more informative.
+
+                except ImportError:
+                    self.log("ERROR: No se pudo importar `proportional_hazard_test` desde `lifelines.statistics`.", "ERROR")
+                    model_data_rm["schoenfeld_status_message"] += " (Error al importar proportional_hazard_test)."
+                except Exception as e_ph_test:
+                    self.log(f"ERROR: Excepción durante la llamada a `proportional_hazard_test`: {e_ph_test}", "ERROR")
+                    # import traceback # Already imported if needed
+                    # self.log(traceback.format_exc(), "DEBUG")
+                    model_data_rm["schoenfeld_status_message"] += f" (Error al ejecutar proportional_hazard_test: {str(e_ph_test)[:50]}...)."
+
 
             # C-Index CV
             if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
@@ -2654,25 +2708,39 @@ class CoxModelingApp(ttk.Frame):
             if k in ["summary_df","schoenfeld_details","HR (individual)","HR_CI (individual)","Wald p-values (individual)"]: continue
             if isinstance(v,pd.DataFrame): continue
             s_txt_gst += f"  {k}: {f'{v:.4f}' if isinstance(v,(float,np.floating)) else (str(v)[:200] if pd.notna(v) else 'N/A')}\n"
-        s_txt_gst += "\nTest Schoenfeld (Riesgos Proporcionales):\n"
-        sch_df_gst = model_dict_gst.get("schoenfeld_results")
-        # metrics_gst should be defined earlier in the function if sch_p_g_gst is to be used from there.
-        # Assuming metrics_gst is already available from the loop above.
+        s_txt_gst += "\nTest de Supuesto de Riesgos Proporcionales:\n"
+        sch_df_detailed_residuals = model_dict_gst.get("schoenfeld_results")
+        ph_test_summary_df = model_dict_gst.get("proportional_hazard_test_summary")
+        schoenfeld_status_msg = model_dict_gst.get("schoenfeld_status_message", "Estado del test no especificado.")
+
+        # metrics_gst is defined earlier in the function
         sch_p_g_gst = metrics_gst.get('Schoenfeld p-value (global)')
-        schoenfeld_status_msg = model_dict_gst.get("schoenfeld_status_message", "Estado del test de Schoenfeld no especificado.")
 
-        # Debug logging (can be removed or commented out in production)
-        self.log(f"DEBUG (_generate_text_summary): sch_df_gst type: {type(sch_df_gst)}, is_df: {isinstance(sch_df_gst, pd.DataFrame)}, empty: {sch_df_gst.empty if isinstance(sch_df_gst, pd.DataFrame) else 'N/A'}", "DEBUG")
+        self.log(f"DEBUG (_generate_text_summary): sch_df_detailed_residuals type: {type(sch_df_detailed_residuals)}, is_df: {isinstance(sch_df_detailed_residuals, pd.DataFrame)}, empty: {sch_df_detailed_residuals.empty if isinstance(sch_df_detailed_residuals, pd.DataFrame) else 'N/A'}", "DEBUG")
+        self.log(f"DEBUG (_generate_text_summary): ph_test_summary_df type: {type(ph_test_summary_df)}, is_df: {isinstance(ph_test_summary_df, pd.DataFrame)}, empty: {ph_test_summary_df.empty if isinstance(ph_test_summary_df, pd.DataFrame) else 'N/A'}", "DEBUG")
         self.log(f"DEBUG (_generate_text_summary): sch_p_g_gst: {sch_p_g_gst}", "DEBUG")
-        self.log(f"DEBUG (_generate_text_summary): schoenfeld_status_msg: {schoenfeld_status_msg}", "DEBUG")
+        self.log(f"DEBUG (_generate_text_summary): schoenfeld_status_msg: '{schoenfeld_status_msg}'", "DEBUG")
 
-        if sch_df_gst is not None and isinstance(sch_df_gst, pd.DataFrame) and not sch_df_gst.empty:
-            s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n{sch_df_gst.to_string()}\n"
-        else:
-            # Display status message. If global p-value exists, show it too.
-            if pd.notna(sch_p_g_gst):
-                s_txt_gst += f"  P-Global: {format_p_value(sch_p_g_gst)}\n"
-            s_txt_gst += f"  {schoenfeld_status_msg}\n"
+        displayed_detailed_residuals = False
+        if sch_df_detailed_residuals is not None and isinstance(sch_df_detailed_residuals, pd.DataFrame) and not sch_df_detailed_residuals.empty:
+            s_txt_gst += "  Resultados Detallados de Residuos de Schoenfeld (de check_assumptions):\n"
+            if pd.notna(sch_p_g_gst): # If global p-value was derived from these detailed residuals
+                 s_txt_gst += f"    P-Global (derivado de residuos detallados): {format_p_value(sch_p_g_gst)}\n"
+            s_txt_gst += f"{sch_df_detailed_residuals.to_string()}\n"
+            displayed_detailed_residuals = True
+
+        if not displayed_detailed_residuals and ph_test_summary_df is not None and isinstance(ph_test_summary_df, pd.DataFrame) and not ph_test_summary_df.empty:
+            s_txt_gst += "  Resultados del Test de Proporcionalidad de Riesgos (de proportional_hazard_test):\n"
+            # Note: proportional_hazard_test summary usually includes its own per-variable and global p-values.
+            # We might choose to parse and display its global p-value if sch_p_g_gst from check_assumptions was None.
+            # For now, just printing the table.
+            s_txt_gst += f"{ph_test_summary_df.to_string()}\n"
+        elif not displayed_detailed_residuals and pd.notna(sch_p_g_gst):
+            # This case: sch_df_detailed_residuals was empty/None, ph_test_summary_df was also empty/None,
+            # but a global p-value (likely from an empty check_assumptions[1] if it was a DF) was still computed.
+            s_txt_gst += f"  P-Global (de check_assumptions, detalles no disponibles): {format_p_value(sch_p_g_gst)}\n"
+
+        s_txt_gst += f"  Estado General del Test: {schoenfeld_status_msg}\n"
 
         s_txt_gst += "\n--- Fin Resumen ---\n"; return s_txt_gst
 
