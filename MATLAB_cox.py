@@ -2804,6 +2804,7 @@ class CoxModelingApp(ttk.Frame):
         else:
             self.log(f"Using covariate name '{covariate_for_plot}' directly (not a Q-encoded term).", "DEBUG")
 
+        fig_vip = None  # Initialize fig_vip to None
         try:
             fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
 
@@ -2828,11 +2829,40 @@ class CoxModelingApp(ttk.Frame):
             plt.tight_layout()
             self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip})")
 
+        except IndexError as e_vip_idx:
+            tb_str_vip = traceback.format_exc()
+            self.log(f"IndexError al generar gráfico de impacto para '{chosen_covariate}': {e_vip_idx}", "ERROR")
+            self.log(tb_str_vip, "DEBUG")
+            
+            is_known_issue = "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip
+            
+            if is_known_issue:
+                self.log(f"Detectado IndexError conocido en plot_partial_effects_on_outcome para '{chosen_covariate}'. "
+                           "Esto puede ser un problema con la versión de lifelines o con esta covariable específica.", "ERROR")
+                messagebox.showerror("Error Conocido de Gráfico (IndexError)",
+                                     f"Se encontró un error conocido (IndexError: tuple index out of range, relacionado con 'values.shape[1]') "
+                                     f"al generar el gráfico de impacto para '{chosen_covariate}'.\n\n"
+                                     "Esto podría ser un problema interno de la librería 'lifelines', posiblemente "
+                                     "relacionado con su versión actual o la naturaleza de esta covariable.\n\n"
+                                     "Sugerencias:\n"
+                                     "- Intente actualizar la librería 'lifelines' (`pip install --upgrade lifelines`).\n"
+                                     "- Pruebe con una covariable diferente si el problema persiste.\n\n"
+                                     "El traceback completo ha sido registrado en el log para depuración.",
+                                     parent=self.parent_for_dialogs)
+            else: # Otro IndexError
+                messagebox.showerror("Error de Gráfico (IndexError)",
+                                     f"Se produjo un IndexError inesperado al generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip_idx}\n\n"
+                                     "Consulte el log para más detalles.",
+                                     parent=self.parent_for_dialogs)
+            if fig_vip:
+                plt.close(fig_vip)
+
         except Exception as e_vip:
-            self.log(f"Error al generar gráfico de impacto para '{chosen_covariate}': {e_vip}", "ERROR")
-            import traceback
+            self.log(f"Error general al generar gráfico de impacto para '{chosen_covariate}': {e_vip}", "ERROR")
             self.log(traceback.format_exc(), "DEBUG")
-            messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto:\n{e_vip}", parent=self.parent_for_dialogs)
+            messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip}", parent=self.parent_for_dialogs)
+            if fig_vip:
+                plt.close(fig_vip)
 
     def export_model_summary(self):
         if not self._check_model_selected_and_valid(): return
