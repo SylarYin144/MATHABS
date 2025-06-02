@@ -2364,7 +2364,7 @@ class CoxModelingApp(ttk.Frame):
             # compute_residuals should ideally use the same data context as fit.
             # The previous version explicitly passed training_df=df_for_schoenfeld.
             # The subtask asks to remove it, relying on the fitter's internal state.
-            scaled_residuals = cph_sch.compute_residuals(training_dataframe=df_for_schoenfeld, kind='schoenfeld_scaled')
+            scaled_residuals = cph_sch.compute_residuals(training_dataframe=df_for_schoenfeld, kind='scaled_schoenfeld')
 
             if scaled_residuals.empty:
                 self.log(f"Residuos de Schoenfeld escalados vacíos para '{name_sch}'.", "WARN")
