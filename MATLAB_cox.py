@@ -2833,28 +2833,93 @@ class CoxModelingApp(ttk.Frame):
             tb_str_vip = traceback.format_exc()
             self.log(f"IndexError al generar gráfico de impacto para '{chosen_covariate}': {e_vip_idx}", "ERROR")
             self.log(tb_str_vip, "DEBUG")
-            
-            is_known_issue = "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip
-            
-            if is_known_issue:
-                self.log(f"Detectado IndexError conocido en plot_partial_effects_on_outcome para '{chosen_covariate}'. "
-                           "Esto puede ser un problema con la versión de lifelines o con esta covariable específica.", "ERROR")
-                messagebox.showerror("Error Conocido de Gráfico (IndexError)",
-                                     f"Se encontró un error conocido (IndexError: tuple index out of range, relacionado con 'values.shape[1]') "
-                                     f"al generar el gráfico de impacto para '{chosen_covariate}'.\n\n"
-                                     "Esto podría ser un problema interno de la librería 'lifelines', posiblemente "
-                                     "relacionado con su versión actual o la naturaleza de esta covariable.\n\n"
-                                     "Sugerencias:\n"
-                                     "- Intente actualizar la librería 'lifelines' (`pip install --upgrade lifelines`).\n"
-                                     "- Pruebe con una covariable diferente si el problema persiste.\n\n"
-                                     "El traceback completo ha sido registrado en el log para depuración.",
-                                     parent=self.parent_for_dialogs)
-            else: # Otro IndexError
+
+            original_error_message_text = (
+                f"Se encontró un error conocido (IndexError: tuple index out of range, relacionado con 'values.shape[1]') "
+                f"al generar el gráfico de impacto para '{chosen_covariate}'.\n\n"
+                "Esto podría ser un problema interno de la librería 'lifelines', posiblemente "
+                "relacionado con su versión actual o la naturaleza de esta covariable.\n\n"
+                "Sugerencias:\n"
+                "- Intente actualizar la librería 'lifelines' (`pip install --upgrade lifelines`).\n"
+                "- Pruebe con una covariable diferente si el problema persiste.\n\n"
+                "El traceback completo ha sido registrado en el log para depuración."
+            )
+
+            if "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip:
+                self.log(f"Detectado IndexError conocido para '{chosen_covariate}'. Intentando fallback plotting strategy.", "WARN")
+
+                df_fit = md_vip.get('_df_for_fit_main_INTERNAL_USE')
+                if df_fit is None or df_fit.empty:
+                    self.log("DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible o vacío. No se puede intentar fallback.", "ERROR")
+                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                    if fig_vip: plt.close(fig_vip)
+                    return
+
+                original_cov_name_for_type_lookup = original_name_from_q if match else chosen_covariate
+                
+                series = df_fit.get(covariate_for_plot)
+                if series is None or series.empty or series.isna().all():
+                    self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía/toda NaN en df_fit. No se puede intentar fallback.", "ERROR")
+                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                    if fig_vip: plt.close(fig_vip)
+                    return
+
+                is_quantitative = self.covariables_type_config.get(original_cov_name_for_type_lookup) == "Cuantitativa"
+                if original_cov_name_for_type_lookup not in self.covariables_type_config:
+                    is_quantitative = pd.api.types.is_numeric_dtype(series.dtype)
+                
+                if is_quantitative:
+                    self.log(f"'{covariate_for_plot}' es cuantitativa. Generando valores manuales para fallback.", "INFO")
+                    min_val, max_val = series.min(), series.max()
+                    if min_val == max_val or pd.isna(min_val) or pd.isna(max_val):
+                        self.log(f"No se pudo determinar un rango válido (min={min_val}, max={max_val}) para '{covariate_for_plot}'. Fallback no posible.", "WARN")
+                        messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                        if fig_vip: plt.close(fig_vip)
+                        return
+                    
+                    manual_values_1d = np.linspace(min_val, max_val, 150)
+                    manual_values_2d = manual_values_1d.reshape(-1, 1)
+
+                    try:
+                        self.log(f"Intentando plot_partial_effects_on_outcome con valores manuales para '{covariate_for_plot}'.", "INFO")
+                        # fig_vip and ax_vip should already be created from the outer try
+                        cph_model_vip.plot_partial_effects_on_outcome(
+                            covariate_for_plot,
+                            values=manual_values_2d,
+                            plot_baseline=False,
+                            ax=ax_vip
+                        )
+                        # If successful, proceed with original plotting finalization
+                        plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio) (Fallback)"
+                        plot_title += f"\nModelo: {model_name_vip}"
+                        current_opts_vip = self.current_plot_options.copy()
+                        current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+                        current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}")
+                        current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
+                        apply_plot_options(ax_vip, current_opts_vip, self.log)
+                        plt.tight_layout()
+                        self._create_plot_window(fig_vip, f"Impacto Variable (Fallback): {chosen_covariate} ({model_name_vip})")
+                        self.log(f"Fallback plot para '{chosen_covariate}' generado exitosamente.", "SUCCESS")
+                        return # Successfully plotted with fallback, exit method
+                    except Exception as e_fallback:
+                        self.log(f"Error durante el intento de fallback plot para '{chosen_covariate}': {e_fallback}", "ERROR")
+                        self.log(traceback.format_exc(), "DEBUG")
+                        original_error_message_text += "\n\nNOTA: Un intento de graficar con valores manuales (fallback) también falló."
+                        # Fall through to show the original error message (now augmented)
+                else: # Not quantitative
+                    self.log(f"'{covariate_for_plot}' (original: '{original_cov_name_for_type_lookup}') no es cuantitativa o no se pudo determinar. Fallback no aplicable.", "INFO")
+
+                # If fallback was not quantitative, or quantitative checks failed, or fallback plot itself failed:
+                messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                if fig_vip: plt.close(fig_vip)
+                return
+
+            else: # Not the specific "tuple index out of range" / "values.shape[1]" error
                 messagebox.showerror("Error de Gráfico (IndexError)",
                                      f"Se produjo un IndexError inesperado al generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip_idx}\n\n"
                                      "Consulte el log para más detalles.",
                                      parent=self.parent_for_dialogs)
-            if fig_vip:
+            if fig_vip: # Ensure closure if any path above didn't return and fig_vip exists
                 plt.close(fig_vip)
 
         except Exception as e_vip:
