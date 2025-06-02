@@ -2337,17 +2337,22 @@ class CoxModelingApp(ttk.Frame):
         md_sch = self.selected_model_in_treeview
         cph_sch = md_sch.get('model')
         name_sch = md_sch.get('model_name', 'N/A')
-        schoenfeld_status_msg = md_sch.get("schoenfeld_status_message", "No se generaron resultados detallados del test de Schoenfeld o el test no fue aplicable.")
-
-        schoenfeld_results_data = md_sch.get("schoenfeld_results")
-        if schoenfeld_results_data is None or not isinstance(schoenfeld_results_data, pd.DataFrame) or schoenfeld_results_data.empty:
-            self.log(f"No se puede generar gráfico de Schoenfeld para '{name_sch}'. Motivo: {schoenfeld_status_msg}", "WARN")
-            messagebox.showwarning("Gráfico Schoenfeld No Disponible",
-                                   f"No se puede generar el gráfico de Schoenfeld para '{name_sch}'.\nMotivo: {schoenfeld_status_msg}",
-                                   parent=self.parent_for_dialogs)
-            return
+        schoenfeld_status_msg = md_sch.get("schoenfeld_status_message", "Estado del test estadístico de Schoenfeld no especificado o test no aplicable.")
         
-        # Ensure df_for_schoenfeld is correctly defined as before:
+        # Log the status of the statistical Schoenfeld test, but do not prevent plotting based on this.
+        self.log(f"Estado del test estadístico de Schoenfeld para '{name_sch}': {schoenfeld_status_msg}", "INFO")
+
+        # The schoenfeld_results_data (statistical summary) is not strictly needed for plotting residuals.
+        # schoenfeld_results_data = md_sch.get("schoenfeld_results") # This line can be kept if used later, or removed if not.
+        # For now, we comment out the block that prevents plotting based on schoenfeld_results_data.
+        # if schoenfeld_results_data is None or not isinstance(schoenfeld_results_data, pd.DataFrame) or schoenfeld_results_data.empty:
+        #     self.log(f"No se puede generar gráfico de Schoenfeld para '{name_sch}'. Motivo: {schoenfeld_status_msg}", "WARN")
+        #     messagebox.showwarning("Gráfico Schoenfeld No Disponible",
+        #                            f"No se puede generar el gráfico de Schoenfeld para '{name_sch}'.\nMotivo: {schoenfeld_status_msg}",
+        #                            parent=self.parent_for_dialogs)
+        #     return
+        
+        # Ensure df_for_schoenfeld (the data used for fitting and now for plotting residuals) is correctly defined.
         df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE')
         if df_for_schoenfeld is None or df_for_schoenfeld.empty:
             # This case should ideally be caught earlier or less likely if schoenfeld_results_data is present
