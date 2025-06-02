@@ -2340,9 +2340,9 @@ class CoxModelingApp(ttk.Frame):
         name_sch = md_sch.get('model_name', 'N/A')
         schoenfeld_status_msg = md_sch.get("schoenfeld_status_message", "Estado del test estadístico de Schoenfeld no especificado o test no aplicable.")
         
-        # Log the status of the statistical Schoenfeld test, but do not prevent plotting based on this.
         self.log(f"Estado del test estadístico de Schoenfeld para '{name_sch}': {schoenfeld_status_msg}", "INFO")
         
+        # df_for_schoenfeld is still needed if we compute residuals directly from the fitter
         df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE')
         if df_for_schoenfeld is None or df_for_schoenfeld.empty:
             self.log(f"DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible o vacío para modelo '{name_sch}'. No se puede graficar Schoenfeld.", "ERROR")
@@ -2355,11 +2355,16 @@ class CoxModelingApp(ttk.Frame):
             return
 
         self.log(f"Generando gráfico de residuos de Schoenfeld escalados para '{name_sch}' manualmente...", "INFO")
-        fig_s = None # Initialize fig_s to ensure it's defined in case of early error
+        fig_s = None 
         try:
-            # Compute scaled Schoenfeld residuals
-            # The 'training_df' argument should be the same DataFrame used to fit the model.
-            scaled_residuals = cph_sch.compute_residuals(training_df=df_for_schoenfeld, kind='schoenfeld_scaled')
+            # Compute scaled Schoenfeld residuals.
+            # This assumes cph_sch (the fitter object) knows the dataframe it was fitted on if training_df is not provided.
+            # For lifelines, CoxPHFitter stores the training_df if it was passed to fit() directly.
+            # If fit was called with formula and data separately, it constructs design matrix internally.
+            # compute_residuals should ideally use the same data context as fit.
+            # The previous version explicitly passed training_df=df_for_schoenfeld.
+            # The subtask asks to remove it, relying on the fitter's internal state.
+            scaled_residuals = cph_sch.compute_residuals(kind='schoenfeld_scaled')
 
             if scaled_residuals.empty:
                 self.log(f"Residuos de Schoenfeld escalados vacíos para '{name_sch}'.", "WARN")
@@ -2371,7 +2376,7 @@ class CoxModelingApp(ttk.Frame):
             covariate_names = scaled_residuals.columns
             num_params_sch = len(covariate_names)
 
-            if num_params_sch == 0: # Should be caught by check_params=True, but as a safeguard
+            if num_params_sch == 0: 
                 self.log(f"No hay covariables en los residuos de Schoenfeld para graficar para '{name_sch}'.", "INFO")
                 messagebox.showinfo("Info", "No hay covariables en los residuos de Schoenfeld para graficar.", parent=self.parent_for_dialogs)
                 return
@@ -2387,31 +2392,37 @@ class CoxModelingApp(ttk.Frame):
             for idx, cov_name_s in enumerate(covariate_names):
                 if idx < len(axes_s_flat):
                     ax_s_curr = axes_s_flat[idx]
-                    # Plot residuals against time (index of scaled_residuals DataFrame)
                     ax_s_curr.plot(scaled_residuals.index, scaled_residuals[cov_name_s], 
                                    linestyle='none', marker='o', markersize=3, alpha=0.6)
-                    ax_s_curr.axhline(0, color='grey', linestyle='--', lw=0.8) # Horizontal line at y=0
+                    ax_s_curr.axhline(0, color='grey', linestyle='--', lw=0.8)
                     ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}", fontsize=10)
                     ax_s_curr.set_ylabel("Scaled Residual", fontsize=8)
                     
-                    # Add X-label only to bottom-row subplots
-                    if idx >= ncols_s * (nrows_s - 1) or idx == num_params_sch -1 : # last condition for single row with less than ncols_s plots
-                        ax_s_curr.set_xlabel("Time", fontsize=8)
+                    # Determine if the current subplot is in the bottom row of visible plots
+                    is_in_last_visible_row = False
+                    if nrows_s == 1: # Only one row
+                        is_in_last_visible_row = True
+                    elif (idx // ncols_s) == (nrows_s - 1): # It's in the actual last row
+                        is_in_last_visible_row = True
+                    elif (idx // ncols_s) == (nrows_s - 2) and (idx + ncols_s >= num_params_sch) : # It's in row above last, and last row is incomplete
+                        is_in_last_visible_row = True
+                        
+                    if is_in_last_visible_row:
+                         ax_s_curr.set_xlabel("Time", fontsize=8)
             
-            # Hide any unused subplots
             for i_empty_s in range(num_params_sch, len(axes_s_flat)):
                 axes_s_flat[i_empty_s].set_visible(False)
 
             fig_s.suptitle(f"Scaled Schoenfeld Residuals ({name_sch})", fontsize=14)
-            plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout to make space for suptitle
+            plt.tight_layout(rect=[0, 0, 1, 0.96]) 
             
             self._create_plot_window(fig_s, f"Schoenfeld: {name_sch}", is_single_plot=True)
 
         except Exception as e_plot:
             self.log(f"Error al generar gráfico manual de residuos de Schoenfeld para '{name_sch}': {e_plot}", "ERROR")
             traceback.print_exc(limit=3)
-            if fig_s is not None: # Check if fig_s was created by plt.subplots
-                plt.close(fig_s) # Ensure figure is closed on error
+            if fig_s is not None: 
+                plt.close(fig_s) 
             messagebox.showerror("Error de Gráfico", 
                                f"No se pudo generar el gráfico de residuos de Schoenfeld:\n{e_plot}",
                                parent=self.parent_for_dialogs)
