@@ -179,18 +179,28 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
         metrics["Schoenfeld details"] = schoenfeld_results_df.to_dict('index') 
     metrics["Schoenfeld p-value (global)"] = schoenfeld_p_global
 
-    if hasattr(
-            model,
-            "summary") and model.summary is not None and not model.summary.empty:
-        summary_df = model.summary.copy()
+    # Check for model summary and safely access its properties
+    model_summary_df = getattr(model, "summary", None)
+    if model_summary_df is not None and isinstance(model_summary_df, pd.DataFrame) and not model_summary_df.empty:
+        summary_df = model_summary_df.copy() # Work with a copy
         if 'z' in summary_df.columns:
-            z_scores = summary_df['z'].dropna()
-            if not z_scores.empty:
-                wald_stat = float(
-                    (z_scores ** 2).sum())
-                df_wald = len(z_scores)
-                metrics["Wald p-value (global approx)"] = scipy.stats.chi2.sf(
-                    wald_stat, df_wald) if df_wald > 0 else None
+            z_scores = summary_df['z'].dropna() # z_scores is a Series
+            if not z_scores.empty: # Correct check for a Series
+                try:
+                    wald_stat = float((z_scores ** 2).sum()) # Should be scalar
+                    df_wald = len(z_scores) # Should be scalar
+                    if df_wald > 0: # Ensure df_wald is positive for chi2.sf
+                        metrics["Wald p-value (global approx)"] = scipy.stats.chi2.sf(wald_stat, df_wald)
+                    else:
+                        metrics["Wald p-value (global approx)"] = None
+                except Exception as e_wald:
+                    if log_func: log_func(f"DEBUG: Error calculating Wald p-value: {e_wald}", "WARN")
+                    metrics["Wald p-value (global approx)"] = None
+            else: # z_scores is empty
+                 metrics["Wald p-value (global approx)"] = None
+        else: # 'z' column not in summary_df
+            metrics["Wald p-value (global approx)"] = None
+
         if 'p' in summary_df.columns:
             metrics["Wald p-values (individual)"] = summary_df["p"].dropna().to_dict()
         if 'exp(coef)' in summary_df.columns:
@@ -202,32 +212,45 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
                     'lower_95': r.get('exp(coef) lower 95%'),
                     'upper_95': r.get('exp(coef) upper 95%')} for idx,
                 r in summary_df.iterrows()}
-        metrics["summary_df"] = summary_df
+        metrics["summary_df"] = summary_df # Store the original copied summary
+    else: # model.summary was None, not a DataFrame, or empty
+        if log_func: log_func(f"DEBUG: Model summary not available or empty. Type: {type(model_summary_df)}", "DEBUG")
+        metrics["Wald p-value (global approx)"] = None
+        metrics["summary_df"] = pd.DataFrame() # Ensure it's an empty DF
 
-    metrics["C-Index (Training)"] = getattr(model, "concordance_index_", None)
-    metrics["C-Index (CV Mean)"] = c_index_cv_mean
-    metrics["C-Index (CV Std)"] = c_index_cv_std
+    # Concordance Index
+    metrics["C-Index (Training)"] = getattr(model, "concordance_index_", None) # This is usually a scalar
+    metrics["C-Index (CV Mean)"] = c_index_cv_mean # Scalar or None
+    metrics["C-Index (CV Std)"] = c_index_cv_std # Scalar or None
 
-    if log_likelihood_val is not None and pd.notna(
-            log_likelihood_val) and n_obs > 0 and num_params >= 0:
+    # AIC and BIC calculations
+    # Ensure log_likelihood_val, n_obs, num_params are scalars
+    if pd.notna(log_likelihood_val) and isinstance(log_likelihood_val, (int, float)) and \
+       isinstance(n_obs, (int, float)) and n_obs > 0 and \
+       isinstance(num_params, (int, float)) and num_params >= 0:
         metrics["AIC"] = -2 * log_likelihood_val + 2 * num_params
-        if n_obs > num_params + 1:
+        if n_obs > num_params + 1: # Ensure n_obs is sufficiently larger than num_params for BIC
             metrics["BIC"] = -2 * log_likelihood_val + np.log(n_obs) * num_params
         else:
             metrics["BIC"] = None 
     else:
+        if log_func: log_func(f"DEBUG: AIC/BIC not calculated due to invalid inputs: LL={log_likelihood_val}, N={n_obs}, params={num_params}", "DEBUG")
         metrics["AIC"] = None
         metrics["BIC"] = None
 
-    if log_likelihood_val is not None and pd.notna(log_likelihood_val) and \
-       loglik_null is not None and pd.notna(loglik_null) and num_params > 0:
-        lr_stat = -2 * (loglik_null - log_likelihood_val)
+    # Global Likelihood Ratio Test
+    # Ensure loglik_null is also a scalar
+    if pd.notna(log_likelihood_val) and isinstance(log_likelihood_val, (int, float)) and \
+       pd.notna(loglik_null) and isinstance(loglik_null, (int, float)) and \
+       isinstance(num_params, (int, float)) and num_params > 0:
+        lr_stat = -2 * (loglik_null - log_likelihood_val) # lr_stat should be scalar
         if lr_stat < 0: 
-            lr_stat = 0.0
-        metrics["Global LR Test p-value"] = scipy.stats.chi2.sf(
-            lr_stat, num_params) if num_params > 0 else None
+            lr_stat = 0.0 # Ensure lr_stat is non-negative
+        metrics["Global LR Test p-value"] = scipy.stats.chi2.sf(lr_stat, num_params)
     else:
+        if log_func: log_func(f"DEBUG: Global LR Test not calculated due to invalid inputs: LL={log_likelihood_val}, LL_null={loglik_null}, params={num_params}", "DEBUG")
         metrics["Global LR Test p-value"] = None
+        
     return metrics
 
 # --- CLASES AUXILIARES PARA LA UI ---
