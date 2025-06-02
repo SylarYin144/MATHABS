@@ -533,6 +533,7 @@ class PlotOptionsDialog(Toplevel):
         sort_order_options = [
             "original", "hr_asc", "hr_desc", "p_asc", "p_desc", "name_asc", "name_desc"
         ]
+        self.sort_order_var_tk = StringVar(self, value=self.current_options.get('sort_order', 'original')) # ADD THIS LINE
         self.sort_order_combobox = ttk.Combobox(main_dialog_frame, textvariable=self.sort_order_var_tk,
                                                  values=sort_order_options, state="readonly", width=15)
         self.sort_order_combobox.grid(
