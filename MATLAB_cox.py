@@ -2034,7 +2034,7 @@ class CoxModelingApp(ttk.Frame):
                 should_try_ph_test = True
             
             # Ensure model has params for ph_test if we are to try it
-            if should_try_ph_test and not (hasattr(cph_main_rm, 'params_') and cph_main_rm.params_ and not cph_main_rm.params_.empty):
+            if should_try_ph_test and not (hasattr(cph_main_rm, 'params_') and cph_main_rm.params_ is not None and not cph_main_rm.params_.empty):
                 self.log("INFO: `proportional_hazard_test` no se intentará porque el modelo no tiene parámetros (similar a check_assumptions).", "INFO")
                 should_try_ph_test = False
             
