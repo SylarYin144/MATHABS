@@ -34,7 +34,6 @@ import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
 
 # --- Importaciones de Lifelines ---
-from lifelines.fitters import ProportionalHazardTestResult # Added import
 # check_assumptions lo reemplaza en gran medida
 
 try:
@@ -1915,7 +1914,7 @@ class CoxModelingApp(ttk.Frame):
                         self.log(f"DEBUG: Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
 
                         schoenfeld_df_candidate = None
-                        found_schoenfeld_results = False
+                        found_schoenfeld_results = False # Renamed for clarity from the previous version's logic
 
                         if isinstance(results_check_assumptions, list):
                             self.log(f"DEBUG: `check_assumptions` returned a list with {len(results_check_assumptions)} elements.", "DEBUG")
@@ -1923,67 +1922,63 @@ class CoxModelingApp(ttk.Frame):
                                 self.log("INFO: `check_assumptions` devolvió una lista vacía.", "INFO")
                                 model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (lista vacía de check_assumptions)."
                             else: # Iterate through the list
-                                for i, item in enumerate(results_check_assumptions):
-                                    self.log(f"DEBUG: Checking element {i} in results_check_assumptions (type: {type(item)}).", "DEBUG")
-                                    if isinstance(item, ProportionalHazardTestResult):
-                                        self.log(f"DEBUG: Element {i} is ProportionalHazardTestResult. Checking its summary.", "DEBUG")
-                                        if hasattr(item, 'summary') and isinstance(item.summary, pd.DataFrame):
-                                            schoenfeld_df_candidate = item.summary
-                                            self.log(f"DEBUG: Found Schoenfeld DataFrame in ProportionalHazardTestResult.summary (element {i}). Shape: {schoenfeld_df_candidate.shape}", "DEBUG")
-                                            found_schoenfeld_results = True
-                                            break 
-                                    elif isinstance(item, pd.DataFrame):
-                                        self.log(f"DEBUG: Element {i} is a DataFrame. Shape: {item.shape}", "DEBUG")
-                                        # Heuristic: check for a 'p' column or typical Schoenfeld columns if direct type is not available
-                                        if 'p' in item.columns or all(col in item.columns for col in ['test_statistic', 'p', 'df']): # Example columns
-                                            schoenfeld_df_candidate = item
-                                            self.log(f"DEBUG: Found Schoenfeld DataFrame directly as element {i}. Shape: {schoenfeld_df_candidate.shape}", "DEBUG")
+                                for i, result_candidate_item in enumerate(results_check_assumptions): # Renamed item to result_candidate_item
+                                    self.log(f"DEBUG: Checking element {i} in results_check_assumptions (type: {type(result_candidate_item)}).", "DEBUG")
+                                    # Primary way: check if the item itself is the DataFrame we want
+                                    if isinstance(result_candidate_item, pd.DataFrame) and not result_candidate_item.empty:
+                                        # Check for columns that indicate it's the Schoenfeld summary
+                                        # Using 'test_statistic' and 'p' as generally reliable indicators.
+                                        if all(col in result_candidate_item.columns for col in ['test_statistic', 'p']):
+                                            self.log(f"DEBUG: Found candidate Schoenfeld DataFrame in results_check_assumptions list (direct DataFrame check at index {i}). Shape: {result_candidate_item.shape}", "DEBUG")
+                                            schoenfeld_df_candidate = result_candidate_item
                                             found_schoenfeld_results = True
                                             break
-                                    # If the list has specific known structures (e.g. residuals at index 1),
-                                    # that logic could be added here as a fallback if primary checks fail.
-                                    # Example: if i == 1 and isinstance(item, pd.DataFrame) and schoenfeld_df_candidate is None:
-                                    #    schoenfeld_df_candidate = item # Could be a fallback if specific index has the residuals
-                                    #    self.log(f"DEBUG: Tentatively assigned element {i} (DataFrame) as schoenfeld_df_candidate.", "DEBUG")
-
-
+                                    # Secondary way: check if it's an object with a .summary DataFrame
+                                    elif hasattr(result_candidate_item, 'summary') and isinstance(result_candidate_item.summary, pd.DataFrame) and not result_candidate_item.summary.empty:
+                                        # Also check if this summary DataFrame has the expected columns
+                                        summary_df_check = result_candidate_item.summary
+                                        if all(col in summary_df_check.columns for col in ['test_statistic', 'p']):
+                                            self.log(f"DEBUG: Found candidate Schoenfeld DataFrame in results_check_assumptions list (via .summary attribute at index {i}). Shape: {summary_df_check.shape}", "DEBUG")
+                                            schoenfeld_df_candidate = summary_df_check
+                                            found_schoenfeld_results = True
+                                            break
+                                # Fallback if no suitable DataFrame found by iterating, but the list had a known structure (e.g., result at index 1)
+                                # This part retains a bit of the original logic if the list structure is [bool, DataFrame, ...]
                                 if not found_schoenfeld_results and len(results_check_assumptions) >= 2 and isinstance(results_check_assumptions[1], pd.DataFrame):
-                                    # Fallback to original logic of checking index 1 if no ProportionalHazardTestResult or specific DataFrame found
-                                    self.log("WARN: No ProportionalHazardTestResult or specific DataFrame found. Falling back to checking results_check_assumptions[1].", "WARN")
-                                    schoenfeld_df_candidate = results_check_assumptions[1]
-                                    found_schoenfeld_results = True # Assume it's the candidate for further checks
+                                    self.log("WARN: No specific Schoenfeld DataFrame found by primary checks. Falling back to checking results_check_assumptions[1] if it's a DataFrame.", "WARN")
+                                    potential_fallback_df = results_check_assumptions[1]
+                                    if not potential_fallback_df.empty and all(col in potential_fallback_df.columns for col in ['test_statistic', 'p']):
+                                        schoenfeld_df_candidate = potential_fallback_df
+                                        found_schoenfeld_results = True
+                                        self.log(f"DEBUG: Using fallback: results_check_assumptions[1] as Schoenfeld DataFrame. Shape: {schoenfeld_df_candidate.shape}", "DEBUG")
+
 
                         else: # Not a list
                             self.log("WARN: `check_assumptions` no devolvió una lista.", "WARN")
                             model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (check_assumptions no devolvió lista)."
 
                         # Process the candidate DataFrame
-                        if found_schoenfeld_results and schoenfeld_df_candidate is not None:
-                            if isinstance(schoenfeld_df_candidate, pd.DataFrame):
-                                if schoenfeld_df_candidate.empty:
-                                    model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign empty DataFrame
-                                    self.log("INFO: Test de Schoenfeld devolvió un DataFrame vacío.", "INFO")
-                                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (DataFrame vacío de check_assumptions)."
-                                else:
-                                    model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate # Assign non-empty DataFrame
-                                    self.log("INFO: Test de Schoenfeld calculado exitosamente y DataFrame (schoenfeld_results) no está vacío.", "INFO")
-                                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
-                                    self.log(f"DEBUG: Schoenfeld DataFrame shape: {schoenfeld_df_candidate.shape}", "DEBUG")
-                                    self.log(f"DEBUG: Schoenfeld DataFrame columns: {schoenfeld_df_candidate.columns.tolist()}", "DEBUG")
-                                    self.log(f"DEBUG: Schoenfeld DataFrame head:\n{schoenfeld_df_candidate.head().to_string()}", "DEBUG")
-                            else: # Candidate was not a DataFrame (e.g. if fallback assigned something else)
-                                self.log("WARN: Candidato para Schoenfeld no es un DataFrame.", "WARN")
-                                model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (candidato no es DataFrame)."
-                                # model_data_rm["schoenfeld_results"] remains an empty DataFrame
+                        if found_schoenfeld_results and schoenfeld_df_candidate is not None: # schoenfeld_df_candidate should be a DataFrame here
+                            if schoenfeld_df_candidate.empty: # This check is now redundant if loops check for non-empty, but safe
+                                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure it's an empty DF, not the empty one found
+                                self.log("INFO: Test de Schoenfeld devolvió un DataFrame vacío (o candidate was empty).", "INFO")
+                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (DataFrame vacío de check_assumptions)."
+                            else:
+                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy() # Use .copy()
+                                self.log("INFO: Test de Schoenfeld calculado exitosamente y DataFrame (schoenfeld_results) no está vacío.", "INFO")
+                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
+                                self.log(f"DEBUG: Schoenfeld DataFrame shape: {model_data_rm['schoenfeld_results'].shape}", "DEBUG")
+                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {model_data_rm['schoenfeld_results'].columns.tolist()}", "DEBUG")
+                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{model_data_rm['schoenfeld_results'].head().to_string()}", "DEBUG")
+                        # If not found_schoenfeld_results but it was a list and not empty (e.g. list of bools, or DFs not matching criteria)
                         elif not found_schoenfeld_results and isinstance(results_check_assumptions, list) and results_check_assumptions:
-                            # If it was a list, but no suitable DataFrame was found after iterating
-                             self.log("WARN: No se encontró un DataFrame de Schoenfeld adecuado en la lista de `check_assumptions`.", "WARN")
+                             self.log("WARN: No se encontró un DataFrame de Schoenfeld adecuado en la lista de `check_assumptions` (elementos no eran DF esperados o eran vacíos).", "WARN")
                              model_data_rm["schoenfeld_status_message"] = "Schoenfeld: resultados detallados no encontrados o en formato inesperado en la lista de check_assumptions."
-                        # If results_check_assumptions was not a list, status is already set.
-                        # If results_check_assumptions was an empty list, status is already set.
+                        # If results_check_assumptions was not a list, or was an empty list, status messages are already set.
+                        # model_data_rm["schoenfeld_results"] remains an empty DataFrame if no candidate was found or processed.
 
                     except Exception as e_sch_detailed:
-                        model_data_rm["schoenfeld_status_message"] = "Error durante cálculo del Test de Schoenfeld (check_assumptions)."
+                        model_data_rm["schoenfeld_status_message"] = "Error durante procesamiento de resultados del Test de Schoenfeld (check_assumptions)."
                         detailed_tb = traceback.format_exc()
                         self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}\nTraceback:\n{detailed_tb}", "ERROR")
                         # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
