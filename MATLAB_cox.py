@@ -2790,7 +2790,19 @@ class CoxModelingApp(ttk.Frame):
             self.log("Selección de covariable para gráfico de impacto cancelada o no realizada.", "INFO")
             return
 
-        self.log(f"Generando gráfico de impacto para covariable: '{chosen_covariate}' del modelo '{model_name_vip}'.", "INFO")
+        self.log(f"Generando gráfico de impacto para covariable (raw selected): '{chosen_covariate}' del modelo '{model_name_vip}'.", "INFO")
+
+        covariate_for_plot = chosen_covariate
+        match = re.match(r"Q\('([^']+)'\)", chosen_covariate)
+        if match:
+            original_name_from_q = match.group(1)
+            # Check if this original name exists in the model's training data columns if possible,
+            # though plot_partial_effects_on_outcome should handle it if the model was formula-fitted.
+            # For now, assume lifelines will find it based on its internal formula processing.
+            covariate_for_plot = original_name_from_q
+            self.log(f"Extracted original name '{covariate_for_plot}' from Patsy term '{chosen_covariate}' for plotting.", "DEBUG")
+        else:
+            self.log(f"Using covariate name '{covariate_for_plot}' directly (not a Q-encoded term).", "DEBUG")
 
         try:
             fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
@@ -2798,19 +2810,19 @@ class CoxModelingApp(ttk.Frame):
             # plot_partial_effects_on_outcome plots log(HR) vs covariate value
             # It automatically handles splines if the covariate was fitted with one.
             cph_model_vip.plot_partial_effects_on_outcome(
-                chosen_covariate,
+                covariate_for_plot, # USE THE EXTRACTED/ORIGINAL NAME HERE
                 values=None,  # Let lifelines choose appropriate values based on data range
                 plot_baseline=False, # Focus on the effect of the covariate itself
                 ax=ax_vip
             )
 
-            plot_title = f"Impacto de '{chosen_covariate}' sobre Log(Hazard Ratio)"
+            plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)" # Use covariate_for_plot
             plot_title += f"\nModelo: {model_name_vip}"
 
             current_opts_vip = self.current_plot_options.copy()
             current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {chosen_covariate}")
-            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {chosen_covariate}")
+            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}") # Use covariate_for_plot
+            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}") # Use covariate_for_plot
 
             apply_plot_options(ax_vip, current_opts_vip, self.log)
             plt.tight_layout()
