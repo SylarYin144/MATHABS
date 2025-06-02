@@ -1933,6 +1933,7 @@ class CoxModelingApp(ttk.Frame):
                     try:
                         self.log("Calling cph_main_rm.check_assumptions(df_for_fit_main)...", "DEBUG")
                         results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main)
+                        model_data_rm["check_assumptions_results_raw"] = results_check_assumptions # Store raw results
                         self.log("Post-check_assumptions: Call completed.", "DEBUG")
                         self.log(f"DEBUG: Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
 
@@ -2353,45 +2354,77 @@ class CoxModelingApp(ttk.Frame):
         #     return
         
         # Ensure df_for_schoenfeld (the data used for fitting and now for plotting residuals) is correctly defined.
-        df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE')
+        df_for_schoenfeld = md_sch.get('_df_for_fit_main_INTERNAL_USE') # Still needed for context by some plot methods if cph_sch is used.
         if df_for_schoenfeld is None or df_for_schoenfeld.empty:
-            # This case should ideally be caught earlier or less likely if schoenfeld_results_data is present
-            self.log(f"DataFrame para Schoenfeld no disponible o vacío para modelo '{name_sch}'.", "ERROR")
+            self.log(f"DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible o vacío para modelo '{name_sch}'. No se puede graficar Schoenfeld.", "ERROR")
             messagebox.showerror("Error Datos", "Datos de ajuste para gráfico Schoenfeld no disponibles en el modelo.", parent=self.parent_for_dialogs)
             return
 
-        try:
-            self.log(f"Generando Gráf. Schoenfeld para '{name_sch}'...", "INFO")
+        if not hasattr(cph_sch, 'params_') or cph_sch.params_ is None or cph_sch.params_.empty:
+            self.log(f"Modelo '{name_sch}' no tiene parámetros (covariables). Gráfico de Schoenfeld no aplicable.", "INFO")
+            messagebox.showinfo("No Aplicable", "Modelo no tiene covariables para mostrar gráfico de Schoenfeld.", parent=self.parent_for_dialogs)
+            return
+
+        check_assumptions_output = md_sch.get("check_assumptions_results_raw")
+
+        if not isinstance(check_assumptions_output, list) or not check_assumptions_output:
+            self.log(f"Resultados crudos de check_assumptions no disponibles o en formato incorrecto para '{name_sch}'. No se puede generar gráfico de Schoenfeld a partir de ellos.", "WARN")
+            messagebox.showwarning("Datos No Disponibles", 
+                                   "Los resultados crudos del test de supuestos (necesarios para graficar Schoenfeld directamente desde el resultado del test) no están disponibles o son inválidos en el modelo. El gráfico no se generará por esta vía.",
+                                   parent=self.parent_for_dialogs)
+            return
+
+        proportional_hazard_result_obj = None
+        for res_item in check_assumptions_output:
+            if hasattr(res_item, 'test_name') and 'proportional_hazard_test' in str(res_item.test_name).lower():
+                if hasattr(res_item, 'plot'):
+                    proportional_hazard_result_obj = res_item
+                    self.log(f"DEBUG: Encontrado objeto ProportionalHazardTestResult con método plot para '{name_sch}'. Test_name: {res_item.test_name}", "DEBUG")
+                    break
+            # Fallback: Check if the item itself is a result object that has a plot method and a summary that looks like PH test
+            elif hasattr(res_item, 'plot') and hasattr(res_item, 'summary') and isinstance(res_item.summary, pd.DataFrame):
+                 if all(col in res_item.summary.columns for col in ['test_statistic', 'p']): # Common cols in PH test summary
+                    proportional_hazard_result_obj = res_item
+                    self.log(f"DEBUG: Encontrado objeto con método plot y summary compatible para '{name_sch}'.", "DEBUG")
+                    break
+        
+        if proportional_hazard_result_obj:
+            self.log(f"Intentando generar gráfico de Schoenfeld para '{name_sch}' usando el método plot del objeto ProportionalHazardTestResult.", "INFO")
+            try:
+                num_params_sch = len(cph_sch.params_) # For adjusting figure size potentially
+                
+                # Create a new figure for the plot. The .plot() method of the result object will use the current figure.
+                fig_s = plt.figure(figsize=(12, max(6, num_params_sch * 1.0 if num_params_sch > 1 else 5))) # Adjusted figsize logic
+                
+                # The plot method of ProportionalHazardTestResult returns an array of Axes objects.
+                axes_generated = proportional_hazard_result_obj.plot() 
+                
+                # Ensure fig_s is the figure on which plotting occurred.
+                if isinstance(axes_generated, np.ndarray) and axes_generated.size > 0:
+                    fig_s = axes_generated.flat[0].get_figure()
+                elif hasattr(axes_generated, 'get_figure'): # Single Axes object
+                    fig_s = axes_generated.get_figure()
+                else: # Fallback if returned type is unexpected, gcf might be risky if other figs are open.
+                    fig_s = plt.gcf() 
+                    self.log("WARN: Tipo de retorno de .plot() no fue Axes o ndarray de Axes. Usando plt.gcf().", "WARN")
+
+                fig_s.suptitle(f"Residuos de Schoenfeld ({name_sch})", fontsize=14)
+                plt.tight_layout(rect=[0,0,1,0.96]) # Adjust layout after all subplots are drawn
+                self._create_plot_window(fig_s, f"Schoenfeld: {name_sch}", is_single_plot=True) # is_single_plot=True as it's one conceptual figure
             
-            num_params_sch = len(cph_sch.params_)
-            if num_params_sch == 0:
-                self.log("Modelo sin parámetros, no se puede generar gráfico Schoenfeld.", "INFO")
-                messagebox.showinfo("Info", "Modelo no tiene covariables para gráfico Schoenfeld.", parent=self.parent_for_dialogs)
-                return
-
-            ncols_s = min(2, num_params_sch); nrows_s = math.ceil(num_params_sch / ncols_s)
-            fig_s, axes_s_flat = plt.subplots(nrows_s, ncols_s, figsize=(12 if ncols_s > 1 else 7, 4*nrows_s), sharex=False, squeeze=False) 
-            axes_s_flat = axes_s_flat.flatten()
-
-
-
-            for idx, cov_name_s in enumerate(list(cph_sch.params_.index)):
-                if idx < len(axes_s_flat):
-                    ax_s_curr = axes_s_flat[idx]
-                    self.log(f"DEBUG: Graficando Schoenfeld para '{cov_name_s}'. df_for_schoenfeld shape: {df_for_schoenfeld.shape}", "DEBUG")
-                    try:
-                        # Explicitly pass the training_df to plot_residuals for clarity and robustness
-                        cph_sch.plot_residuals(training_df=df_for_schoenfeld, kind="schoenfeld", columns=[cov_name_s], ax=ax_s_curr)
-                        ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}")
-                        # apply_plot_options(ax_s_curr, self.current_plot_options, self.log) # Keep commented or manage based on testing
-                    except Exception as e_plot_s_cov:
-                        self.log(f"Error plot Schoenfeld para {cov_name_s}: {e_plot_s_cov}", "ERROR")
-                        # Optionally, provide feedback on the plot itself if it fails for a specific variable
-                        ax_s_curr.text(0.5, 0.5, f"Error al graficar Schoenfeld para\n{cov_name_s}", ha='center', va='center', color='red')
-            for i_empty_s in range(num_params_sch, len(axes_s_flat)): axes_s_flat[i_empty_s].set_visible(False)
-            fig_s.suptitle(f"Residuos de Schoenfeld ({name_sch})", fontsize=14); plt.tight_layout(rect=[0,0,1,0.96])
-            self._create_plot_window(fig_s, f"Schoenfeld: {name_sch}", is_single_plot=False)
-        except Exception as e_s_main: self.log(f"Error Gráf. Schoenfeld '{name_sch}': {e_s_main}", "ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Gráfico", f"Error Schoenfeld:\n{e_s_main}", parent=self.parent_for_dialogs)
+            except Exception as e_plot:
+                self.log(f"Error al graficar residuos de Schoenfeld desde objeto de check_assumptions para '{name_sch}': {e_plot}", "ERROR")
+                traceback.print_exc(limit=3)
+                if 'fig_s' in locals() and isinstance(fig_s, plt.Figure): # Ensure fig_s was defined
+                    plt.close(fig_s) # Close the figure if an error occurred during plotting or window creation
+                messagebox.showerror("Error de Gráfico", 
+                                   f"No se pudo generar el gráfico de Schoenfeld desde los resultados del test de supuestos:\n{e_plot}",
+                                   parent=self.parent_for_dialogs)
+        else:
+            self.log(f"No se encontró un objeto de resultado de test de PH graficable para '{name_sch}'.", "WARN")
+            messagebox.showwarning("Gráfico No Disponible", 
+                                   "No se encontró un resultado de test de riesgos proporcionales graficable en los datos crudos del modelo.",
+                                   parent=self.parent_for_dialogs)
 
     def show_baseline_survival(self):
         if not self._check_model_selected_and_valid(): return
