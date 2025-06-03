@@ -26,6 +26,7 @@ try:
     from MATLAB_general_charts import GeneralChartsApp
     from MATLAB_combined_analysis import CombinedAnalysisTab
     from MATLAB_sample_size_calculator import SampleSizeCalculatorTab
+    from scientific_calculator import ScientificCalculatorTab # Nueva importación
 except ImportError as e:
     print("Error al importar uno o más módulos:", e)
     sys.exit(1)
@@ -79,6 +80,10 @@ class MainApp(tk.Tk):
 
         self.logistic_tab = LogisticRegressionTab(self.notebook)
         self.notebook.add(self.logistic_tab, text="Logística")
+
+        # Pestaña : Calculadora Científica
+        self.calculator_tab = ScientificCalculatorTab(self.notebook)
+        self.notebook.add(self.calculator_tab, text="Calculadora Científica")
 
         # Pestaña : Calculo de Muestra
         self.sample_size_calculator_tab = SampleSizeCalculatorTab(self.notebook, main_app_instance=self)
