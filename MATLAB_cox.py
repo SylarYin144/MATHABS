@@ -1884,6 +1884,7 @@ class CoxModelingApp(ttk.Frame):
             "y_survival_used_for_fit": y_survival_rm.copy(),
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
+            "df_final_fit_shape": df_for_fit_main.shape,
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
             "schoenfeld_status_message": None, # Initialize status message
@@ -3091,8 +3092,11 @@ class CoxModelingApp(ttk.Frame):
         report_full = f"--- Reporte Metodológico: {name_rep} ---\n\n"
         report_full += "1. Objetivo Modelo:\n   Estimar relación covariables y tiempo-hasta-evento con Modelo Cox.\n\n"
         
-        df_shape_rep = md_rep.get('df_used_for_fit_info_shape', ('N/A', 'N/A'))
-        num_obs_rep_meth = df_shape_rep[0]
+        df_final_shape = md_rep.get('df_final_fit_shape')
+        if df_final_shape and isinstance(df_final_shape, tuple) and len(df_final_shape) >= 1:
+            num_obs_rep_meth = df_final_shape[0]
+        else:
+            num_obs_rep_meth = 'N/A'
 
         num_events_rep_meth = 'N/A'
         if md_rep.get('model') and hasattr(md_rep['model'], 'event_observed'):
