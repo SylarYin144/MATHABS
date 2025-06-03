@@ -2856,7 +2856,7 @@ class CoxModelingApp(ttk.Frame):
                     return
 
                 original_cov_name_for_type_lookup = original_name_from_q if match else chosen_covariate
-                
+
                 series = df_fit.get(covariate_for_plot)
                 if series is None or series.empty or series.isna().all():
                     self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía/toda NaN en df_fit. No se puede intentar fallback.", "ERROR")
@@ -2867,7 +2867,7 @@ class CoxModelingApp(ttk.Frame):
                 is_quantitative = self.covariables_type_config.get(original_cov_name_for_type_lookup) == "Cuantitativa"
                 if original_cov_name_for_type_lookup not in self.covariables_type_config:
                     is_quantitative = pd.api.types.is_numeric_dtype(series.dtype)
-                
+
                 if is_quantitative:
                     self.log(f"'{covariate_for_plot}' es cuantitativa. Generando valores manuales para fallback.", "INFO")
                     min_val, max_val = series.min(), series.max()
@@ -2876,7 +2876,7 @@ class CoxModelingApp(ttk.Frame):
                         messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
                         if fig_vip: plt.close(fig_vip)
                         return
-                    
+
                     manual_values_1d = np.linspace(min_val, max_val, 150)
                     manual_values_2d = manual_values_1d.reshape(-1, 1)
 
