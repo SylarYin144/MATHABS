@@ -2814,7 +2814,6 @@ class CoxModelingApp(ttk.Frame):
                 covariate_for_plot, # USE THE EXTRACTED/ORIGINAL NAME HERE
                 values=None,  # Let lifelines choose appropriate values based on data range
                 plot_baseline=False, # Focus on the effect of the covariate itself
-                with_confidence_intervals=False,
                 ax=ax_vip
             )
 
@@ -2888,7 +2887,6 @@ class CoxModelingApp(ttk.Frame):
                             covariate_for_plot,
                             values=manual_values_2d,
                             plot_baseline=False,
-                            with_confidence_intervals=False,
                             ax=ax_vip
                         )
                         # If successful, proceed with original plotting finalization
