@@ -2637,68 +2637,267 @@ class CoxModelingApp(ttk.Frame):
         except Exception as e_curve_pred: self.log(f"Error pred/plot: {e_curve_pred}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Pred/Plot",f"Error al predecir/plotear:\n{e_curve_pred}",parent=dialog_pred_ref)
 
 
-    def generate_calibration_plot(self):
-        if not self._check_model_selected_and_valid(): return
-        if not LIFELINES_CALIBRATION_AVAILABLE: messagebox.showwarning("No Disponible","Gráf. Calibración no disponible.",parent=self.parent_for_dialogs); return
-        md_cal = self.selected_model_in_treeview; cph_cal = md_cal.get('model'); name_cal = md_cal.get('model_name','N/A')
-        
-        X_dsgn_cal = md_cal.get('_X_design_rm_INTERNAL_USE')
-        y_surv_cal_dict = md_cal.get('_y_survival_rm_INTERNAL_USE') 
-        
-        if X_dsgn_cal is None or y_surv_cal_dict is None:
-            self.log(f"Datos (X o y) para calibración no disponibles en modelo '{name_cal}'.", "ERROR")
-            messagebox.showerror("Error Datos","Faltan datos X_design o y_survival para calibración en el modelo guardado.",parent=self.parent_for_dialogs); return
-        if X_dsgn_cal.empty and md_cal.get('covariates_processed',[]): 
-            self.log(f"X_design para calibración está vacía pero el modelo tiene covariables ('{name_cal}').", "WARN")
-            messagebox.showwarning("Datos Inconsistentes","X_design para calibración está vacía. Gráfico puede no ser significativo.", parent=self.parent_for_dialogs)
 
-        t_col_cal, e_col_cal = md_cal.get('time_col_for_model'), md_cal.get('event_col_for_model')
-        if not t_col_cal or not e_col_cal:
-             self.log(f"Nombres de columnas T/E no encontrados en modelo '{name_cal}'.", "ERROR")
-             messagebox.showerror("Error Interno", "Nombres T/E faltan en modelo.", parent=self.parent_for_dialogs); return
+        # self.log("DEBUG: generate_calibration_plot called", "DEBUG") # Optional: for debugging entry
 
-        T_cal_series = y_surv_cal_dict[t_col_cal]
-        E_cal_series = y_surv_cal_dict[e_col_cal]
+        md_cal = self.selected_model_in_treeview
+        cph_cal_orig = md_cal.get('model') # Original fitted model
+        name_cal = md_cal.get('model_name','N/A')
 
-        t0_cal_str = simpledialog.askstring("Tiempo Calibración","Ingrese t0 para calibración:",parent=self.parent_for_dialogs)
-        if not t0_cal_str: return
-        try: t0_val_cal = float(t0_cal_str); assert t0_val_cal > 0
-        except: messagebox.showerror("Tiempo Inválido",f"Tiempo t0 inválido.",parent=self.parent_for_dialogs); return
+        df_actually_used_for_fit = md_cal.get('_df_for_fit_main_INTERNAL_USE')
+        time_col = md_cal.get('time_col_for_model')
+        event_col = md_cal.get('event_col_for_model')
+
+        # Try to get the formula used for the original fit.
+        # This might be 'formula_patsy' or 'full_patsy_formula_for_new_data_transform'
+        # depending on how it was stored. Prioritize 'formula_patsy' if available.
+        formula_patsy = md_cal.get('formula_patsy')
+        if not formula_patsy:
+            formula_patsy = md_cal.get('full_patsy_formula_for_new_data_transform')
+
+        # Original model parameters needed for refitting
+        original_penalizer = getattr(cph_cal_orig, 'penalizer', 0.0)
+        original_l1_ratio = getattr(cph_cal_orig, 'l1_ratio', 0.0)
+        # self.log(f"DEBUG: Original model params: penalizer={original_penalizer}, l1_ratio={original_l1_ratio}", "DEBUG")
+
+
+        if df_actually_used_for_fit is None or df_actually_used_for_fit.empty:
+            self.log("DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no encontrado o vacío en el modelo guardado. No se puede generar gráfico de calibración.", "ERROR")
+            messagebox.showerror("Error Datos", "DataFrame de ajuste no encontrado o vacío en el modelo guardado.", parent=self.parent_for_dialogs)
+            return
+        if not all([time_col, event_col, formula_patsy]):
+            self.log(f"Información esencial para calibración no encontrada en modelo: T={time_col}, E={event_col}, F='{formula_patsy}'", "ERROR")
+            messagebox.showerror("Error Datos", "Información esencial (tiempo, evento, fórmula) no encontrada en el modelo guardado.", parent=self.parent_for_dialogs)
+            return
+
+        t0_cal_str = simpledialog.askstring("Tiempo Calibración", "Ingrese t0 (tiempo) para la calibración:", parent=self.parent_for_dialogs)
+        if not t0_cal_str:
+            self.log("Calibración cancelada por usuario (no se ingresó t0).", "INFO")
+            return
         try:
-            fig_cal, ax_cal = plt.subplots(figsize=(8,8))
-            if X_dsgn_cal.empty and not md_cal.get('covariates_processed',[]): 
-                 self.log("Calibración no es aplicable a un modelo nulo sin covariables.", "INFO")
-                 messagebox.showinfo("No Aplicable", "Gráfico de calibración no aplica a modelos nulos.", parent=self.parent_for_dialogs)
-                 plt.close(fig_cal) 
-                 return
+            t0_val_cal = float(t0_cal_str)
+            if t0_val_cal <= 0:
+                raise ValueError("t0 debe ser un número positivo.")
+        except ValueError as e_t0:
+            self.log(f"Error en valor de t0 para calibración: {e_t0}", "ERROR")
+            messagebox.showerror("Tiempo Inválido",f"Tiempo t0 inválido: {e_t0}",parent=self.parent_for_dialogs)
+            return
 
-            df_actually_used_for_fit = md_cal.get('_df_for_fit_main_INTERNAL_USE')
-            if df_actually_used_for_fit is None:
-                self.log(f"DataFrame used for fitting ('_df_for_fit_main_INTERNAL_USE') not found in model data for calibration model '{name_cal}'. Calibration plot cannot be generated.", "ERROR")
-                messagebox.showerror("Error Calibración", f"Datos de ajuste no encontrados en el modelo '{name_cal}' para generar el gráfico de calibración.", parent=self.parent_for_dialogs)
-                plt.close(fig_cal) # Close the figure if data is missing
-                return
+        # KFold initialization
+        # Assuming self.cv_random_seed_var is an IntVar defined in __init__
+        # If self.cv_random_seed_var doesn't exist or isn't an IntVar, use a fixed integer like 42.
+        random_seed_for_kfold = 42
+        if hasattr(self, 'cv_random_seed_var') and isinstance(self.cv_random_seed_var, tk.IntVar):
+            try:
+                random_seed_for_kfold = self.cv_random_seed_var.get()
+            except tk.TclError: # If Tkinter context is problematic (e.g. during tests or if var not set)
+                self.log("WARN: Could not get random_seed from tk.IntVar, using default 42 for KFold.", "WARN")
 
-            survival_probability_calibration(cph_cal, df_actually_used_for_fit, t0=t0_val_cal, ax=ax_cal)
-            opts_cal = self.current_plot_options.copy(); opts_cal['title'] = opts_cal.get('title') or f"Calibración en t0={t0_val_cal} ({name_cal})"; apply_plot_options(ax_cal, opts_cal, self.log)
-            self._create_plot_window(fig_cal, f"Calibración t0={t0_val_cal}: {name_cal}")
-        except Exception as e_cal:
-            self.log(f"Error gráf.calibración '{name_cal}': {e_cal}","ERROR")
-            import traceback # Explicitly import traceback here
-            self.log(traceback.format_exc(), "DEBUG") # Log the full traceback for debugging this specific error
-            messagebox.showerror("Error Gráfico",f"Error al generar gráfico de calibración para '{name_cal}':\n{e_cal}",parent=self.parent_for_dialogs)
+        kf = KFold(n_splits=10, shuffle=True, random_state=random_seed_for_kfold)
 
-            # Ensure figure created by plt.subplots is closed if an error occurs
-            # before it's properly managed by _create_plot_window or if _create_plot_window itself fails.
-            if 'fig_cal' in locals():
+        x_coords_actual_h = []
+        y_coords_predicted_h = []
+        x_low_ci_h_fold = [] # Renamed to avoid conflict if this subtask is run multiple times
+        x_high_ci_h_fold = []
+
+        self.log(f"Iniciando preparación para calibración custom (10-fold CV) en t0={t0_val_cal} para modelo '{name_cal}'...", "INFO")
+
+        # The old try-except block for survival_probability_calibration should be entirely removed.
+        # Loop implementation and plotting will follow in the next steps.
+        # For now, this subtask just sets up the function up to this point.
+        # Add a temporary log to indicate completion of this setup step.
+        self.log("Preparación para loop KFold en generate_calibration_plot completa.", "DEBUG")
+
+        # --- Start of KFold Loop Implementation ---
+        fold_count = 0
+        for train_indices, test_indices in kf.split(df_actually_used_for_fit):
+            fold_count += 1
+            self.log(f"Procesando Fold {fold_count}/10...", "DEBUG")
+
+            df_train = df_actually_used_for_fit.iloc[train_indices]
+            df_test = df_actually_used_for_fit.iloc[test_indices]
+
+            if df_train.empty or df_test.empty:
+                self.log(f"Fold {fold_count} skipped: df_train o df_test vacío.", "WARN")
+                continue
+
+            # Ensure there are events in the training set for model fitting
+            if df_train[event_col].sum() == 0:
+                self.log(f"Fold {fold_count} skipped: No events in training data for this fold.", "WARN")
+                continue
+
+            # 1. Refit Cox Model on Training Data
+            cph_fold = CoxPHFitter(penalizer=original_penalizer, l1_ratio=original_l1_ratio)
+            try:
+                cph_fold.fit(df_train, duration_col=time_col, event_col=event_col, formula=formula_patsy)
+            except Exception as e_fold_fit:
+                self.log(f"Error ajustando modelo en Fold {fold_count}: {e_fold_fit}", "WARN")
+                continue
+
+            # 2. Calculate Y-coordinate (Mean Predicted Hazard for Test Fold)
+            mean_h_pred_test_fold = np.nan
+            try:
+                # Ensure df_test is not empty for prediction
+                if df_test.shape[0] > 0:
+                    s_pred_test_series = cph_fold.predict_survival_function(df_test, times=[t0_val_cal]).iloc[0] # Get Series for t0
+                    # Clip S(t0) to avoid log(0) or log(>1) if predictions are exactly 0 or 1
+                    s_pred_test_clipped = np.clip(s_pred_test_series.values, 1e-9, 1.0 - 1e-9)
+                    h_pred_test_fold_all_subjects = -np.log(s_pred_test_clipped)
+                    mean_h_pred_test_fold = np.nanmean(h_pred_test_fold_all_subjects)
+                else:
+                    self.log(f"Fold {fold_count}: df_test vacío antes de predicción de supervivencia.", "WARN")
+            except Exception as e_pred_h:
+                self.log(f"Error calculando H_pred en Fold {fold_count}: {e_pred_h}", "WARN")
+
+            y_coords_predicted_h.append(mean_h_pred_test_fold)
+
+            # 3. Calculate X-coordinate (Actual Hazard for Test Fold & CI)
+            h_actual_fold_val = np.nan
+            s_ci_low_val = np.nan
+            s_ci_high_val = np.nan
+
+            # Ensure there are events in the test set for KMF
+            if df_test[event_col].sum() == 0 :
+                self.log(f"Fold {fold_count}: No events in test data. Actual hazard cannot be reliably estimated by KMF for this fold.", "WARN")
+                # We might still append NaNs or decide how to handle this for plotting
+            else:
                 try:
-                    # Check if the window for this figure still exists or was ever created.
-                    # This is a bit tricky as canvas might not be there if plt.subplots() itself failed,
-                    # or if _create_plot_window was never reached.
-                    # A simpler plt.close(fig_cal) is often sufficient.
-                    plt.close(fig_cal)
-                except Exception as e_close_fig:
-                    self.log(f"DEBUG: Minor error trying to close fig_cal during calibration error handling: {e_close_fig}", "DEBUG")
+                    kmf_fold = KaplanMeierFitter()
+                    kmf_fold.fit(df_test[time_col], event_observed=df_test[event_col])
+
+                    s_actual_fold_series = kmf_fold.survival_function_at_times([t0_val_cal])
+                    s_actual_fold_val = s_actual_fold_series.iloc[0] if not s_actual_fold_series.empty else np.nan
+
+                    if pd.notna(s_actual_fold_val):
+                        # Clip S_actual(t0) to avoid log(0) or log(>1)
+                        s_actual_fold_val_clipped = np.clip(s_actual_fold_val, 1e-9, 1.0 - 1e-9)
+                        h_actual_fold_val = -np.log(s_actual_fold_val_clipped)
+
+                        # Get CI for S_actual(t0)
+                        # confidence_interval_survival_function_ is a DataFrame with index=timeline
+                        # We need to find the row closest to t0_val_cal
+                        ci_df = kmf_fold.confidence_interval_survival_function_
+                        if not ci_df.empty:
+                            # Find index closest to t0_val_cal
+                            time_diff = np.abs(ci_df.index - t0_val_cal)
+                            closest_time_idx = time_diff.argmin()
+                            s_ci_low_val = ci_df.iloc[closest_time_idx, 0] # Lower CI for S(t)
+                            s_ci_high_val = ci_df.iloc[closest_time_idx, 1] # Upper CI for S(t)
+                    else:
+                        self.log(f"Fold {fold_count}: S_actual({t0_val_cal}) no pudo ser estimado por KMF (quizás t0 es mayor que el último tiempo observado).", "WARN")
+
+                except Exception as e_actual_h:
+                    self.log(f"Error calculando H_actual o su CI en Fold {fold_count}: {e_actual_h}", "WARN")
+
+            x_coords_actual_h.append(h_actual_fold_val)
+
+            # Convert S(t0) CIs to H(t0) CIs
+            current_x_low_ci = np.nan
+            current_x_high_ci = np.nan
+            if pd.notna(s_ci_low_val) and pd.notna(s_ci_high_val):
+                # Clip CI bounds before log to prevent errors
+                s_ci_low_clipped = np.clip(s_ci_low_val, 1e-9, 1.0 - 1e-9)
+                s_ci_high_clipped = np.clip(s_ci_high_val, 1e-9, 1.0 - 1e-9)
+                current_x_low_ci = -np.log(s_ci_high_clipped) # Note: -log(S_high) is lower bound for H
+                current_x_high_ci = -np.log(s_ci_low_clipped)  # Note: -log(S_low) is upper bound for H
+
+            x_low_ci_h_fold.append(current_x_low_ci)
+            x_high_ci_h_fold.append(current_x_high_ci)
+
+            # self.log(f"Fold {fold_count} results: H_actual={h_actual_fold_val:.3f} (CI: [{current_x_low_ci:.3f}, {current_x_high_ci:.3f}]), H_pred_mean={mean_h_pred_test_fold:.3f}", "DEBUG")
+
+        # --- End of KFold Loop Implementation ---
+
+        # After the loop, add a log to indicate completion of this part
+        self.log("Procesamiento de K-Folds completado.", "INFO")
+        if len(x_coords_actual_h) != 10:
+            self.log(f"Advertencia: Solo se procesaron {len(x_coords_actual_h)} de 10 folds debido a errores o datos insuficientes en algunos folds.", "WARN")
+
+        # --- Start of Plotting Logic ---
+        if not x_coords_actual_h or not y_coords_predicted_h:
+            self.log("No hay datos suficientes de los folds para generar el gráfico de calibración.", "ERROR")
+            messagebox.showerror("Error de Gráfico", "No se pudieron calcular puntos para el gráfico de calibración desde los folds.", parent=self.parent_for_dialogs)
+            return
+
+        fig_cal, ax_cal = plt.subplots(figsize=(8, 8))
+
+        # Convert lists to numpy arrays for easier manipulation, handling NaNs
+        x_coords = np.array(x_coords_actual_h, dtype=float)
+        y_coords = np.array(y_coords_predicted_h, dtype=float)
+        x_err_low = np.array(x_low_ci_h_fold, dtype=float)
+        x_err_high = np.array(x_high_ci_h_fold, dtype=float)
+
+        # Filter out NaN values that might have occurred if a fold failed
+        valid_indices = ~np.isnan(x_coords) & ~np.isnan(y_coords) # CI NaNs will be handled by errorbar
+
+        if not np.any(valid_indices):
+            self.log("Todos los puntos de calibración resultaron en NaN. No se puede graficar.", "ERROR")
+            messagebox.showerror("Error de Gráfico", "Todos los puntos de calibración son NaN.", parent=self.parent_for_dialogs)
+            plt.close(fig_cal) # Close the empty figure
+            return
+
+        x_plot = x_coords[valid_indices]
+        y_plot = y_coords[valid_indices]
+
+        # For error bars, xerr should be [lower_errors, upper_errors]
+        # lower_errors = x_plot - x_err_low[valid_indices]
+        # upper_errors = x_err_high[valid_indices] - x_plot
+        # Need to handle NaNs in CIs carefully: if a CI bound is NaN, error for that point will be absent/zero for that side.
+
+        lower_errors = np.zeros_like(x_plot)
+        upper_errors = np.zeros_like(x_plot)
+
+        x_err_low_valid = x_err_low[valid_indices]
+        x_err_high_valid = x_err_high[valid_indices]
+
+        for i in range(len(x_plot)):
+            if pd.notna(x_err_low_valid[i]) and pd.notna(x_plot[i]):
+                lower_errors[i] = x_plot[i] - x_err_low_valid[i]
+            else:
+                lower_errors[i] = 0 # Or some other indicator that it's missing
+
+            if pd.notna(x_err_high_valid[i]) and pd.notna(x_plot[i]):
+                upper_errors[i] = x_err_high_valid[i] - x_plot
+            else:
+                upper_errors[i] = 0 # Or some other indicator
+
+        # Ensure errors are non-negative
+        lower_errors = np.maximum(0, lower_errors)
+        upper_errors = np.maximum(0, upper_errors)
+
+        x_errors = [lower_errors, upper_errors]
+
+        ax_cal.errorbar(x_plot, y_plot, xerr=x_errors, fmt='o', color='blue', ecolor='lightblue', capsize=5, label='Fold Estimates (Observed H vs. Predicted H)')
+
+        # Plot y=x line
+        min_val = np.nanmin([np.nanmin(x_plot), np.nanmin(y_plot)])
+        max_val = np.nanmax([np.nanmax(x_plot), np.nanmax(y_plot)])
+        if pd.isna(min_val) or pd.isna(max_val): # Fallback if all are NaN (though caught above) or single point
+            min_val = 0
+            max_val = 1
+
+        # Extend limits slightly for better visualization of y=x line
+        plot_buffer = (max_val - min_val) * 0.05 if (max_val - min_val) > 0 else 0.1
+        ax_cal.plot([min_val - plot_buffer, max_val + plot_buffer], [min_val - plot_buffer, max_val + plot_buffer], 'k--', lw=1, label='Perfect Calibration')
+
+        ax_cal.set_xlabel(f"Observed Fold Cumulative Hazard H(t={t0_val_cal})")
+        ax_cal.set_ylabel(f"Mean Predicted Fold Cumulative Hazard H(t={t0_val_cal})")
+        ax_cal.set_title(f"Calibration: Hazard at t0={t0_val_cal} (10-Fold CV)\nModel: {name_cal}")
+        ax_cal.legend()
+        ax_cal.grid(True, linestyle=':', alpha=0.7)
+
+        # Apply general plot options if any are relevant
+        plot_options_to_apply = self.current_plot_options.copy()
+        # Override specific labels/title as they are context-dependent
+        plot_options_to_apply['title'] = ax_cal.get_title()
+        plot_options_to_apply['xlabel'] = ax_cal.get_xlabel()
+        plot_options_to_apply['ylabel'] = ax_cal.get_ylabel()
+        apply_plot_options(ax_cal, plot_options_to_apply, self.log) # apply_plot_options is an existing helper
+
+        plt.tight_layout()
+        self._create_plot_window(fig_cal, f"Nueva Calibración H(t0={t0_val_cal}): {name_cal}")
+        self.log(f"Gráfico de calibración (Hazard vs Hazard) para t0={t0_val_cal} generado.", "INFO")
+        # --- End of Plotting Logic ---
 
     def show_variable_impact_plot(self):
         if not self._check_model_selected_and_valid(check_params=True):
