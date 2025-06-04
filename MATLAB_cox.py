@@ -36,12 +36,37 @@ matplotlib.use('TkAgg')  # Backend para Tkinter
 # --- Importaciones de Lifelines ---
 # check_assumptions lo reemplaza en gran medida
 
+LIFELINES_BRIER_SCORE_AVAILABLE = False
+brier_score = None # Ensure brier_score is defined in this scope
+
 try:
-    from lifelines.scoring import brier_score
+    from lifelines.utils import brier_score as brier_score_utils
+    brier_score = brier_score_utils
     LIFELINES_BRIER_SCORE_AVAILABLE = True
+    print("INFO: 'brier_score' importado desde 'lifelines.utils'.") # Optional: for confirmation
 except ImportError:
-    LIFELINES_BRIER_SCORE_AVAILABLE = False
-    print("ADVERTENCIA: La función 'brier_score' no pudo ser importada desde 'lifelines.scoring'.")
+    try:
+        from lifelines.metrics import brier_score as brier_score_metrics
+        brier_score = brier_score_metrics
+        LIFELINES_BRIER_SCORE_AVAILABLE = True
+        print("INFO: 'brier_score' importado desde 'lifelines.metrics'.") # Optional: for confirmation
+    except ImportError:
+        try:
+            from lifelines.scoring import brier_score as brier_score_scoring # Original attempt
+            brier_score = brier_score_scoring
+            LIFELINES_BRIER_SCORE_AVAILABLE = True
+            # If this original one now works, it's fine, but the warning was for it failing.
+            # So, if it succeeds here, it implies the environment might have changed or the initial warning was intermittent.
+            # We won't print a success for this one unless we are sure it's a *fix*.
+            # The original warning was: "ADVERTENCIA: La función 'brier_score' no pudo ser importada desde 'lifelines.scoring'."
+            # If it *still* fails, the outer except will catch it.
+        except ImportError:
+            LIFELINES_BRIER_SCORE_AVAILABLE = False
+            print("ADVERTENCIA: La función 'brier_score' no pudo ser importada desde 'lifelines.utils', 'lifelines.metrics', ni 'lifelines.scoring'.")
+
+# Ensure brier_score is None if not available, so code relying on it can check
+if not LIFELINES_BRIER_SCORE_AVAILABLE:
+    brier_score = None
 
 try:
     from lifelines.calibration import survival_probability_calibration
