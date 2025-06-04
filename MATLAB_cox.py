@@ -2720,11 +2720,19 @@ class CoxModelingApp(ttk.Frame):
 
             if df_train.empty or df_test.empty:
                 self.log(f"Fold {fold_count} skipped: df_train o df_test vacío.", "WARN")
+                x_coords_actual_h.append(np.nan)
+                y_coords_predicted_h.append(np.nan)
+                x_low_ci_h_fold.append(np.nan)
+                x_high_ci_h_fold.append(np.nan)
                 continue
 
             # Ensure there are events in the training set for model fitting
             if df_train[event_col].sum() == 0:
                 self.log(f"Fold {fold_count} skipped: No events in training data for this fold.", "WARN")
+                x_coords_actual_h.append(np.nan)
+                y_coords_predicted_h.append(np.nan)
+                x_low_ci_h_fold.append(np.nan)
+                x_high_ci_h_fold.append(np.nan)
                 continue
 
             # 1. Refit Cox Model on Training Data
@@ -2733,6 +2741,10 @@ class CoxModelingApp(ttk.Frame):
                 cph_fold.fit(df_train, duration_col=time_col, event_col=event_col, formula=formula_patsy)
             except Exception as e_fold_fit:
                 self.log(f"Error ajustando modelo en Fold {fold_count}: {e_fold_fit}", "WARN")
+                x_coords_actual_h.append(np.nan)
+                y_coords_predicted_h.append(np.nan)
+                x_low_ci_h_fold.append(np.nan)
+                x_high_ci_h_fold.append(np.nan)
                 continue
 
             # 2. Calculate Y-coordinate (Mean Predicted Hazard for Test Fold)
@@ -2858,7 +2870,7 @@ class CoxModelingApp(ttk.Frame):
                 lower_errors[i] = 0 # Or some other indicator that it's missing
 
             if pd.notna(x_err_high_valid[i]) and pd.notna(x_plot[i]):
-                upper_errors[i] = x_err_high_valid[i] - x_plot
+                upper_errors[i] = x_err_high_valid[i] - x_plot[i]
             else:
                 upper_errors[i] = 0 # Or some other indicator
 
