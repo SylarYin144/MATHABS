@@ -29,13 +29,13 @@ if errorlevel 1 (
 echo Python encontrado.
 REM --- VERIFICAR ARCHIVOS NECESARIOS EN EL DIRECTORIO DEL SCRIPT ---
 echo Buscando archivos de la aplicacion en: "%APP_ROOT_DIR%"
-if not exist "%APP_ROOT_DIR%\%%REQUIREMENTS_FILE_NAME%%" (
-    echo ERROR: Archivo de requerimientos "%%REQUIREMENTS_FILE_NAME%%" no encontrado en "%APP_ROOT_DIR%".
+if not exist "%APP_ROOT_DIR%\%REQUIREMENTS_FILE_NAME%" (
+    echo ERROR: Archivo de requerimientos "%REQUIREMENTS_FILE_NAME%" no encontrado en "%APP_ROOT_DIR%".
     pause
     %e_cmd% /b 1
 )
-if not exist "%APP_ROOT_DIR%\%%MAIN_APP_FILE_NAME%%" (
-    echo ERROR: Archivo principal de la aplicacion "%%MAIN_APP_FILE_NAME%%" no encontrado en "%APP_ROOT_DIR%".
+if not exist "%APP_ROOT_DIR%\%MAIN_APP_FILE_NAME%" (
+    echo ERROR: Archivo principal de la aplicacion "%MAIN_APP_FILE_NAME%" no encontrado en "%APP_ROOT_DIR%".
     pause
     %e_cmd% /b 1
 )
