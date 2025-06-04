@@ -2111,7 +2111,6 @@ class CoxModelingApp(ttk.Frame):
             elif self.calculate_cv_cindex_var.get(): self.log("C-Index CV no calculado (modelo nulo o sin X_design).", "INFO")
 
         except Exception as e_fit_main:
-            import traceback # Explicitly import traceback here
             self.log(f"Error ajuste modelo/métricas '{model_name_rm}': {e_fit_main}", "ERROR"); traceback.print_exc(limit=5); return None
 
         model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
