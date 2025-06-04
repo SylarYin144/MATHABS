@@ -1,23 +1,22 @@
 @echo off
 setlocal
+set e_cmd=exit
 
 REM --- INICIO DE CONFIGURACION ---
-REM Ruta preferida donde se espera encontrar la carpeta MATABS con los archivos de la aplicacion
-set PREFERRED_APP_DIR=D:\APPS\MATABS
 
-REM Directorio padre para la ubicacion de fallback (es el directorio donde se encuentra este script .bat)
-set FALLBACK_PARENT_DIR=%~dp0
 
-REM Nombre de la subcarpeta que contiene los archivos de la aplicacion (requirements, main_app.py)
-set APP_SUBFOLDER_NAME=MATABS
 
-REM Nombre del directorio del entorno virtual (se creara dentro de la carpeta APP_ROOT_DIR encontrada)
+REM Nombre del directorio del entorno virtual (se creara dentro de la carpeta del script .bat)
 set VENV_NAME=matabs_env
 
 REM Nombres de los archivos clave de la aplicacion
 set REQUIREMENTS_FILE_NAME=requirements_matabs.txt
 set MAIN_APP_FILE_NAME=matlab_main_app.py
 REM --- FIN DE CONFIGURACION ---
+REM El directorio raiz de la aplicacion es el directorio donde se encuentra este script .bat
+set APP_ROOT_DIR=%~dp0
+REM Eliminar la barra invertida final de APP_ROOT_DIR si existe, para consistencia.
+if "%%APP_ROOT_DIR:~-1%%"=="\" set APP_ROOT_DIR=%%APP_ROOT_DIR:~0,-1%%
 
 echo Verificando Python...
 python --version >nul 2>&1
@@ -28,67 +27,19 @@ if errorlevel 1 (
     exit /b 1
 )
 echo Python encontrado.
-echo.
-
-REM --- DETERMINAR EL DIRECTORIO RAIZ DE LA APLICACION (APP_ROOT_DIR) ---
-REM APP_ROOT_DIR sera la carpeta (ej. D:\APPS\MATABS o %~dp0\MATABS) que contiene requirements.txt y main_app.py
-set APP_ROOT_DIR=
-
-REM Intento 1: Ruta preferida (ej. D:\APPS\MATABS)
-echo Buscando la aplicacion en la ruta preferida: "%PREFERRED_APP_DIR%"
-if exist "%PREFERRED_APP_DIR%\%REQUIREMENTS_FILE_NAME%" (
-    if exist "%PREFERRED_APP_DIR%\%MAIN_APP_FILE_NAME%" (
-        echo   + Aplicacion encontrada en la ruta preferida.
-        set APP_ROOT_DIR=%PREFERRED_APP_DIR%
-    ) else (
-        echo   - Archivo principal "%MAIN_APP_FILE_NAME%" no encontrado en "%PREFERRED_APP_DIR%".
-    )
-) else (
-    echo   - Archivo de requerimientos "%REQUIREMENTS_FILE_NAME%" no encontrado en "%PREFERRED_APP_DIR%".
-    if not exist "%PREFERRED_APP_DIR%" (
-        echo     (Ademas, el directorio "%PREFERRED_APP_DIR%" no existe.)
-    )
-)
-echo.
-
-REM Intento 2: Subcarpeta APP_SUBFOLDER_NAME relativa al script batch (ej. %~dp0\MATABS)
-if "%APP_ROOT_DIR%"=="" (
-    REM %FALLBACK_PARENT_DIR% es %~dp0 y ya tiene la barra invertida al final.
-    set FALLBACK_APP_DIR=%FALLBACK_PARENT_DIR%%APP_SUBFOLDER_NAME%
-    
-    echo Buscando la aplicacion en la ruta relativa al script: "%FALLBACK_APP_DIR%"
-    
-    if exist "%FALLBACK_APP_DIR%\%REQUIREMENTS_FILE_NAME%" (
-        if exist "%FALLBACK_APP_DIR%\%MAIN_APP_FILE_NAME%" (
-            echo   + Aplicacion encontrada en la ruta relativa al script.
-            set APP_ROOT_DIR=%FALLBACK_APP_DIR%
-        ) else (
-            echo   - Archivo principal "%MAIN_APP_FILE_NAME%" no encontrado en "%FALLBACK_APP_DIR%".
-        )
-    ) else (
-        echo   - Archivo de requerimientos "%REQUIREMENTS_FILE_NAME%" no encontrado en "%FALLBACK_APP_DIR%".
-        if not exist "%FALLBACK_APP_DIR%" (
-            echo     (Ademas, el directorio "%FALLBACK_APP_DIR%" no existe.)
-        )
-    )
-    echo.
-)
-
-REM Comprobacion final
-if "%APP_ROOT_DIR%"=="" (
-    echo ERROR: No se pudo encontrar la aplicacion MATABS.
-    echo Se busco una carpeta que contenga "%REQUIREMENTS_FILE_NAME%" y "%MAIN_APP_FILE_NAME%" en:
-    echo   1. Ruta preferida: "%PREFERRED_APP_DIR%"
-    echo   2. Ruta relativa al script: "%FALLBACK_PARENT_DIR%%APP_SUBFOLDER_NAME%"
-    echo.
-    echo Por favor, asegurese de que la estructura de archivos exista en una de estas ubicaciones.
-    echo Ejemplo de estructura esperada dentro de la ubicacion encontrada:
-    echo   [Ubicacion_MATABS]\%REQUIREMENTS_FILE_NAME%
-    echo   [Ubicacion_MATABS]\%MAIN_APP_FILE_NAME%
+REM --- VERIFICAR ARCHIVOS NECESARIOS EN EL DIRECTORIO DEL SCRIPT ---
+echo Buscando archivos de la aplicacion en: "%APP_ROOT_DIR%"
+if not exist "%APP_ROOT_DIR%\%%REQUIREMENTS_FILE_NAME%%" (
+    echo ERROR: Archivo de requerimientos "%%REQUIREMENTS_FILE_NAME%%" no encontrado en "%APP_ROOT_DIR%".
     pause
-    exit /b 1
+    %e_cmd% /b 1
 )
-
+if not exist "%APP_ROOT_DIR%\%%MAIN_APP_FILE_NAME%%" (
+    echo ERROR: Archivo principal de la aplicacion "%%MAIN_APP_FILE_NAME%%" no encontrado en "%APP_ROOT_DIR%".
+    pause
+    %e_cmd% /b 1
+)
+echo Archivos de la aplicacion encontrados.
 echo Directorio raiz de la aplicacion (MATABS) establecido en: "%APP_ROOT_DIR%"
 echo.
 
