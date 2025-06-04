@@ -21,7 +21,7 @@ class FilterComponent(ttk.Frame):
         """
         # Extraer log_callback de kwargs si se pasó así, o tomar el parámetro nombrado
         self.log_func = kwargs.pop('log_callback', log_callback if log_callback else print)
-        
+
         super().__init__(master, *args, **kwargs)
         self.df_original = None
         self.column_list = []
@@ -74,6 +74,11 @@ class FilterComponent(ttk.Frame):
         col_combo.pack(side="left", padx=2)
         col_combo.set("") # Iniciar vacío
 
+        # Combobox para seleccionar el tipo de filtro
+        type_combo = ttk.Combobox(condition_row_frame, values=["Automático", "Cualitativa", "Cuantitativa"], state="readonly", width=15)
+        type_combo.pack(side="left", padx=2)
+        type_combo.set("Automático") # Valor inicial
+
         # Frame para los controles específicos del tipo de columna (se llenará dinámicamente)
         controls_frame = ttk.Frame(condition_row_frame)
         controls_frame.pack(side="left", padx=2, fill="x", expand=True)
@@ -87,6 +92,7 @@ class FilterComponent(ttk.Frame):
         condition_widgets = {
             "frame": condition_row_frame,
             "col_combo": col_combo,
+            "type_combo": type_combo, # Guardar referencia al combobox de tipo
             "controls_frame": controls_frame,
             "specific_controls": None # Se llenará al seleccionar columna
         }
@@ -94,6 +100,8 @@ class FilterComponent(ttk.Frame):
 
         # Asociar evento al combobox de columna
         col_combo.bind("<<ComboboxSelected>>", lambda event, cw=condition_widgets: self._on_column_selected(event, cw))
+        # Asociar evento al combobox de tipo también
+        type_combo.bind("<<ComboboxSelected>>", lambda event, cw=condition_widgets: self._on_column_selected(event, cw))
 
     def _remove_filter_condition_row(self, frame_to_remove):
         """Elimina una fila de condición de filtro."""
@@ -109,9 +117,10 @@ class FilterComponent(ttk.Frame):
             self.log("Fila de filtro eliminada.", "DEBUG")
 
     def _on_column_selected(self, event, condition_widgets):
-        """Se ejecuta cuando se selecciona una columna en un Combobox."""
+        """Se ejecuta cuando se selecciona una columna o tipo en un Combobox."""
         selected_col = condition_widgets["col_combo"].get()
         controls_frame = condition_widgets["controls_frame"]
+        manual_type_selection = condition_widgets["type_combo"].get()
 
         # Limpiar controles anteriores
         for widget in controls_frame.winfo_children():
@@ -123,35 +132,41 @@ class FilterComponent(ttk.Frame):
 
         col_data = self.df_original[selected_col].dropna()
         col_dtype = self.df_original[selected_col].dtype
+        is_categorical = False # Inicializar por si acaso
 
-        # Determinar si es categórica, numérica o fecha
-        is_categorical = False
-        if pd.api.types.is_datetime64_any_dtype(col_dtype):
-            self._create_date_controls(controls_frame, condition_widgets, selected_col)
-        elif pd.api.types.is_object_dtype(col_dtype) or pd.api.types.is_categorical_dtype(col_dtype):
-            # Si es object o category, verificar si tratar como categórica (pocos únicos) o texto libre
-            unique_count = col_data.nunique()
-            if unique_count <= self.max_unique_cat:
-                is_categorical = True
-            else:
-                # Tratar como texto libre si hay muchos valores únicos
-                self._create_text_controls(controls_frame, condition_widgets, selected_col)
-                is_categorical = False # Asegurar que no caiga en el bloque categórico
-        elif pd.api.types.is_numeric_dtype(col_dtype):
-            unique_count = col_data.nunique()
-            # No tratar booleanos como categóricos aquí si tienen pocos valores, ni numéricos que ya se decidieron como no categóricos
-            if unique_count <= self.max_unique_cat and not pd.api.types.is_bool_dtype(col_dtype):
-                is_categorical = True # Tratar como categórica si pocos valores únicos
-            else:
-                is_categorical = False # Definitivamente numérica
-        
-        if is_categorical: # Solo si se determinó explícitamente como categórica
+        if manual_type_selection == "Cualitativa":
+            is_categorical = True # Forzar tipo categórico
             self._create_categorical_controls(controls_frame, condition_widgets, selected_col, col_data)
-        elif pd.api.types.is_numeric_dtype(col_dtype) and \
-             not pd.api.types.is_datetime64_any_dtype(col_dtype) and \
-             not is_categorical: # Asegurar que no sea fecha y no se haya marcado como categórica
-             self._create_numeric_controls(controls_frame, condition_widgets, selected_col)
-        # else: Añadir manejo para otros tipos (booleano explícito si se desea)
+        elif manual_type_selection == "Cuantitativa":
+            is_categorical = False # Forzar tipo numérico
+            # No crear controles de fecha aquí, solo numéricos.
+            self._create_numeric_controls(controls_frame, condition_widgets, selected_col)
+        else: # Automático o valor no esperado
+            # Lógica de detección automática existente
+            if pd.api.types.is_datetime64_any_dtype(col_dtype):
+                self._create_date_controls(controls_frame, condition_widgets, selected_col)
+            elif pd.api.types.is_object_dtype(col_dtype) or pd.api.types.is_categorical_dtype(col_dtype):
+                unique_count = col_data.nunique()
+                if unique_count <= self.max_unique_cat:
+                    is_categorical = True
+                else:
+                    self._create_text_controls(controls_frame, condition_widgets, selected_col)
+                    is_categorical = False
+            elif pd.api.types.is_numeric_dtype(col_dtype):
+                unique_count = col_data.nunique()
+                if unique_count <= self.max_unique_cat and not pd.api.types.is_bool_dtype(col_dtype):
+                    is_categorical = True
+                else:
+                    is_categorical = False
+
+            # Crear controles basados en la detección automática
+            if is_categorical: # Solo si se determinó explícitamente como categórica
+                self._create_categorical_controls(controls_frame, condition_widgets, selected_col, col_data)
+            elif pd.api.types.is_numeric_dtype(col_dtype) and \
+                 not pd.api.types.is_datetime64_any_dtype(col_dtype) and \
+                 not is_categorical: # Asegurar que no sea fecha y no se haya marcado como categórica
+                 self._create_numeric_controls(controls_frame, condition_widgets, selected_col)
+            # Los controles de fecha y texto ya se llaman dentro de la lógica de detección automática
 
     def _create_categorical_controls(self, parent_frame, condition_widgets, col_name, col_data):
         """Crea controles para filtrar una columna categórica (Listbox con búsqueda)."""
@@ -164,7 +179,7 @@ class FilterComponent(ttk.Frame):
 
         search_entry = ttk.Entry(outer_frame, width=20)
         search_entry.pack(fill="x", padx=2, pady=(0,2))
-        
+
         listbox_frame = ttk.Frame(outer_frame) # Nuevo frame para listbox y scrollbar
         listbox_frame.pack(fill="both", expand=True)
 
@@ -230,7 +245,7 @@ class FilterComponent(ttk.Frame):
     def _create_text_controls(self, parent_frame, condition_widgets, col_name):
         """Crea controles para filtrar una columna de texto con opciones avanzadas."""
         operations = ["contiene", "no contiene", "empieza con", "termina con", "es exactamente", "es vacío", "no es vacío", "regex"]
-        
+
         ttk.Label(parent_frame, text="Operación:").pack(side="left", padx=2)
         op_combo = ttk.Combobox(parent_frame, values=operations, state="readonly", width=15)
         op_combo.pack(side="left", padx=2)
@@ -239,7 +254,7 @@ class FilterComponent(ttk.Frame):
         ttk.Label(parent_frame, text="Valor:").pack(side="left", padx=2)
         entry_value = ttk.Entry(parent_frame, width=20)
         entry_value.pack(side="left", padx=2, fill="x", expand=True)
-        
+
         # Deshabilitar entry_value si la operación es "es vacío" o "no es vacío"
         def on_op_selected(event):
             selected_op = op_combo.get()
@@ -348,7 +363,7 @@ class FilterComponent(ttk.Frame):
 
                     val_from = pd.to_datetime(val_from_str, errors='coerce') if val_from_str else pd.NaT
                     val_to = pd.to_datetime(val_to_str, errors='coerce') if val_to_str else pd.NaT
-                    
+
                     conditions = []
                     summary_parts = []
 
@@ -360,7 +375,7 @@ class FilterComponent(ttk.Frame):
                         # O simplemente usar <= que para fechas sin hora funciona bien.
                         conditions.append(original_column_as_datetime <= val_to)
                         summary_parts.append(f"<= {val_to_str}")
-                    
+
                     if conditions:
                         combined_condition = conditions[0]
                         for cond in conditions[1:]:
@@ -404,11 +419,11 @@ class FilterComponent(ttk.Frame):
                             self.log(f"Error de Regex en '{col_name}' con patrón '{value_str}': {regex_err}", "ERROR")
                             messagebox.showerror("Error de Regex", f"Patrón de Regex inválido para '{col_name}':\n{value_str}\n\n{regex_err}")
                             return None # Detener si el regex es inválido
-                    
+
                     if condition is not None:
                         df_filtered = df_filtered[condition]
                         active_filters_summary.append(f"{col_name} {summary_op} '{summary_val}'")
-                
+
                 # Añadir lógica para otros tipos de control aquí
 
             except Exception as e:
