@@ -12,13 +12,13 @@ Descripción    : Esta aplicación utiliza tkinter para generar curvas de Kaplan
                  incorpora:
                    - Cálculo de intervalos de confianza (IC) mediante bootstrap o por el método
                      predeterminado (Greenwood).
-                   - Resumen extendido de estadísticos: mediana, p25, p75, p3 y p97 con su error 
+                   - Resumen extendido de estadísticos: mediana, p25, p75, p3 y p97 con su error
                      estándar (SE) e intervalos de confianza (IC) formateados para mostrar como máximo 2
                      decimales (o en notación científica/entero según convenga).
-                   - Selección exclusiva del tipo de gráfica a mostrar (KM, Log de Supervivencia, 1 - 
+                   - Selección exclusiva del tipo de gráfica a mostrar (KM, Log de Supervivencia, 1 -
                      Supervivencia o Riesgo Acumulado) y los IC se muestran en cada gráfica.
                    - Exportación de la tabla de estadísticas a Excel desde el popup del resumen.
-                 
+
 Licencia       : MIT License
 Autor          : [Tu Nombre]
 ====================================================================================================
@@ -45,8 +45,15 @@ from lifelines.statistics import logrank_test, multivariate_logrank_test
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.ticker import MaxNLocator
 
-# FilterComponent ha sido eliminado.
-FilterComponent = None # Mantener para evitar errores si alguna lógica residual lo verifica.
+try:
+    from MATLAB_filter_component import FilterComponent
+    FILTER_COMPONENT_AVAILABLE = True
+except ImportError:
+    FILTER_COMPONENT_AVAILABLE = False
+    FilterComponent = None
+    # Esto es importante para que el resto del código no falle si el componente no está.
+    # Podrías añadir un log aquí si tienes un sistema de logging configurado.
+    print("Advertencia: No se pudo importar FilterComponent. Funcionalidad de filtro avanzado no disponible.")
 
 # =============================================================================
 # FUNCIONES AUXILIARES Y UTILIDADES (EXTRA)
@@ -72,11 +79,11 @@ class SurvivalAnalysisTab(ttk.Frame):
     """
     Clase para el análisis de supervivencia (Kaplan-Meier) con filtros avanzados, pruebas Log-Rank,
     opciones de gráfica (colores, tamaño, cuadrícula, etiquetas), cálculo de intervalos de confianza
-    (IC) mediante bootstrap o por el método predeterminado (Greenwood) y cálculo extendido de percentiles 
+    (IC) mediante bootstrap o por el método predeterminado (Greenwood) y cálculo extendido de percentiles
     (incluyendo percentil 3 y 97).
 
     Además, se ha añadido:
-      - Un combobox para seleccionar exclusivamente el tipo de gráfica a mostrar (KM, Log de Supervivencia, 
+      - Un combobox para seleccionar exclusivamente el tipo de gráfica a mostrar (KM, Log de Supervivencia,
         1 - Supervivencia o Riesgo Acumulado).
       - La posibilidad de exportar la tabla de estadísticas a Excel desde el popup de resumen.
     """
@@ -87,20 +94,8 @@ class SurvivalAnalysisTab(ttk.Frame):
         # =============================================================================
         self.data = None
         self.file_path = None
+        self.custom_filter_component_instance = None # Para FilterComponent
 
-        # Variables para Filtros Generales (hasta 2 filtros) - AÑADIDO
-        self.filter_active_1_var = tk.BooleanVar(value=False)
-        self.filter_col_1_var = tk.StringVar()
-        self.filter_op_1_var = tk.StringVar()
-        self.filter_val_1_var = tk.StringVar()
-
-        self.filter_active_2_var = tk.BooleanVar(value=False)
-        self.filter_col_2_var = tk.StringVar()
-        self.filter_op_2_var = tk.StringVar()
-        self.filter_val_2_var = tk.StringVar()
-        
-        self.general_filter_operators = ["==", "!=", ">", "<", ">=", "<=", "contiene", "no contiene", "es NaN", "no es NaN"]
-        
         # Variables para filtros globales
         self.exclude_blank = tk.BooleanVar(value=False)
         self.omit_non_numeric = tk.BooleanVar(value=False)
@@ -123,7 +118,7 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.show_censors = tk.BooleanVar(value=True)
         self.linewidth = tk.DoubleVar(value=2.0)
         self.color_scheme = tk.StringVar(value="tab10")
-        
+
         # Tamaño de visualización
         self.display_dpi = tk.IntVar(value=100)
         self.display_width = tk.IntVar(value=800)
@@ -152,12 +147,12 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.y_label = tk.StringVar(value="Probabilidad de Supervivencia")
         self.y_color = tk.StringVar(value="black")
         self.axis_fontsize = tk.IntVar(value=10)
-        
+
         # Opciones para IC y Bootstrap
-        self.show_ci = tk.BooleanVar(value=True)         
-        self.use_bootstrap = tk.BooleanVar(value=False)    
-        self.bootstrap_iterations = tk.IntVar(value=1000)  
-        self.random_seed = tk.IntVar(value=42)             
+        self.show_ci = tk.BooleanVar(value=True)
+        self.use_bootstrap = tk.BooleanVar(value=False)
+        self.bootstrap_iterations = tk.IntVar(value=1000)
+        self.random_seed = tk.IntVar(value=42)
 
         # Nuevo: Selección exclusiva del tipo de gráfica
         self.cmb_graph_type = None  # Se creará en create_widgets
@@ -231,31 +226,17 @@ class SurvivalAnalysisTab(ttk.Frame):
         ttk.Label(frm_grouping, text="(Ej: 1:GrupoA,3:GrupoC,2:GrupoB)").grid(row=2, column=1, sticky="w", padx=5, pady=0)
         frm_grouping.columnconfigure(1, weight=1)
 
-        # 4. Filtros Generales (Implementación directa)
-        frm_filters_general = ttk.LabelFrame(self.scrollable_controls, text="Filtros Generales (Opcional)")
-        frm_filters_general.pack(fill=tk.X, padx=5, pady=5)
+        # 4. Filtros Avanzados (Componente)
+        frm_filters_advanced = ttk.LabelFrame(self.scrollable_controls, text="Filtros Avanzados (Componente)")
+        frm_filters_advanced.pack(fill=tk.X, padx=5, pady=5)
 
-        # Filtro 1
-        f1_frame = ttk.Frame(frm_filters_general)
-        f1_frame.pack(fill="x", pady=2)
-        ttk.Checkbutton(f1_frame, text="Activar Filtro 1:", variable=self.filter_active_1_var).grid(row=0, column=0, padx=2, sticky="w")
-        self.filter_col_1_combo = ttk.Combobox(f1_frame, textvariable=self.filter_col_1_var, state="readonly", width=15)
-        self.filter_col_1_combo.grid(row=0, column=1, padx=2)
-        self.filter_op_1_combo = ttk.Combobox(f1_frame, textvariable=self.filter_op_1_var, values=self.general_filter_operators, state="readonly", width=10)
-        self.filter_op_1_combo.grid(row=0, column=2, padx=2)
-        self.filter_op_1_combo.set("==")
-        ttk.Entry(f1_frame, textvariable=self.filter_val_1_var, width=15).grid(row=0, column=3, padx=2)
-        
-        # Filtro 2
-        f2_frame = ttk.Frame(frm_filters_general)
-        f2_frame.pack(fill="x", pady=2)
-        ttk.Checkbutton(f2_frame, text="Activar Filtro 2:", variable=self.filter_active_2_var).grid(row=0, column=0, padx=2, sticky="w")
-        self.filter_col_2_combo = ttk.Combobox(f2_frame, textvariable=self.filter_col_2_var, state="readonly", width=15)
-        self.filter_col_2_combo.grid(row=0, column=1, padx=2)
-        self.filter_op_2_combo = ttk.Combobox(f2_frame, textvariable=self.filter_op_2_var, values=self.general_filter_operators, state="readonly", width=10)
-        self.filter_op_2_combo.grid(row=0, column=2, padx=2)
-        self.filter_op_2_combo.set("==")
-        ttk.Entry(f2_frame, textvariable=self.filter_val_2_var, width=15).grid(row=0, column=3, padx=2)
+        if FILTER_COMPONENT_AVAILABLE:
+            # Asegurarse que self.custom_filter_component_instance se inicializa aquí si no lo estaba en __init__
+            # Aunque ya se inicializó en __init__ a None, aquí se crea la instancia real.
+            self.custom_filter_component_instance = FilterComponent(frm_filters_advanced, log_callback=self.log_debug)
+            self.custom_filter_component_instance.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        else:
+            ttk.Label(frm_filters_advanced, text="Componente de Filtro Avanzado no disponible.").pack(padx=5, pady=5)
 
         # 5. Opciones Globales de Análisis (antes Filtros Globales)
         frm_global_opts = ttk.LabelFrame(self.scrollable_controls, text="Opciones Globales de Análisis")
@@ -275,7 +256,7 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.chk_censors = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras", variable=self.show_censors)
         self.chk_censors.pack(anchor=tk.W, padx=5, pady=2)
         ttk.Label(frm_graph_opts, text="Esquema de colores:").pack(anchor=tk.W, padx=5, pady=2)
-        self.cmb_color_scheme = ttk.Combobox(frm_graph_opts, 
+        self.cmb_color_scheme = ttk.Combobox(frm_graph_opts,
                                              values=["tab10", "Set1", "Set2", "Set3", "Dark2", "Accent",
                                                      "viridis", "plasma", "inferno", "magma", "cividis",
                                                      "Pastel1", "Pastel2"],
@@ -294,7 +275,7 @@ class SurvivalAnalysisTab(ttk.Frame):
                                            state="readonly")
         self.cmb_graph_type.pack(fill=tk.X, padx=5, pady=2)
         self.cmb_graph_type.set("KM")
-        
+
         # 7. Opciones de Ejes
         frm_axes = ttk.LabelFrame(self.scrollable_controls, text="Opciones de Ejes")
         frm_axes.pack(fill=tk.X, padx=5, pady=5)
@@ -459,25 +440,18 @@ class SurvivalAnalysisTab(ttk.Frame):
             self.cmb_event['values'] = cols
             self.cmb_cat['values'] = [""] + cols # Actualizar combo de agrupación
             self.cmb_cat.set("")
-            # FilterComponent removido.
-            # Actualizar combos de filtros generales
-            filter_cols_options = [''] + cols
-            if hasattr(self, 'filter_col_1_combo'): # Verificar si los widgets ya existen
-                self.filter_col_1_combo['values'] = filter_cols_options
-                if not self.filter_col_1_var.get() and cols: self.filter_col_1_var.set('')
-            if hasattr(self, 'filter_col_2_combo'):
-                self.filter_col_2_combo['values'] = filter_cols_options
-                if not self.filter_col_2_var.get() and cols: self.filter_col_2_var.set('')
-            
+
+            if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance:
+                self.custom_filter_component_instance.set_dataframe(self.data)
+                self.log_debug("DataFrame actualizado en FilterComponent.")
+
             msg = f"Datos cargados: {self.data.shape[0]} filas, {self.data.shape[1]} columnas."
             self.txt_log.insert(tk.END, msg + "\n")
             messagebox.showinfo("Éxito", msg)
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el archivo:\n{e}")
-            # FilterComponent removido.
-            # Limpiar combos de filtros generales en caso de error
-            if hasattr(self, 'filter_col_1_combo'): self.filter_col_1_combo['values'] = ['']
-            if hasattr(self, 'filter_col_2_combo'): self.filter_col_2_combo['values'] = ['']
+            if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance:
+                self.custom_filter_component_instance.set_dataframe(pd.DataFrame()) # Enviar DF vacío
 
     # ---------------------------------------------------------------------------
     # MÉTODO: open_file
@@ -700,10 +674,25 @@ class SurvivalAnalysisTab(ttk.Frame):
             messagebox.showwarning("Advertencia", "Seleccione las variables de tiempo y evento.")
             return
 
-        # 1. FilterComponent ha sido removido. Se trabaja directamente con una copia de self.data.
-        if self.data is not None:
+        # 1. Aplicar filtros con FilterComponent si está disponible
+        if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance and self.data is not None:
+            try:
+                # Asegurarse que el componente tiene el DataFrame más reciente
+                # self.custom_filter_component_instance.set_dataframe(self.data) # Opcional si load_data ya lo hace
+                df_temp_filtered = self.custom_filter_component_instance.apply_filters()
+                if df_temp_filtered is None:
+                    messagebox.showerror("Error de Filtro", "El componente de filtro devolvió None. Verifique la configuración del filtro o los datos.")
+                    return
+                self.log_debug(f"Datos filtrados por FilterComponent para análisis KM: {df_temp_filtered.shape[0]} filas.")
+                if df_temp_filtered.empty:
+                    messagebox.showwarning("Datos Vacíos", "No quedan datos después de aplicar los filtros del componente.")
+                    return
+            except Exception as e:
+                messagebox.showerror("Error en FilterComponent", f"Error al aplicar filtros: {e}")
+                return
+        elif self.data is not None:
             df_temp_filtered = self.data.copy()
-            self.log_debug("Usando datos originales para análisis KM (FilterComponent removido).")
+            self.log_debug("Usando datos originales para análisis KM (FilterComponent no disponible/activo o datos no cargados en él).")
         else:
             messagebox.showwarning("Advertencia", "Carga datos primero.")
             return
@@ -1206,16 +1195,24 @@ class SurvivalAnalysisTab(ttk.Frame):
             messagebox.showwarning("Advertencia", "Seleccione las variables de tiempo y evento.")
             return
 
-        # 1. FilterComponent ha sido removido. Se trabaja directamente con una copia de self.data.
-        if self.data is not None:
-            df_temp_filtered = self.data.copy()
-            self.log_debug("Usando datos originales para Log-Rank (antes de filtros generales).")
-
-            # Aplicar filtros generales definidos en la UI
-            df_temp_filtered = self._apply_general_filters(df_temp_filtered)
-            if df_temp_filtered is None or df_temp_filtered.empty:
-                messagebox.showwarning("Datos Vacíos", "No quedan datos después de aplicar los filtros generales.")
+        # 1. Aplicar filtros con FilterComponent si está disponible
+        if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance and self.data is not None:
+            try:
+                # self.custom_filter_component_instance.set_dataframe(self.data) # Opcional
+                df_temp_filtered = self.custom_filter_component_instance.apply_filters()
+                if df_temp_filtered is None:
+                    messagebox.showerror("Error de Filtro", "El componente de filtro devolvió None. Verifique la configuración del filtro o los datos.")
+                    return
+                self.log_debug(f"Datos filtrados por FilterComponent para Log-Rank: {df_temp_filtered.shape[0]} filas.")
+                if df_temp_filtered.empty:
+                    messagebox.showwarning("Datos Vacíos", "No quedan datos después de aplicar los filtros del componente.")
+                    return
+            except Exception as e:
+                messagebox.showerror("Error en FilterComponent", f"Error al aplicar filtros: {e}")
                 return
+        elif self.data is not None:
+            df_temp_filtered = self.data.copy()
+            self.log_debug("Usando datos originales para Log-Rank (FilterComponent no disponible/activo o datos no cargados en él).")
         else:
             messagebox.showwarning("Advertencia", "Carga datos primero.")
             return
