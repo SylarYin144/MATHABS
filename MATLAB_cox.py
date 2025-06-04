@@ -2636,7 +2636,8 @@ class CoxModelingApp(ttk.Frame):
                 messagebox.showinfo("Resultados Predicción", "Curva de predicción completa generada.", parent=dialog_pred_ref)
         except Exception as e_curve_pred: self.log(f"Error pred/plot: {e_curve_pred}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Pred/Plot",f"Error al predecir/plotear:\n{e_curve_pred}",parent=dialog_pred_ref)
 
-
+    def generate_calibration_plot(self): # Ensure this line has correct class-level indentation
+        if not self._check_model_selected_and_valid(): return
 
         # self.log("DEBUG: generate_calibration_plot called", "DEBUG") # Optional: for debugging entry
 
