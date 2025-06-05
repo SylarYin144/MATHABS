@@ -1220,8 +1220,8 @@ class CoxModelingApp(ttk.Frame):
                 current_ref_cat = self.ref_categories_config.get(var_name_cfg)
                 if current_ref_cat in unique_cats:
                     self.combo_ref_categoria_seleccionada.set(current_ref_cat)
-                elif unique_cats: # Default a la primera si no hay config o la config no es válida
-                    self.combo_ref_categoria_seleccionada.set(unique_cats[0])
+                elif unique_vals: # Default a la primera si no hay config o la config no es válida
+                    self.combo_ref_categoria_seleccionada.set(unique_vals[0])
                 else: # Sin categorías
                     self.combo_ref_categoria_seleccionada.set("")
             else: # Cuantitativa
@@ -1909,6 +1909,7 @@ class CoxModelingApp(ttk.Frame):
             "y_survival_used_for_fit": y_survival_rm.copy(),
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
+            "df_final_fit_shape": df_for_fit_main.shape,
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
             "schoenfeld_status_message": None, # Initialize status message
@@ -2709,684 +2710,185 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Tiempo Inválido",f"Tiempo t0 inválido: {e_t0}",parent=self.parent_for_dialogs)
             return
 
-        # KFold initialization
-        # Assuming self.cv_random_seed_var is an IntVar defined in __init__
-        # If self.cv_random_seed_var doesn't exist or isn't an IntVar, use a fixed integer like 42.
-        random_seed_for_kfold = 42
-        if hasattr(self, 'cv_random_seed_var') and isinstance(self.cv_random_seed_var, tk.IntVar):
-            try:
-                random_seed_for_kfold = self.cv_random_seed_var.get()
-            except tk.TclError: # If Tkinter context is problematic (e.g. during tests or if var not set)
-                self.log("WARN: Could not get random_seed from tk.IntVar, using default 42 for KFold.", "WARN")
+        self.log(f"Generando predicciones de supervivencia en t0={t0_val_cal} para todo el dataset...", "INFO")
 
-        kf = KFold(n_splits=10, shuffle=True, random_state=random_seed_for_kfold)
+        try:
+            # Predict survival S(t0) for all subjects using the original model
+            # df_actually_used_for_fit should not be empty here due to earlier checks
+            surv_func_all_subjects = cph_cal_orig.predict_survival_function(df_actually_used_for_fit, times=[t0_val_cal])
 
-        x_coords_actual_h = []
-        y_coords_predicted_h = []
-        x_low_ci_h_fold = [] # Renamed to avoid conflict if this subtask is run multiple times
-        x_high_ci_h_fold = []
-
-        self.log(f"Iniciando preparación para calibración custom (10-fold CV) en t0={t0_val_cal} para modelo '{name_cal}'...", "INFO")
-
-        # The old try-except block for survival_probability_calibration should be entirely removed.
-        # Loop implementation and plotting will follow in the next steps.
-        # For now, this subtask just sets up the function up to this point.
-        # Add a temporary log to indicate completion of this setup step.
-        self.log("Preparación para loop KFold en generate_calibration_plot completa.", "DEBUG")
-
-        # --- Start of KFold Loop Implementation ---
-        fold_count = 0
-        for train_indices, test_indices in kf.split(df_actually_used_for_fit):
-            fold_count += 1
-            self.log(f"Procesando Fold {fold_count}/10...", "DEBUG")
-
-            df_train = df_actually_used_for_fit.iloc[train_indices]
-            df_test = df_actually_used_for_fit.iloc[test_indices]
-
-            if df_train.empty or df_test.empty:
-                self.log(f"Fold {fold_count} skipped: df_train o df_test vacío.", "WARN")
-                x_coords_actual_h.append(np.nan)
-                y_coords_predicted_h.append(np.nan)
-                x_low_ci_h_fold.append(np.nan)
-                x_high_ci_h_fold.append(np.nan)
-                continue
-
-            # Ensure there are events in the training set for model fitting
-            if df_train[event_col].sum() == 0:
-                self.log(f"Fold {fold_count} skipped: No events in training data for this fold.", "WARN")
-                x_coords_actual_h.append(np.nan)
-                y_coords_predicted_h.append(np.nan)
-                x_low_ci_h_fold.append(np.nan)
-                x_high_ci_h_fold.append(np.nan)
-                continue
-
-            # 1. Refit Cox Model on Training Data
-            cph_fold = CoxPHFitter(penalizer=original_penalizer, l1_ratio=original_l1_ratio)
-            try:
-                cph_fold.fit(df_train, duration_col=time_col, event_col=event_col, formula=formula_patsy)
-            except Exception as e_fold_fit:
-                self.log(f"Error ajustando modelo en Fold {fold_count}: {e_fold_fit}", "WARN")
-                x_coords_actual_h.append(np.nan)
-                y_coords_predicted_h.append(np.nan)
-                x_low_ci_h_fold.append(np.nan)
-                x_high_ci_h_fold.append(np.nan)
-                continue
-
-            # 2. Calculate Y-coordinate (Mean Predicted Hazard for Test Fold)
-            mean_h_pred_test_fold = np.nan
-            try:
-                # Ensure df_test is not empty for prediction
-                if df_test.shape[0] > 0:
-                    s_pred_test_series = cph_fold.predict_survival_function(df_test, times=[t0_val_cal]).iloc[0] # Get Series for t0
-                    # Clip S(t0) to avoid log(0) or log(>1) if predictions are exactly 0 or 1
-                    s_pred_test_clipped = np.clip(s_pred_test_series.values, 1e-9, 1.0 - 1e-9)
-                    h_pred_test_fold_all_subjects = -np.log(s_pred_test_clipped)
-                    mean_h_pred_test_fold = np.nanmean(h_pred_test_fold_all_subjects)
+            # surv_func_all_subjects is a DataFrame with subjects as columns and time as index.
+            # We need to extract the survival probability at t0_val_cal for each subject.
+            # It should have only one row if times=[t0_val_cal] was used.
+            if t0_val_cal in surv_func_all_subjects.index:
+                pred_surv_t0_series = surv_func_all_subjects.loc[t0_val_cal]
+            else:
+                # This case should ideally not happen if times=[t0_val_cal] works as expected,
+                # but as a fallback, attempt interpolation if there are multiple time points.
+                # This part might need adjustment based on actual output of predict_survival_function
+                # when times=[t0_val_cal] is used and t0_val_cal is not an exact event time.
+                # Lifelines' predict_survival_function with `times` arg usually handles this.
+                self.log(f"Advertencia: t0={t0_val_cal} no encontrado directamente en el índice de la función de supervivencia. Se usará la primera fila (asumiendo que es t0).", "WARN")
+                if not surv_func_all_subjects.empty:
+                    pred_surv_t0_series = surv_func_all_subjects.iloc[0]
                 else:
-                    self.log(f"Fold {fold_count}: df_test vacío antes de predicción de supervivencia.", "WARN")
-            except Exception as e_pred_h:
-                self.log(f"Error calculando H_pred en Fold {fold_count}: {e_pred_h}", "WARN")
+                    raise ValueError("La predicción de la función de supervivencia resultó vacía.")
 
-            y_coords_predicted_h.append(mean_h_pred_test_fold)
+            # Ensure pred_surv_t0_series aligns with df_actually_used_for_fit's index
+            # predict_survival_function should return columns matching the input df's index if it's a single row output
 
-            # 3. Calculate X-coordinate (Actual Hazard for Test Fold & CI)
-            h_actual_fold_val = np.nan
-            s_ci_low_val = np.nan
-            s_ci_high_val = np.nan
-
-            # Ensure there are events in the test set for KMF
-            if df_test[event_col].sum() == 0 :
-                self.log(f"Fold {fold_count}: No events in test data. Actual hazard cannot be reliably estimated by KMF for this fold.", "WARN")
-                # We might still append NaNs or decide how to handle this for plotting
+            df_working_copy = df_actually_used_for_fit.copy()
+            # If surv_func_all_subjects columns are subjects (from df_actually_used_for_fit.index),
+            # then pred_surv_t0_series is a Series indexed by subject ID.
+            # We need to assign this back to df_working_copy.
+            # Ensure index alignment or careful assignment.
+            # If df_working_copy.index is simple RangeIndex and pred_surv_t0_series.index is also, it might align.
+            # If indices are meaningful and match, direct assignment works.
+            if df_working_copy.shape[0] == len(pred_surv_t0_series):
+                 df_working_copy["pred_surv_T"] = pred_surv_t0_series.values
             else:
-                try:
-                    kmf_fold = KaplanMeierFitter()
-                    kmf_fold.fit(df_test[time_col], event_observed=df_test[event_col])
+                # Attempt to align by index if they are meaningful and might be shuffled
+                # This assumes pred_surv_t0_series.index contains indices from df_actually_used_for_fit
+                # And that df_working_copy has the same index.
+                # self.log(f"DEBUG: df_working_copy index: {df_working_copy.index[:5]}", "DEBUG")
+                # self.log(f"DEBUG: pred_surv_t0_series index: {pred_surv_t0_series.index[:5]}", "DEBUG")
+                # Create a new series from pred_surv_t0_series, aligned with df_working_copy's index
+                aligned_surv_series = pd.Series(pred_surv_t0_series, index=pred_surv_t0_series.index).reindex(df_working_copy.index)
+                if aligned_surv_series.isnull().any():
+                    self.log(f"WARN: Some survival predictions could not be aligned with the original dataframe. {aligned_surv_series.isnull().sum()} NaNs introduced.", "WARN")
+                df_working_copy["pred_surv_T"] = aligned_surv_series.values
 
-                    s_actual_fold_series = kmf_fold.survival_function_at_times([t0_val_cal])
-                    s_actual_fold_val = s_actual_fold_series.iloc[0] if not s_actual_fold_series.empty else np.nan
 
-                    if pd.notna(s_actual_fold_val):
-                        # Clip S_actual(t0) to avoid log(0) or log(>1)
-                        s_actual_fold_val_clipped = np.clip(s_actual_fold_val, 1e-9, 1.0 - 1e-9)
-                        h_actual_fold_val = -np.log(s_actual_fold_val_clipped)
+            df_working_copy["pred_risk_T"] = 1 - df_working_copy["pred_surv_T"]
 
-                        # Get CI for S_actual(t0)
-                        # confidence_interval_survival_function_ is a DataFrame with index=timeline
-                        # We need to find the row closest to t0_val_cal
-                        ci_df = kmf_fold.confidence_interval_survival_function_
-                        if not ci_df.empty:
-                            # Find index closest to t0_val_cal
-                            time_diff = np.abs(ci_df.index - t0_val_cal)
-                            closest_time_idx = time_diff.argmin()
-                            s_ci_low_val = ci_df.iloc[closest_time_idx, 0] # Lower CI for S(t)
-                            s_ci_high_val = ci_df.iloc[closest_time_idx, 1] # Upper CI for S(t)
+            # Clip risk to avoid issues with qcut if all risks are identical or very concentrated
+            df_working_copy["pred_risk_T"] = np.clip(df_working_copy["pred_risk_T"], 0.0, 1.0)
+
+
+            self.log("Predicciones de riesgo a t0 calculadas para todo el dataset.", "INFO")
+
+        except Exception as e_pred_all:
+            self.log(f"Error durante la predicción de supervivencia para todo el dataset: {e_pred_all}", "ERROR")
+            messagebox.showerror("Error de Predicción", f"No se pudieron generar las predicciones de supervivencia base:\n{e_pred_all}", parent=self.parent_for_dialogs)
+            return
+
+        self.log("Creando subconjunto de datos para calibración y agrupando por deciles de riesgo predicho...", "INFO")
+        try:
+            # Filter data for calibration: subjects observed at or beyond T, or who had an event before T.
+            # Assuming time_col and event_col are available from the initial data retrieval.
+            condition_observed_beyond_T = (df_working_copy[time_col] >= t0_val_cal)
+            condition_event_before_T = (df_working_copy[time_col] < t0_val_cal) & (df_working_copy[event_col] == True)
+
+            calib_data = df_working_copy[condition_observed_beyond_T | condition_event_before_T].copy()
+
+            if calib_data.empty:
+                self.log("El subconjunto de datos para calibración (calib_data) está vacío. No se puede continuar.", "ERROR")
+                messagebox.showerror("Error de Datos", "No hay sujetos que cumplan los criterios para el gráfico de calibración (observados >= t0 o evento < t0).", parent=self.parent_for_dialogs)
+                return # No fig_cal to close yet
+
+            # Create decile column based on predicted risk
+            # Using labels=False to get integer decile numbers (0-9)
+            # Ensure there are enough unique risk values for qcut to form 10 deciles.
+            # If not, it might raise an error or create fewer than 10 deciles.
+            num_unique_risks = calib_data["pred_risk_T"].nunique()
+            num_quantiles = 10
+            if num_unique_risks < num_quantiles:
+                self.log(f"Advertencia: Menos de {num_quantiles} valores de riesgo únicos ({num_unique_risks}) en calib_data. Se crearán menos de {num_quantiles} deciles.", "WARN")
+                # pd.qcut might fail if it can't form distinct bins.
+                # A common strategy is to reduce num_quantiles, or use rank then cut by rank.
+                # For simplicity here, we'll let qcut try, but it might error if duplicates="raise" (default).
+                # duplicates="drop" handles this by creating fewer bins.
+                if num_unique_risks == 1 : # All risks are the same, qcut will fail to make multiple bins
+                     calib_data["decile"] = 0 # Assign all to one group
+                     self.log(f"Todos los riesgos predichos en calib_data son idénticos. Se usará un solo grupo para calibración.", "WARN")
+                else: # Try to make as many quantiles as unique values if less than 10
+                    num_quantiles_adjusted = min(num_quantiles, num_unique_risks)
+                    if num_quantiles_adjusted < 2 : # Need at least 2 for meaningful deciles/groups
+                        calib_data["decile"] = 0
+                        self.log(f"Muy pocos ({num_unique_risks}) valores de riesgo únicos. Se usará un solo grupo.", "WARN")
                     else:
-                        self.log(f"Fold {fold_count}: S_actual({t0_val_cal}) no pudo ser estimado por KMF (quizás t0 es mayor que el último tiempo observado).", "WARN")
+                        calib_data["decile"] = pd.qcut(calib_data["pred_risk_T"], num_quantiles_adjusted, labels=False, duplicates="drop")
+                        self.log(f"Se crearon {calib_data['decile'].nunique()} grupos/deciles debido a la distribución del riesgo.", "INFO")
 
-                except Exception as e_actual_h:
-                    self.log(f"Error calculando H_actual o su CI en Fold {fold_count}: {e_actual_h}", "WARN")
+            else: # Sufficient unique risks
+                calib_data["decile"] = pd.qcut(calib_data["pred_risk_T"], num_quantiles, labels=False, duplicates="drop")
+                self.log(f"Se crearon {calib_data['decile'].nunique()} deciles. (Esperados: {num_quantiles})", "INFO")
 
-            x_coords_actual_h.append(h_actual_fold_val)
+            # Ensure 'decile' column is integer if labels=False was used effectively
+            if 'decile' in calib_data.columns:
+                 calib_data['decile'] = calib_data['decile'].astype(int)
 
-            # Convert S(t0) CIs to H(t0) CIs
-            current_x_low_ci = np.nan
-            current_x_high_ci = np.nan
-            if pd.notna(s_ci_low_val) and pd.notna(s_ci_high_val):
-                # Clip CI bounds before log to prevent errors
-                s_ci_low_clipped = np.clip(s_ci_low_val, 1e-9, 1.0 - 1e-9)
-                s_ci_high_clipped = np.clip(s_ci_high_val, 1e-9, 1.0 - 1e-9)
-                current_x_low_ci = -np.log(s_ci_high_clipped) # Note: -log(S_high) is lower bound for H
-                current_x_high_ci = -np.log(s_ci_low_clipped)  # Note: -log(S_low) is upper bound for H
 
-            x_low_ci_h_fold.append(current_x_low_ci)
-            x_high_ci_h_fold.append(current_x_high_ci)
-
-            # self.log(f"Fold {fold_count} results: H_actual={h_actual_fold_val:.3f} (CI: [{current_x_low_ci:.3f}, {current_x_high_ci:.3f}]), H_pred_mean={mean_h_pred_test_fold:.3f}", "DEBUG")
-
-        # --- End of KFold Loop Implementation ---
-
-        # After the loop, add a log to indicate completion of this part
-        self.log("Procesamiento de K-Folds completado.", "INFO")
-        if len(x_coords_actual_h) != 10:
-            self.log(f"Advertencia: Solo se procesaron {len(x_coords_actual_h)} de 10 folds debido a errores o datos insuficientes en algunos folds.", "WARN")
-
-        # --- Start of Plotting Logic ---
-        if not x_coords_actual_h or not y_coords_predicted_h:
-            self.log("No hay datos suficientes de los folds para generar el gráfico de calibración.", "ERROR")
-            messagebox.showerror("Error de Gráfico", "No se pudieron calcular puntos para el gráfico de calibración desde los folds.", parent=self.parent_for_dialogs)
-            return
-
-        fig_cal, ax_cal = plt.subplots(figsize=(8, 8))
-
-        # Convert lists to numpy arrays for easier manipulation, handling NaNs
-        x_coords = np.array(x_coords_actual_h, dtype=float)
-        y_coords = np.array(y_coords_predicted_h, dtype=float)
-        x_err_low = np.array(x_low_ci_h_fold, dtype=float)
-        x_err_high = np.array(x_high_ci_h_fold, dtype=float)
-
-        # Filter out NaN values that might have occurred if a fold failed
-        valid_indices = ~np.isnan(x_coords) & ~np.isnan(y_coords) # CI NaNs will be handled by errorbar
-
-        if not np.any(valid_indices):
-            self.log("Todos los puntos de calibración resultaron en NaN. No se puede graficar.", "ERROR")
-            messagebox.showerror("Error de Gráfico", "Todos los puntos de calibración son NaN.", parent=self.parent_for_dialogs)
-            plt.close(fig_cal) # Close the empty figure
-            return
-
-        x_plot = x_coords[valid_indices]
-        y_plot = y_coords[valid_indices]
-
-        # For error bars, xerr should be [lower_errors, upper_errors]
-        # lower_errors = x_plot - x_err_low[valid_indices]
-        # upper_errors = x_err_high[valid_indices] - x_plot
-        # Need to handle NaNs in CIs carefully: if a CI bound is NaN, error for that point will be absent/zero for that side.
-
-        lower_errors = np.zeros_like(x_plot)
-        upper_errors = np.zeros_like(x_plot)
-
-        x_err_low_valid = x_err_low[valid_indices]
-        x_err_high_valid = x_err_high[valid_indices]
-
-        for i in range(len(x_plot)):
-            if pd.notna(x_err_low_valid[i]) and pd.notna(x_plot[i]):
-                lower_errors[i] = x_plot[i] - x_err_low_valid[i]
+            self.log(f"Subconjunto calib_data creado con {calib_data.shape[0]} observaciones.", "DEBUG")
+            if 'decile' in calib_data.columns:
+                 self.log(f"Deciles creados. Número de grupos: {calib_data['decile'].nunique()}", "DEBUG")
             else:
-                lower_errors[i] = 0 # Or some other indicator that it's missing
+                 self.log(f"Advertencia: Columna 'decile' no fue creada.", "WARN")
 
-            if pd.notna(x_err_high_valid[i]) and pd.notna(x_plot[i]):
-                upper_errors[i] = x_err_high_valid[i] - x_plot[i]
+
+        except Exception as e_decalib:
+            self.log(f"Error durante el subconjunto de datos o creación de deciles: {e_decalib}", "ERROR")
+            messagebox.showerror("Error en Procesamiento", f"No se pudieron crear los grupos de calibración (deciles):\n{e_decalib}", parent=self.parent_for_dialogs)
+            return # No fig_cal to close yet
+
+        self.log("Creando subconjunto de datos para calibración y agrupando por deciles de riesgo predicho...", "INFO")
+        try:
+            # Filter data for calibration: subjects observed at or beyond T, or who had an event before T.
+            # Assuming time_col and event_col are available from the initial data retrieval.
+            condition_observed_beyond_T = (df_working_copy[time_col] >= t0_val_cal)
+            condition_event_before_T = (df_working_copy[time_col] < t0_val_cal) & (df_working_copy[event_col] == True)
+
+            calib_data = df_working_copy[condition_observed_beyond_T | condition_event_before_T].copy()
+
+            if calib_data.empty:
+                self.log("El subconjunto de datos para calibración (calib_data) está vacío. No se puede continuar.", "ERROR")
+                messagebox.showerror("Error de Datos", "No hay sujetos que cumplan los criterios para el gráfico de calibración (observados >= t0 o evento < t0).", parent=self.parent_for_dialogs)
+                return # No fig_cal to close yet
+
+            # Create decile column based on predicted risk
+            # Using labels=False to get integer decile numbers (0-9)
+            # Ensure there are enough unique risk values for qcut to form 10 deciles.
+            # If not, it might raise an error or create fewer than 10 deciles.
+            num_unique_risks = calib_data["pred_risk_T"].nunique()
+            num_quantiles = 10
+            if num_unique_risks < num_quantiles:
+                self.log(f"Advertencia: Menos de {num_quantiles} valores de riesgo únicos ({num_unique_risks}) en calib_data. Se crearán menos de {num_quantiles} deciles.", "WARN")
+                # pd.qcut might fail if it can't form distinct bins.
+                # A common strategy is to reduce num_quantiles, or use rank then cut by rank.
+                # For simplicity here, we'll let qcut try, but it might error if duplicates="raise" (default).
+                # duplicates="drop" handles this by creating fewer bins.
+                if num_unique_risks == 1 : # All risks are the same, qcut will fail to make multiple bins
+                     calib_data["decile"] = 0 # Assign all to one group
+                     self.log(f"Todos los riesgos predichos en calib_data son idénticos. Se usará un solo grupo para calibración.", "WARN")
+                else: # Try to make as many quantiles as unique values if less than 10
+                    num_quantiles_adjusted = min(num_quantiles, num_unique_risks)
+                    if num_quantiles_adjusted < 2 : # Need at least 2 for meaningful deciles/groups
+                        calib_data["decile"] = 0
+                        self.log(f"Muy pocos ({num_unique_risks}) valores de riesgo únicos. Se usará un solo grupo.", "WARN")
+                    else:
+                        calib_data["decile"] = pd.qcut(calib_data["pred_risk_T"], num_quantiles_adjusted, labels=False, duplicates="drop")
+                        self.log(f"Se crearon {calib_data['decile'].nunique()} grupos/deciles debido a la distribución del riesgo.", "INFO")
+
+            else: # Sufficient unique risks
+                calib_data["decile"] = pd.qcut(calib_data["pred_risk_T"], num_quantiles, labels=False, duplicates="drop")
+                self.log(f"Se crearon {calib_data['decile'].nunique()} deciles. (Esperados: {num_quantiles})", "INFO")
+
+            # Ensure 'decile' column is integer if labels=False was used effectively
+            if 'decile' in calib_data.columns:
+                 calib_data['decile'] = calib_data['decile'].astype(int)
+
+
+            self.log(f"Subconjunto calib_data creado con {calib_data.shape[0]} observaciones.", "DEBUG")
+            if 'decile' in calib_data.columns:
+                 self.log(f"Deciles creados. Número de grupos: {calib_data['decile'].nunique()}", "DEBUG")
             else:
-                upper_errors[i] = 0 # Or some other indicator
+                 self.log(f"Advertencia: Columna 'decile' no fue creada.", "WARN")
 
-        # Ensure errors are non-negative
-        lower_errors = np.maximum(0, lower_errors)
-        upper_errors = np.maximum(0, upper_errors)
 
-        x_errors = [lower_errors, upper_errors]
-
-        ax_cal.errorbar(x_plot, y_plot, xerr=x_errors, fmt='o', color='blue', ecolor='lightblue', capsize=5, label='Fold Estimates (Observed H vs. Predicted H)')
-
-        # Plot y=x line
-        min_val = np.nanmin([np.nanmin(x_plot), np.nanmin(y_plot)])
-        max_val = np.nanmax([np.nanmax(x_plot), np.nanmax(y_plot)])
-        if pd.isna(min_val) or pd.isna(max_val): # Fallback if all are NaN (though caught above) or single point
-            min_val = 0
-            max_val = 1
-
-        # Extend limits slightly for better visualization of y=x line
-        plot_buffer = (max_val - min_val) * 0.05 if (max_val - min_val) > 0 else 0.1
-        ax_cal.plot([min_val - plot_buffer, max_val + plot_buffer], [min_val - plot_buffer, max_val + plot_buffer], 'k--', lw=1, label='Perfect Calibration')
-
-        ax_cal.set_xlabel(f"Observed Fold Cumulative Hazard H(t={t0_val_cal})")
-        ax_cal.set_ylabel(f"Mean Predicted Fold Cumulative Hazard H(t={t0_val_cal})")
-        ax_cal.set_title(f"Calibration: Hazard at t0={t0_val_cal} (10-Fold CV)\nModel: {name_cal}")
-        ax_cal.legend()
-        ax_cal.grid(True, linestyle=':', alpha=0.7)
-
-        # Apply general plot options if any are relevant
-        plot_options_to_apply = self.current_plot_options.copy()
-        # Override specific labels/title as they are context-dependent
-        plot_options_to_apply['title'] = ax_cal.get_title()
-        plot_options_to_apply['xlabel'] = ax_cal.get_xlabel()
-        plot_options_to_apply['ylabel'] = ax_cal.get_ylabel()
-        apply_plot_options(ax_cal, plot_options_to_apply, self.log) # apply_plot_options is an existing helper
-
-        plt.tight_layout()
-        self._create_plot_window(fig_cal, f"Nueva Calibración H(t0={t0_val_cal}): {name_cal}")
-        self.log(f"Gráfico de calibración (Hazard vs Hazard) para t0={t0_val_cal} generado.", "INFO")
-        # --- End of Plotting Logic ---
+        except Exception as e_decalib:
+            self.log(f"Error durante el subconjunto de datos o creación de deciles: {e_decalib}", "ERROR")
+            messagebox.showerror("Error en Procesamiento", f"No se pudieron crear los grupos de calibración (deciles):\n{e_decalib}", parent=self.parent_for_dialogs)
+            return # No fig_cal to close yet
 
     def show_variable_impact_plot(self):
-        if not self._check_model_selected_and_valid(check_params=True):
-            return
-
-        md_vip = self.selected_model_in_treeview
-        cph_model_vip = md_vip.get('model')
-        model_name_vip = md_vip.get('model_name', 'N/A')
-
-        if not hasattr(cph_model_vip, 'params_') or cph_model_vip.params_.empty:
-            messagebox.showinfo("Sin Parámetros", "El modelo seleccionado no tiene covariables (parámetros) para analizar.", parent=self.parent_for_dialogs)
-            return
-
-        available_covariates = list(cph_model_vip.params_.index)
-        if not available_covariates:
-            messagebox.showinfo("Sin Covariables", "No se encontraron covariables en los parámetros del modelo.", parent=self.parent_for_dialogs)
-            return
-
-        # Create a simple dialog to choose the covariate
-        # For simplicity, using simpledialog.askstring to list choices.
-        # A more complex dialog could use a Combobox.
-        choice_prompt = "Seleccione la covariable para analizar su impacto (escriba el nombre exacto):\n\n" + "\n".join(available_covariates)
-
-        # Use a Toplevel dialog for better control if simpledialog is too basic or problematic with many vars
-        dialog = Toplevel(self.parent_for_dialogs)
-        dialog.title("Seleccionar Covariable")
-        dialog.geometry("400x350") # Adjust size as needed
-
-        ttk.Label(dialog, text="Seleccione la covariable para el gráfico de impacto:", wraplength=380).pack(pady=10, padx=10)
-
-        covariate_var = StringVar()
-        combo_covs_widget = None # Initialize reference
-        listbox_covs_widget = None # Initialize reference
-
-        # Populate combobox if there are few items, otherwise Listbox might be better
-        if len(available_covariates) < 20: # Arbitrary threshold
-            combo_covs_widget = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
-            if available_covariates:
-                combo_covs_widget.set(available_covariates[0])
-            combo_covs_widget.pack(pady=5, padx=10)
-        else: # Use Listbox for many covariates
-            ttk.Label(dialog, text="Covariables disponibles:").pack(pady=(5,0))
-            listbox_frame = ttk.Frame(dialog)
-            listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
-            listbox_covs_widget = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
-            for cov_name_lb in available_covariates:
-                listbox_covs_widget.insert(tk.END, cov_name_lb)
-            if available_covariates:
-                listbox_covs_widget.selection_set(0) # Pre-select first
-
-            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
-            listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
-            scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
-            listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-
-        chosen_covariate = None # To store the result
-
-        def on_ok():
-            nonlocal chosen_covariate # chosen_covariate is defined outside on_ok
-            selected_value = None
-            if listbox_covs_widget is not None and listbox_covs_widget.winfo_exists():
-                if listbox_covs_widget.curselection():
-                    selected_value = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
-            elif combo_covs_widget is not None and combo_covs_widget.winfo_exists():
-                selected_value = covariate_var.get() # covariate_var is the textvariable of combo_covs_widget
-
-            if selected_value and selected_value.strip():
-                chosen_covariate = selected_value
-                dialog.destroy()
-            else:
-                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable de la lista.", parent=dialog)
-                 # chosen_covariate remains None or its previous value (None if first try)
-                 # Do not destroy dialog, let user correct.
-
-        def on_cancel():
-            dialog.destroy()
-
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(pady=10)
-        ttk.Button(button_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
-
-        dialog.transient(self.parent_for_dialogs)
-        dialog.grab_set()
-        self.parent_for_dialogs.wait_window(dialog) # Wait for dialog to close
-
-        if not chosen_covariate:
-            self.log("Selección de covariable para gráfico de impacto cancelada o no realizada.", "INFO")
-            return
-
-        self.log(f"Generando gráfico de impacto para covariable (raw selected): '{chosen_covariate}' del modelo '{model_name_vip}'.", "INFO")
-
-        covariate_for_plot = chosen_covariate
-        match = re.match(r"Q\('([^']+)'\)", chosen_covariate)
-        if match:
-            original_name_from_q = match.group(1)
-            # Check if this original name exists in the model's training data columns if possible,
-            # though plot_partial_effects_on_outcome should handle it if the model was formula-fitted.
-            # For now, assume lifelines will find it based on its internal formula processing.
-            covariate_for_plot = original_name_from_q
-            self.log(f"Extracted original name '{covariate_for_plot}' from Patsy term '{chosen_covariate}' for plotting.", "DEBUG")
-        else:
-            self.log(f"Using covariate name '{covariate_for_plot}' directly (not a Q-encoded term).", "DEBUG")
-
-        fig_vip = None  # Initialize fig_vip to None
-        try:
-            fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
-
-            # plot_partial_effects_on_outcome plots log(HR) vs covariate value
-            # It automatically handles splines if the covariate was fitted with one.
-            cph_model_vip.plot_partial_effects_on_outcome(
-                covariate_for_plot, # USE THE EXTRACTED/ORIGINAL NAME HERE
-                values=None,  # Let lifelines choose appropriate values based on data range
-                plot_baseline=False, # Focus on the effect of the covariate itself
-                ax=ax_vip
-            )
-
-            plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)" # Use covariate_for_plot
-            plot_title += f"\nModelo: {model_name_vip}"
-
-            current_opts_vip = self.current_plot_options.copy()
-            current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}") # Use covariate_for_plot
-            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}") # Use covariate_for_plot
-
-            apply_plot_options(ax_vip, current_opts_vip, self.log)
-            plt.tight_layout()
-            self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip})")
-
-        except IndexError as e_vip_idx:
-            tb_str_vip = traceback.format_exc()
-            self.log(f"IndexError al generar gráfico de impacto para '{chosen_covariate}': {e_vip_idx}", "ERROR")
-            self.log(tb_str_vip, "DEBUG")
-
-            original_error_message_text = (
-                f"Se encontró un error conocido (IndexError: tuple index out of range, relacionado con 'values.shape[1]') "
-                f"al generar el gráfico de impacto para '{chosen_covariate}'.\n\n"
-                "Esto podría ser un problema interno de la librería 'lifelines', posiblemente "
-                "relacionado con su versión actual o la naturaleza de esta covariable.\n\n"
-                "Sugerencias:\n"
-                "- Intente actualizar la librería 'lifelines' (`pip install --upgrade lifelines`).\n"
-                "- Pruebe con una covariable diferente si el problema persiste.\n\n"
-                "El traceback completo ha sido registrado en el log para depuración."
-            )
-
-            if "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip:
-                self.log(f"Detectado IndexError conocido para '{chosen_covariate}'. Intentando fallback plotting strategy.", "WARN")
-
-                df_fit = md_vip.get('_df_for_fit_main_INTERNAL_USE')
-                if df_fit is None or df_fit.empty:
-                    self.log("DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible o vacío. No se puede intentar fallback.", "ERROR")
-                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
-                    if fig_vip: plt.close(fig_vip)
-                    return
-
-                original_cov_name_for_type_lookup = original_name_from_q if match else chosen_covariate
-
-                series = df_fit.get(covariate_for_plot)
-                if series is None or series.empty or series.isna().all():
-                    self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía/toda NaN en df_fit. No se puede intentar fallback.", "ERROR")
-                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
-                    if fig_vip: plt.close(fig_vip)
-                    return
-
-                is_quantitative = self.covariables_type_config.get(original_cov_name_for_type_lookup) == "Cuantitativa"
-                if original_cov_name_for_type_lookup not in self.covariables_type_config:
-                    is_quantitative = pd.api.types.is_numeric_dtype(series.dtype)
-
-                if is_quantitative:
-                    self.log(f"'{covariate_for_plot}' es cuantitativa. Generando valores manuales para fallback.", "INFO")
-                    min_val, max_val = series.min(), series.max()
-                    if min_val == max_val or pd.isna(min_val) or pd.isna(max_val):
-                        self.log(f"No se pudo determinar un rango válido (min={min_val}, max={max_val}) para '{covariate_for_plot}'. Fallback no posible.", "WARN")
-                        messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
-                        if fig_vip: plt.close(fig_vip)
-                        return
-
-                    manual_values_1d = np.linspace(min_val, max_val, 150)
-                    manual_values_2d = manual_values_1d.reshape(-1, 1)
-
-                    try:
-                        self.log(f"Intentando plot_partial_effects_on_outcome con valores manuales para '{covariate_for_plot}'.", "INFO")
-                        # fig_vip and ax_vip should already be created from the outer try
-                        cph_model_vip.plot_partial_effects_on_outcome(
-                            covariate_for_plot,
-                            values=manual_values_2d,
-                            plot_baseline=False,
-                            ax=ax_vip
-                        )
-                        # If successful, proceed with original plotting finalization
-                        plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio) (Fallback)"
-                        plot_title += f"\nModelo: {model_name_vip}"
-                        current_opts_vip = self.current_plot_options.copy()
-                        current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-                        current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}")
-                        current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
-                        apply_plot_options(ax_vip, current_opts_vip, self.log)
-                        plt.tight_layout()
-                        self._create_plot_window(fig_vip, f"Impacto Variable (Fallback): {chosen_covariate} ({model_name_vip})")
-                        self.log(f"Fallback plot para '{chosen_covariate}' generado exitosamente.", "SUCCESS")
-                        return # Successfully plotted with fallback, exit method
-                    except Exception as e_fallback:
-                        self.log(f"Error durante el intento de fallback plot para '{chosen_covariate}': {e_fallback}", "ERROR")
-                        self.log(traceback.format_exc(), "DEBUG")
-                        original_error_message_text += "\n\nNOTA: Un intento de graficar con valores manuales (fallback) también falló."
-                        # Fall through to show the original error message (now augmented)
-                else: # Not quantitative
-                    self.log(f"'{covariate_for_plot}' (original: '{original_cov_name_for_type_lookup}') no es cuantitativa o no se pudo determinar. Fallback no aplicable.", "INFO")
-
-                # If fallback was not quantitative, or quantitative checks failed, or fallback plot itself failed:
-                messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
-                if fig_vip: plt.close(fig_vip)
-                return
-
-            else: # Not the specific "tuple index out of range" / "values.shape[1]" error
-                messagebox.showerror("Error de Gráfico (IndexError)",
-                                     f"Se produjo un IndexError inesperado al generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip_idx}\n\n"
-                                     "Consulte el log para más detalles.",
-                                     parent=self.parent_for_dialogs)
-            if fig_vip: # Ensure closure if any path above didn't return and fig_vip exists
-                plt.close(fig_vip)
-
-        except Exception as e_vip:
-            self.log(f"Error general al generar gráfico de impacto para '{chosen_covariate}': {e_vip}", "ERROR")
-            self.log(traceback.format_exc(), "DEBUG")
-            messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip}", parent=self.parent_for_dialogs)
-            if fig_vip:
-                plt.close(fig_vip)
-
-    def export_model_summary(self):
-        if not self._check_model_selected_and_valid(): return
-        md_exp = self.selected_model_in_treeview; name_exp = md_exp.get('model_name','Modelo_Exportado')
-        summary_txt_exp = self._generate_text_summary_for_model(md_exp)
-        if not summary_txt_exp: self.log("No se pudo generar resumen para exportar.", "ERROR"); return
-        fpath_exp = filedialog.asksaveasfilename(title="Guardar Resumen Como...",defaultextension=".txt",initialfile=f"Resumen_{name_exp.replace(' ','_').replace(':','')}.txt",filetypes=[("Texto","*.txt"),("Todos","*.*")])
-        if not fpath_exp: self.log("Exportación cancelada.", "INFO"); return
-        try:
-            with open(fpath_exp, "w", encoding="utf-8") as f_exp: f_exp.write(summary_txt_exp)
-            self.log(f"Resumen '{name_exp}' exportado a: {fpath_exp}", "SUCCESS"); messagebox.showinfo("Exportación Exitosa",f"Resumen guardado en:\n{fpath_exp}",parent=self.parent_for_dialogs)
-        except Exception as e_exp: self.log(f"Error exportando resumen: {e_exp}","ERROR"); messagebox.showerror("Error Exportación",f"No se pudo guardar:\n{e_exp}",parent=self.parent_for_dialogs)
-
-    def _generate_text_summary_for_model(self, model_dict_gst):
-        name_gst = model_dict_gst.get('model_name', 'N/A'); s_txt_gst = f"--- Resumen Modelo: {name_gst} ---\n"; s_txt_gst += f"Generado: {pd.Timestamp.now():%Y-%m-%d %H:%M:%S}\n\n"
-        s_txt_gst += "Configuración Ajuste:\n"; s_txt_gst += f"  Tiempo: {model_dict_gst.get('time_col_for_model','N/A')}\n  Evento: {model_dict_gst.get('event_col_for_model','N/A')}\n"
-        s_txt_gst += f"  Fórmula Patsy (usada en fit): {model_dict_gst.get('formula_patsy','N/A')}\n"
-        s_txt_gst += f"  Fórmula Patsy (original completa para transformar nuevos datos): {model_dict_gst.get('full_patsy_formula_for_new_data_transform','N/A')}\n"
-        s_txt_gst += f"  Términos Modelo (columnas en X_design): {', '.join(model_dict_gst.get('covariates_processed',[]))}\n"
-        s_txt_gst += f"  Penalización: {model_dict_gst.get('penalizer_value',0.0):.4g} (L1 Ratio: {model_dict_gst.get('l1_ratio_value',0.0):.2f})\n  Manejo Empates (UI): {model_dict_gst.get('tie_method_used','N/A')} (Lifelines usará su default: efron)\n\n" 
-        
-        s_txt_gst += "Coeficientes (Resumen Lifelines):\n"
-        sum_df_gst = model_dict_gst.get('metrics',{}).get('summary_df')
-        s_txt_gst += (sum_df_gst.to_string() + "\n\n") if sum_df_gst is not None and not sum_df_gst.empty else "  (No disponibles o modelo nulo)\n\n"
-        
-        s_txt_gst += "Métricas Evaluación:\n"
-        metrics_gst = model_dict_gst.get('metrics',{})
-        for k,v in metrics_gst.items():
-            if k in ["summary_df","schoenfeld_details","HR (individual)","HR_CI (individual)","Wald p-values (individual)"]: continue
-            if isinstance(v,pd.DataFrame): continue
-            s_txt_gst += f"  {k}: {f'{v:.4f}' if isinstance(v,(float,np.floating)) else (str(v)[:200] if pd.notna(v) else 'N/A')}\n"
-        s_txt_gst += "\nTest de Supuesto de Riesgos Proporcionales:\n"
-        sch_df_detailed_residuals = model_dict_gst.get("schoenfeld_results") # This is now the primary source from the new logic
-        ph_test_summary_df = model_dict_gst.get("proportional_hazard_test_summary") # This is the fallback/alternative
-        schoenfeld_status_msg = model_dict_gst.get("schoenfeld_status_message", "Estado del test no especificado.")
-        sch_p_g_gst = metrics_gst.get('Schoenfeld p-value (global)') # This is derived by compute_model_metrics from schoenfeld_results
-
-        self.log(f"DEBUG (_generate_text_summary): sch_df_detailed_residuals (model_dict_gst['schoenfeld_results']) type: {type(sch_df_detailed_residuals)}, is_df: {isinstance(sch_df_detailed_residuals, pd.DataFrame)}, empty: {sch_df_detailed_residuals.empty if isinstance(sch_df_detailed_residuals, pd.DataFrame) else 'N/A'}", "DEBUG")
-        self.log(f"DEBUG (_generate_text_summary): ph_test_summary_df type: {type(ph_test_summary_df)}, is_df: {isinstance(ph_test_summary_df, pd.DataFrame)}, empty: {ph_test_summary_df.empty if isinstance(ph_test_summary_df, pd.DataFrame) else 'N/A'}", "DEBUG")
-        self.log(f"DEBUG (_generate_text_summary): sch_p_g_gst (from metrics): {sch_p_g_gst}", "DEBUG")
-        self.log(f"DEBUG (_generate_text_summary): schoenfeld_status_msg: '{schoenfeld_status_msg}'", "DEBUG")
-
-        has_displayed_schoenfeld_details = False
-        if sch_df_detailed_residuals is not None and isinstance(sch_df_detailed_residuals, pd.DataFrame) and not sch_df_detailed_residuals.empty:
-            s_txt_gst += "  Resultados Detallados de Residuos de Schoenfeld (de `check_assumptions` o su procesamiento):\n"
-            if pd.notna(sch_p_g_gst):
-                 s_txt_gst += f"    P-Global (derivado de estos residuos): {format_p_value(sch_p_g_gst)}\n"
-            s_txt_gst += f"{sch_df_detailed_residuals.to_string()}\n"
-            has_displayed_schoenfeld_details = True
-        
-        # Display proportional_hazard_test summary if it exists AND either
-        # 1. schoenfeld_results (detailed residuals) were not available/empty OR
-        # 2. It's explicitly mentioned in the status that ph_test was also run (covers cases where both might have info)
-        if ph_test_summary_df is not None and isinstance(ph_test_summary_df, pd.DataFrame) and not ph_test_summary_df.empty:
-            if not has_displayed_schoenfeld_details or "proportional_hazard_test" in schoenfeld_status_msg:
-                 s_txt_gst += "  Resultados del Test de Proporcionalidad de Riesgos (de `proportional_hazard_test`):\n"
-                 s_txt_gst += f"{ph_test_summary_df.to_string()}\n"
-        
-        # If no detailed residuals were displayed from either source, but a global p-value exists from compute_model_metrics
-        # (which would have used schoenfeld_results, even if empty, to try and get a global p), display it.
-        if not has_displayed_schoenfeld_details and \
-           (ph_test_summary_df is None or (isinstance(ph_test_summary_df, pd.DataFrame) and ph_test_summary_df.empty)) and \
-           pd.notna(sch_p_g_gst):
-            s_txt_gst += f"  P-Global del Test de Schoenfeld (detalles de residuos no disponibles o vacíos): {format_p_value(sch_p_g_gst)}\n"
-
-        s_txt_gst += f"  Estado General del Test (interpretación del proceso): {schoenfeld_status_msg}\n"
-        s_txt_gst += "\n--- Fin Resumen ---\n"; return s_txt_gst
-
-    def save_model(self):
-        if not self._check_model_selected_and_valid(): return
-        md_save = self.selected_model_in_treeview; name_save = md_save.get('model_name','Modelo_Guardado')
-        
-        model_dict_to_save = md_save.copy()
-
-        fpath_save = filedialog.asksaveasfilename(title="Guardar Modelo Como...",defaultextension=".pkl",initialfile=f"{name_save.replace(' ','_').replace(':','')}.pkl",filetypes=[("Pickle","*.pkl"),("Todos","*.*")])
-        if not fpath_save: self.log("Guardado cancelado.", "INFO"); return
-        try:
-            with open(fpath_save, "wb") as f_save: pickle.dump(model_dict_to_save, f_save)
-            self.log(f"Modelo '{name_save}' guardado en: {fpath_save}", "SUCCESS"); messagebox.showinfo("Modelo Guardado",f"Modelo guardado en:\n{fpath_save}",parent=self.parent_for_dialogs)
-        except Exception as e_save: self.log(f"Error guardando modelo: {e_save}","ERROR"); messagebox.showerror("Error Guardando",f"No se pudo guardar:\n{e_save}",parent=self.parent_for_dialogs)
-
-    def load_model_from_file(self):
-        fpath_load = filedialog.askopenfilename(title="Cargar Modelo Pickle",filetypes=[("Pickle","*.pkl"),("Todos","*.*")])
-        if not fpath_load: self.log("Carga cancelada.", "INFO"); return
-        try:
-            with open(fpath_load, "rb") as f_load: loaded_md = pickle.load(f_load)
-            if not (isinstance(loaded_md,dict) and 'model' in loaded_md and 'model_name' in loaded_md and isinstance(loaded_md.get('model'),CoxPHFitter)):
-                raise ValueError("Archivo no contiene un modelo CoxPHFitter válido en el formato esperado.")
-            if '_df_for_fit_main_INTERNAL_USE' not in loaded_md or \
-               '_X_design_rm_INTERNAL_USE' not in loaded_md or \
-               '_y_survival_rm_INTERNAL_USE' not in loaded_md:
-                self.log(f"Advertencia: Modelo '{loaded_md.get('model_name')}' cargado sin DataFrames internos. Algunas funciones de visualización (Schoenfeld, Calibración) pueden no funcionar.", "WARN")
-                messagebox.showwarning("Datos Faltantes en Modelo", "El modelo cargado no contiene los DataFrames internos necesarios para todos los gráficos (ej. Schoenfeld, Calibración). Estos gráficos podrían no funcionar.", parent=self.parent_for_dialogs)
-
-            self.generated_models_data.append(loaded_md); self._update_models_treeview()
-            new_idx_load = len(self.generated_models_data)-1
-            self.treeview_lista_modelos.selection_set(str(new_idx_load)); self.treeview_lista_modelos.focus(str(new_idx_load)); self._on_model_select_from_treeview()
-            self.log(f"Modelo '{loaded_md.get('model_name')}' cargado desde: {fpath_load}", "SUCCESS"); messagebox.showinfo("Modelo Cargado",f"Modelo '{loaded_md.get('model_name')}' cargado.",parent=self.parent_for_dialogs)
-        except (pickle.UnpicklingError, ValueError) as e_load_val: self.log(f"Error carga/formato modelo: {e_load_val}","ERROR"); messagebox.showerror("Error Carga/Formato",f"Error al cargar o formato inválido:\n{e_load_val}",parent=self.parent_for_dialogs)
-        except Exception as e_load_gen: self.log(f"Error general cargando modelo: {e_load_gen}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Carga",f"No se pudo cargar:\n{e_load_gen}",parent=self.parent_for_dialogs)
-
-    def _clear_all_generated_models(self):
-        """Elimina todos los modelos generados de la lista y actualiza la Treeview."""
-        if messagebox.askyesno("Confirmar Limpieza", "¿Está seguro de que desea eliminar todos los modelos generados?", parent=self.parent_for_dialogs):
-            self.generated_models_data = []
-            self._update_models_treeview()
-            self.selected_model_in_treeview = None
-            self._update_results_buttons_state() # Deshabilitar botones de resultados
-            self.log("Todos los modelos generados han sido eliminados.", "INFO")
-
-    def _check_model_selected_and_valid(self, check_params=False):
-        if not self.selected_model_in_treeview: messagebox.showwarning("Sin Modelo","Seleccione modelo.",parent=self.parent_for_dialogs); return False
-        md_obj_chk = self.selected_model_in_treeview.get('model')
-        if not (md_obj_chk and isinstance(md_obj_chk, CoxPHFitter)): messagebox.showerror("Error Modelo","Objeto modelo no válido.",parent=self.parent_for_dialogs); self.log(f"Modelo '{self.selected_model_in_treeview.get('model_name','N/A')}' sin CPH válido.","ERROR"); return False
-        if check_params and (not hasattr(md_obj_chk,'params_') or md_obj_chk.params_ is None or md_obj_chk.params_.empty):
-            messagebox.showinfo("Modelo Nulo","Modelo sin covariables. Función requiere covariables.",parent=self.parent_for_dialogs); self.log(f"Función requiere covariables, modelo '{self.selected_model_in_treeview.get('model_name')}' nulo.","INFO"); return False
-        return True
-
-    def create_results_controls(self):
-        r_content_rc = self.tab_frame_results_content.interior
-        self.log("Creando controles Pestaña Resultados...", "DEBUG")
-        frame_opts_plot_global = ttk.LabelFrame(r_content_rc, text="Opciones Globales de Gráficos")
-        frame_opts_plot_global.pack(fill=tk.X, padx=10, pady=10, ipady=5)
-        ttk.Button(frame_opts_plot_global, text="Configurar Opciones Gráfico Predeterminadas...", command=self._open_global_plot_options_dialog).pack(side=tk.LEFT, padx=10, pady=5)
-        
-        self.results_display_area_rc = ttk.Frame(r_content_rc, padding=10)
-        self.results_display_area_rc.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        ttk.Label(self.results_display_area_rc, text="Seleccione modelo en Pestaña 2 y use botones de acción para ver resultados.", wraplength=600, justify=tk.CENTER, font=("TkDefaultFont",10,"italic")).pack(pady=20,padx=10)
-        self.log("Controles Resultados creados.", "DEBUG")
-
-    def open_detailed_configuration_dialog(self):
-        selected_indices = self.listbox_covariables_disponibles.curselection()
-        if not selected_indices:
-            messagebox.showinfo("Sin Selección", "Seleccione una o más covariables de la lista para configurar detalladamente.", parent=self.parent_for_dialogs)
-            return
-
-        selected_covs = [self.listbox_covariables_disponibles.get(i) for i in selected_indices]
-
-        # Check if data is loaded, as it's needed by the dialog for context (e.g., populating ref categories)
-        if self.data is None:
-            messagebox.showerror("Error de Datos", "No hay datos cargados. Cargue un archivo de datos primero.", parent=self.parent_for_dialogs)
-            self.log("Intento de abrir diálogo de config detallada sin datos cargados.", "WARN")
-            return
-
-        DetailedCovariateConfigDialog(self.parent_for_dialogs, self, selected_covs)
-
-    def _open_global_plot_options_dialog(self):
-        PlotOptionsDialog(self.parent_for_dialogs, self.current_plot_options.copy(), self._update_global_plot_options)
-
-    def _update_global_plot_options(self, new_opts_gpo):
-        self.current_plot_options = new_opts_gpo.copy()
-        self.log("Opciones de gráfico globales actualizadas.", "CONFIG"); messagebox.showinfo("Opciones Actualizadas","Opciones de gráfico predeterminadas actualizadas.",parent=self.parent_for_dialogs)
-
-    def _update_results_buttons_state(self): # Placeholder, botones en Tab 2
-        pass
-    
-    def show_methodological_report(self):
-        if not self._check_model_selected_and_valid(): return
-        md_rep = self.selected_model_in_treeview; name_rep = md_rep.get('model_name','N/A')
-        text_summary_rep = self._generate_text_summary_for_model(md_rep)
-        report_full = f"--- Reporte Metodológico: {name_rep} ---\n\n"
-        report_full += "1. Objetivo Modelo:\n   Estimar relación covariables y tiempo-hasta-evento con Modelo Cox.\n\n"
-        
-        df_final_shape = md_rep.get('df_final_fit_shape')
-        if df_final_shape and isinstance(df_final_shape, tuple) and len(df_final_shape) >= 1:
-            num_obs_rep_meth = df_final_shape[0]
-        else:
-            num_obs_rep_meth = 'N/A'
-
-        num_events_rep_meth = 'N/A'
-        if md_rep.get('model') and hasattr(md_rep['model'], 'event_observed'):
-            try: num_events_rep_meth = int(md_rep['model'].event_observed.sum())
-            except: pass
-        elif md_rep.get('_y_survival_rm_INTERNAL_USE') and md_rep.get('event_col_for_model') in md_rep['_y_survival_rm_INTERNAL_USE']:
-            try: num_events_rep_meth = int(md_rep['_y_survival_rm_INTERNAL_USE'][md_rep.get('event_col_for_model')].sum())
-            except: pass
-
-        report_full += f"2. Datos Usados (post-preparación para este modelo):\n   - Observaciones: {num_obs_rep_meth}\n   - Eventos: {num_events_rep_meth}\n\n"
-        report_full += "3. Contenido Resumen Técnico (ver abajo):\n"
-        report_full += "   - Configuración ajuste.\n   - Coeficientes (HRs, ICs).\n   - Métricas ajuste/evaluación.\n   - Test Supuestos (Schoenfeld).\n\n"
-        report_full += text_summary_rep
-        report_full += "\n\n4. Limitaciones y Consideraciones (Placeholder):\n   [Describa limitaciones y generalizabilidad.]\n\n"
-        report_full += "5. Conclusión General (Placeholder):\n   [Interprete hallazgos en contexto.]\n"
-        ModelSummaryWindow(self.parent_for_dialogs, f"Reporte Metodológico: {name_rep}", report_full)
-        self.log(f"Mostrando reporte metodológico para '{name_rep}'.", "INFO")
-
-# --- Fin de la clase CoxModelingApp ---
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    root.title(f"Software Modelos de Supervivencia de Cox v1.2.26")
-    
-    screen_w = root.winfo_screenwidth(); screen_h = root.winfo_screenheight()
-    app_w = int(screen_w * 0.90); app_h = int(screen_h * 0.88)
-    center_x = max(0, (screen_w - app_w) // 2); center_y = max(0, (screen_h - app_h) // 2)
-    root.geometry(f"{app_w}x{app_h}+{center_x}+{center_y}"); root.minsize(1050, 720)
-    
-    style = ttk.Style()
-    themes = style.theme_names()
-    preferred_themes = ['clam', 'alt', 'default', 'classic']
-    if os.name == 'nt': preferred_themes = ['vista', 'xpnative'] + preferred_themes
-    
-    chosen_theme = style.theme_use()
-    for theme_name in preferred_themes:
-        if theme_name in themes:
-            try: style.theme_use(theme_name); chosen_theme = theme_name; break
-            except tk.TclError: pass
-    print(f"INFO: Tema UI: '{chosen_theme}'")
-
-    app = CoxModelingApp(root)
-    
-    app_version = "1.2.26"
-    app.log("*"*80, "HEADER"); app.log(f"  Software Modelado Cox (v{app_version}) Iniciado  ", "HEADER")
-    app.log(f"  Tema UI: {chosen_theme}", "CONFIG"); app.log("*"*80, "HEADER")
-
-    if not PATSY_AVAILABLE: app.log("ERROR CRÍTICO: 'patsy' NO encontrada. Funciones esenciales deshabilitadas. Instale 'patsy'.", "ERROR")
-    else: app.log("'patsy' cargada.", "INFO")
-    if not FILTER_COMPONENT_AVAILABLE: app.log("ADVERTENCIA: 'MATLAB_filter_component' NO importado. Filtros avanzados no disponibles.", "WARN")
-    else: app.log("'MATLAB_filter_component' cargado.", "INFO")
-    if LIFELINES_CALIBRATION_AVAILABLE: app.log("'survival_probability_calibration' disponible.", "INFO")
-    else: app.log("ADVERTENCIA: 'survival_probability_calibration' NO disponible.", "WARN")
-    if LIFELINES_BRIER_SCORE_AVAILABLE: app.log("'brier_score' disponible.", "INFO")
-    else: app.log("ADVERTENCIA: 'brier_score' NO disponible.", "WARN")
-    
-    root.mainloop()
+>>>>>>> REPLACE
