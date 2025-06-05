@@ -697,21 +697,24 @@ class RegresionesTab(ttk.Frame):
         dep_var_frame = ttk.Frame(frm_vars)
         dep_var_frame.pack(fill="x", pady=2)
         ttk.Label(dep_var_frame, text="Variable Dependiente:").pack(side="left", padx=5)
-        self.entry_dep_var_spec = ttk.Entry(dep_var_frame, width=40)
-        self.entry_dep_var_spec.pack(side="left", padx=5, expand=True, fill="x")
+        self.combo_dep_var_spec = ttk.Combobox(dep_var_frame, width=38, state="readonly")
+        self.combo_dep_var_spec.pack(side="left", padx=5, expand=True, fill="x")
+        self.combo_dep_var_spec.bind("<<ComboboxSelected>>", self._update_indep_vars_listbox)
 
         indep_vars_frame = ttk.Frame(frm_vars)
         indep_vars_frame.pack(fill="both", expand=True, pady=2)
-        ttk.Label(indep_vars_frame, text="Variables Independientes (una por línea):").pack(anchor="nw", padx=5)
-        
-        self.text_indep_vars_spec = tk.Text(indep_vars_frame, height=6, width=40, wrap="none")
-        vars_indep_v_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="vertical", command=self.text_indep_vars_spec.yview)
-        vars_indep_h_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="horizontal", command=self.text_indep_vars_spec.xview)
-        self.text_indep_vars_spec.configure(yscrollcommand=vars_indep_v_scrollbar.set, xscrollcommand=vars_indep_h_scrollbar.set)
-        
-        vars_indep_v_scrollbar.pack(side="right", fill="y")
-        vars_indep_h_scrollbar.pack(side="bottom", fill="x")
-        self.text_indep_vars_spec.pack(side="left", fill="both", expand=True, padx=5, pady=(0,5))
+        # Store original label text for reuse
+        indep_vars_label_text = "Variables Independientes (seleccione de la lista):"
+        ttk.Label(indep_vars_frame, text=indep_vars_label_text).pack(anchor="nw", padx=5)
+
+        self.listbox_indep_vars_spec = tk.Listbox(indep_vars_frame, selectmode=tk.MULTIPLE, height=6, exportselection=False)
+        indep_vars_v_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="vertical", command=self.listbox_indep_vars_spec.yview)
+        indep_vars_h_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="horizontal", command=self.listbox_indep_vars_spec.xview)
+        self.listbox_indep_vars_spec.configure(yscrollcommand=indep_vars_v_scrollbar.set, xscrollcommand=vars_indep_h_scrollbar.set)
+
+        indep_vars_v_scrollbar.pack(side="right", fill="y")
+        indep_vars_h_scrollbar.pack(side="bottom", fill="x")
+        self.listbox_indep_vars_spec.pack(side="left", fill="both", expand=True, padx=5, pady=(0,5))
         
         # --- Parámetros Gráficos ---
         frm_params = ttk.LabelFrame(container, text="Parámetros Gráficos")
@@ -868,15 +871,29 @@ class RegresionesTab(ttk.Frame):
                                          f"Detalle: {e_filter_comp_other}")
 
             # Actualizar selectores de variables de regresión
-            self.entry_dep_var_spec.delete(0, tk.END)
+            self.combo_dep_var_spec['values'] = num_cols
             if num_cols:
-                self.entry_dep_var_spec.insert(0, num_cols[0]) 
+                self.combo_dep_var_spec.set(num_cols[0])
+            else:
+                self.combo_dep_var_spec.set("")
+            # self.entry_dep_var_spec.delete(0, tk.END) # Replaced by Combobox logic
+            # if num_cols: # Replaced by Combobox logic
+            # self.entry_dep_var_spec.insert(0, num_cols[0]) # Replaced by Combobox logic
             
-            self.text_indep_vars_spec.delete("1.0", tk.END)
-            if num_cols:
-                for col in num_cols:
-                    self.text_indep_vars_spec.insert(tk.END, col + "\n")
+            # self.text_indep_vars_spec.delete("1.0", tk.END) # Replaced by Listbox logic
+            # if num_cols: # Replaced by Listbox logic
+                # for col in num_cols: # Replaced by Listbox logic
+                    # self.text_indep_vars_spec.insert(tk.END, col + "\n") # Replaced by Listbox logic
+
+            self.listbox_indep_vars_spec.delete(0, tk.END)
+            selected_dep_var = self.combo_dep_var_spec.get()
+            # Populate independent variables listbox, excluding the selected dependent variable
+            # Using all_cols from earlier in the load_data method
+            available_indep_vars = [col for col in all_cols if col != selected_dep_var]
+            for var_name in available_indep_vars:
+                self.listbox_indep_vars_spec.insert(tk.END, var_name)
             
+            self._update_indep_vars_listbox() # Ensure list is correctly populated initially
             self.log_message("Datos cargados. Configure variables y filtros.")
         except Exception as e:
             self.log_message(f"Error al cargar datos: {e}")
@@ -886,11 +903,36 @@ class RegresionesTab(ttk.Frame):
                                  f"Ocurrió un error detallado al intentar cargar el archivo:\n\n{e}\n\nConsulte la consola para ver el traceback completo si es necesario.")
             self.data = None
             self.lbl_file.config(text="Ningún archivo cargado.")
-            self.entry_dep_var_spec.delete(0, tk.END)
-            self.text_indep_vars_spec.delete("1.0", tk.END)
+            self.combo_dep_var_spec['values'] = []
+            self.combo_dep_var_spec.set("")
+            # self.entry_dep_var_spec.delete(0, tk.END) # Replaced by Combobox logic
+            self.listbox_indep_vars_spec.delete(0, tk.END)
             # Limpiar componente de filtro en caso de error
             if hasattr(self, 'filter_component') and self.filter_component:
                 self.filter_component.set_dataframe(None)
+
+    def _update_indep_vars_listbox(self, event=None):
+        if not hasattr(self, 'data') or self.data is None:
+            return
+
+        selected_dep_var = self.combo_dep_var_spec.get()
+        current_indep_selection_indices = self.listbox_indep_vars_spec.curselection()
+        current_indep_selected_values = [self.listbox_indep_vars_spec.get(i) for i in current_indep_selection_indices]
+
+        self.listbox_indep_vars_spec.delete(0, tk.END)
+
+        all_cols = list(self.data.columns)
+        available_indep_vars = [col for col in all_cols if col != selected_dep_var]
+
+        for var_name in available_indep_vars:
+            self.listbox_indep_vars_spec.insert(tk.END, var_name)
+            if var_name in current_indep_selected_values:
+                # Try to reselect previously selected items if they are still valid
+                try:
+                    idx = available_indep_vars.index(var_name) # Get new index in the (potentially) changed list
+                    self.listbox_indep_vars_spec.selection_set(idx)
+                except ValueError: # Should not happen if var_name is in available_indep_vars
+                    pass
 
     # Se eliminan apply_filter_criteria y apply_filter_qual
 
@@ -961,13 +1003,40 @@ class RegresionesTab(ttk.Frame):
             self.log_message("No hay datos después de aplicar filtros o error en filtros para graficar.")
             return
 
-        parsed_dep_spec = self._parse_variable_specifications(self.entry_dep_var_spec.get(), df_f, is_single_var=True)
-        if not parsed_dep_spec:
-            self.log_message("Variable dependiente no válida o no especificada para graficar.")
+        dep_var_selected = self.combo_dep_var_spec.get()
+        if not dep_var_selected:
+            self.log_message("Variable dependiente no seleccionada para graficar.")
             return
-        dep_original, dep_display = parsed_dep_spec[0]
+        dep_original, dep_display = dep_var_selected, dep_var_selected
 
-        parsed_indep_specs = self._parse_variable_specifications(self.text_indep_vars_spec.get("1.0", tk.END), df_f)
+        if dep_original not in df_f.columns:
+            self.log_message(f"Error: Variable dependiente '{dep_original}' no encontrada en los datos filtrados.")
+            return
+        if not pd.api.types.is_numeric_dtype(df_f[dep_original]):
+            self.log_message(f"Error: Variable dependiente '{dep_original}' no es numérica en los datos filtrados.")
+            return
+
+        selected_indices = self.listbox_indep_vars_spec.curselection()
+        selected_indep_vars_names = [self.listbox_indep_vars_spec.get(i) for i in selected_indices]
+
+        # The _parse_variable_specifications was also checking for numeric types and existence.
+        # We need to replicate that an d build parsed_indep_specs structure.
+        parsed_indep_specs = []
+        if not selected_indep_vars_names:
+            self.log_message("No se seleccionaron variables independientes.")
+            # Depending on desired behavior, either return or allow plotting with no indep vars (just scatter of dep var if that makes sense)
+            # For now, let's assume at least one independent variable is desired for regression lines.
+            # If only a scatter plot of dependent vs independent is desired, this logic might change.
+        else:
+            for var_name in selected_indep_vars_names:
+                if var_name not in df_f.columns:
+                    self.log_message(f"Advertencia: Variable independiente '{var_name}' no encontrada en datos filtrados. Omitida.")
+                    continue
+                if not pd.api.types.is_numeric_dtype(df_f[var_name]):
+                    self.log_message(f"Advertencia: Variable independiente '{var_name}' no es numérica. Omitida para regresión.")
+                    continue
+                parsed_indep_specs.append((var_name, var_name)) # Using var_name for both original and display name
+
         if not parsed_indep_specs:
             self.log_message("Variables independientes no válidas o no especificadas para graficar.")
             return
