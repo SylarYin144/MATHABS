@@ -710,7 +710,7 @@ class RegresionesTab(ttk.Frame):
         self.listbox_indep_vars_spec = tk.Listbox(indep_vars_frame, selectmode=tk.MULTIPLE, height=6, exportselection=False)
         indep_vars_v_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="vertical", command=self.listbox_indep_vars_spec.yview)
         indep_vars_h_scrollbar = ttk.Scrollbar(indep_vars_frame, orient="horizontal", command=self.listbox_indep_vars_spec.xview)
-        self.listbox_indep_vars_spec.configure(yscrollcommand=indep_vars_v_scrollbar.set, xscrollcommand=vars_indep_h_scrollbar.set)
+        self.listbox_indep_vars_spec.configure(yscrollcommand=indep_vars_v_scrollbar.set, xscrollcommand=indep_vars_h_scrollbar.set)
 
         indep_vars_v_scrollbar.pack(side="right", fill="y")
         indep_vars_h_scrollbar.pack(side="bottom", fill="x")
