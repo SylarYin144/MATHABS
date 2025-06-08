@@ -2891,4 +2891,3 @@ class CoxModelingApp(ttk.Frame):
             return # No fig_cal to close yet
 
     def show_variable_impact_plot(self):
->>>>>>> REPLACE
