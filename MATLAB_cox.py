@@ -931,7 +931,7 @@ class CoxModelingApp(ttk.Frame):
 
         # Botón para configuración detallada
         btn_config_detallada = ttk.Button(frame_lista_covariables, text="Configurar Seleccionadas Detalladamente...",
-                                          command=self.open_detailed_configuration_dialog)
+                                          command=self.open_detailed_covariate_config_dialog)
         btn_config_detallada.pack(pady=5, padx=5, fill=tk.X)
 
 
