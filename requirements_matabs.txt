@@ -1,3 +1,8 @@
+# Python Version Recommendation:
+# This project is best run with Python 3.9 or 3.10.
+# Using Python 3.11+ may lead to import errors with some dependencies (e.g., 'inspect.formatargspec').
+# Ensure your environment uses one of the recommended Python versions.
+#
 bottleneck
 factor_analyzer
 flask
@@ -12,6 +17,8 @@ pyarrow
 scikit-learn
 scipy
 seaborn
-statsmodels
+# statsmodels pinned to 0.13.5 for compatibility with numpy<2.0 and Python < 3.11.
+# Python < 3.11 (e.g., 3.9 or 3.10) is strongly recommended to avoid 'inspect.formatargspec' errors.
+statsmodels==0.13.5
 plotly
 squarify

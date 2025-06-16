@@ -841,6 +841,19 @@ class CoxModelingApp(ttk.Frame):
 
         self.log("Interfaz de CoxModelingApp inicializada y controles creados.", "INFO")
 
+    def open_detailed_covariate_config_dialog(self):
+        sel_indices = self.listbox_covariables_disponibles.curselection()
+        selected_covs = [self.listbox_covariables_disponibles.get(i) for i in sel_indices]
+
+        if not selected_covs:
+            messagebox.showwarning("Ninguna covariable seleccionada",
+                                   "Por favor, seleccione una o más covariables de la lista para configurar detalladamente.",
+                                   parent=self.parent_for_dialogs)
+            return
+
+        # Assuming DetailedCovariateConfigDialog is defined elsewhere and handles its own logic
+        DetailedCovariateConfigDialog(self.parent_for_dialogs, self, selected_covs)
+
     def log(self, message_text, level_str="INFO"):
         if not hasattr(self, 'log_text_widget'):
             print(f"FALLBACK LOG: [{level_str.upper()}] {message_text}")
