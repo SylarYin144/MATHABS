@@ -2758,6 +2758,14 @@ class CoxModelingApp(ttk.Frame):
         else:
             self.log("Carga de modelo cancelada por el usuario.", "INFO")
 
+    def show_methodological_report(self):
+        self.log("Función 'Reporte Metodológico' llamada, pero no implementada.", "INFO")
+        messagebox.showinfo(
+            "Función No Implementada",
+            "La generación del reporte metodológico aún no está disponible en esta versión.",
+            parent=self.parent_for_dialogs
+        )
+
     def generate_calibration_plot(self): # Ensure this line has correct class-level indentation
         if not self._check_model_selected_and_valid(): return
 
@@ -2987,4 +2995,9 @@ class CoxModelingApp(ttk.Frame):
             return # No fig_cal to close yet
 
     def show_variable_impact_plot(self):
-        pass
+        self.log("Función 'Gráf. Impacto Var (Log-HR)' llamada, pero no implementada.", "INFO")
+        messagebox.showinfo(
+            "Función No Implementada",
+            "El gráfico de impacto de variables (Log-HR) aún no está disponible en esta versión.",
+            parent=self.parent_for_dialogs
+        )
