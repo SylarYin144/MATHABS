@@ -1918,6 +1918,8 @@ class CoxModelingApp(ttk.Frame):
                                    model_type_for_fit_logic="Multivariado"): 
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
+        df_for_fit_main = df_lifelines_rm.copy() # Define df_for_fit_main EARLIER
+
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
         
         model_data_rm = {
@@ -1930,7 +1932,7 @@ class CoxModelingApp(ttk.Frame):
             "y_survival_used_for_fit": y_survival_rm.copy(),
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
-            "df_final_fit_shape": df_for_fit_main.shape,
+            "df_final_fit_shape": df_for_fit_main.shape, # NOW THIS IS SAFE
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
             "schoenfeld_status_message": None, # Initialize status message
@@ -1948,10 +1950,9 @@ class CoxModelingApp(ttk.Frame):
             # Modelo Principal
             cph_main_rm = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
             
-            # Siempre usar el DataFrame original (df_lifelines_rm) y la fórmula de Patsy (formula_patsy_rm)
+            # Siempre usar el DataFrame original (df_for_fit_main, which is a copy of df_lifelines_rm) y la fórmula de Patsy (formula_patsy_rm)
             # lifelines.fit() se encargará de construir la matriz de diseño internamente.
-            df_for_fit_main = df_lifelines_rm.copy()
-            model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape
+            # model_data_rm["df_final_fit_shape"] was already set during initialization.
             actual_formula_for_fit = formula_patsy_rm
             
             self.log(f"DEBUG: df_for_fit_main columns before fit: {df_for_fit_main.columns.tolist()}", "DEBUG")
