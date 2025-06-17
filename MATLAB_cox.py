@@ -2766,6 +2766,21 @@ class CoxModelingApp(ttk.Frame):
             parent=self.parent_for_dialogs
         )
 
+    def _clear_all_generated_models(self):
+        confirmed = messagebox.askyesno(
+            "Confirmar Limpieza",
+            "Esto eliminará todos los modelos generados en esta sesión de la lista. ¿Está seguro?",
+            parent=self.parent_for_dialogs
+        )
+        if confirmed:
+            self.generated_models_data = []
+            self.selected_model_in_treeview = None
+            self._update_models_treeview() # Refresh the UI list
+            self.log("Todos los modelos generados han sido limpiados de la lista.", "INFO")
+            messagebox.showinfo("Modelos Limpiados", "La lista de modelos generados ha sido limpiada.", parent=self.parent_for_dialogs)
+        else:
+            self.log("Limpieza de modelos cancelada por el usuario.", "INFO")
+
     def generate_calibration_plot(self): # Ensure this line has correct class-level indentation
         if not self._check_model_selected_and_valid(): return
 
