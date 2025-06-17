@@ -2699,6 +2699,65 @@ class CoxModelingApp(ttk.Frame):
         else:
             self.log("Exportación de resumen cancelada por el usuario.", "INFO")
 
+    def save_model(self):
+        if not self._check_model_selected_and_valid(): return
+        model_to_save = self.selected_model_in_treeview
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self.parent_for_dialogs,
+            title="Guardar Modelo Como...",
+            defaultextension=".pkl",
+            filetypes=[("Pickle files", "*.pkl"), ("All files", "*.*")]
+        )
+
+        if file_path:
+            try:
+                with open(file_path, "wb") as f: # Use "wb" for binary mode with pickle
+                    pickle.dump(model_to_save, f)
+                self.log(f"Modelo '{model_to_save.get('model_name')}' guardado en: {file_path}", "SUCCESS")
+                messagebox.showinfo("Modelo Guardado", f"Modelo guardado exitosamente en:\n{file_path}", parent=self.parent_for_dialogs)
+            except Exception as e_save_model:
+                self.log(f"Error al guardar el modelo: {e_save_model}", "ERROR")
+                messagebox.showerror("Error al Guardar", f"No se pudo guardar el modelo:\n{e_save_model}", parent=self.parent_for_dialogs)
+        else:
+            self.log("Guardado de modelo cancelado por el usuario.", "INFO")
+
+    def load_model_from_file(self):
+        file_path = filedialog.askopenfilename(
+            parent=self.parent_for_dialogs,
+            title="Cargar Modelo Desde Archivo...",
+            filetypes=[("Pickle files", "*.pkl"), ("All files", "*.*")]
+        )
+
+        if file_path:
+            try:
+                with open(file_path, "rb") as f: # Use "rb" for binary mode with pickle
+                    loaded_model_data = pickle.load(f)
+
+                # Basic validation of the loaded data
+                if isinstance(loaded_model_data, dict) and 'model_name' in loaded_model_data and 'model' in loaded_model_data:
+                    # Check for duplicate model names before adding
+                    existing_names = [m.get('model_name') for m in self.generated_models_data]
+                    if loaded_model_data.get('model_name') in existing_names:
+                        loaded_model_data['model_name'] = f"{loaded_model_data['model_name']}_loaded_{len(self.generated_models_data) + 1}"
+                        self.log(f"Modelo cargado renombrado a '{loaded_model_data['model_name']}' para evitar duplicados.", "WARN")
+
+                    self.generated_models_data.append(loaded_model_data)
+                    self._update_models_treeview() # Refresh the UI list
+                    self.log(f"Modelo '{loaded_model_data.get('model_name')}' cargado desde: {file_path}", "SUCCESS")
+                    messagebox.showinfo("Modelo Cargado", f"Modelo '{loaded_model_data.get('model_name')}' cargado exitosamente.", parent=self.parent_for_dialogs)
+                else:
+                    self.log(f"Archivo '{file_path}' no contiene datos de modelo válidos.", "ERROR")
+                    messagebox.showerror("Error de Carga", "El archivo seleccionado no parece ser un archivo de modelo válido.", parent=self.parent_for_dialogs)
+            except pickle.UnpicklingError as e_unpickle:
+                self.log(f"Error al deserializar el modelo (pickle error): {e_unpickle}", "ERROR")
+                messagebox.showerror("Error de Carga", f"No se pudo deserializar el modelo desde el archivo (puede estar corrupto o no ser un archivo pickle):\n{e_unpickle}", parent=self.parent_for_dialogs)
+            except Exception as e_load_model:
+                self.log(f"Error al cargar el modelo: {e_load_model}", "ERROR")
+                messagebox.showerror("Error de Carga", f"No se pudo cargar el modelo:\n{e_load_model}", parent=self.parent_for_dialogs)
+        else:
+            self.log("Carga de modelo cancelada por el usuario.", "INFO")
+
     def generate_calibration_plot(self): # Ensure this line has correct class-level indentation
         if not self._check_model_selected_and_valid(): return
 
