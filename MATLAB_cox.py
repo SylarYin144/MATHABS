@@ -2675,6 +2675,30 @@ class CoxModelingApp(ttk.Frame):
                 messagebox.showinfo("Resultados Predicción", "Curva de predicción completa generada.", parent=dialog_pred_ref)
         except Exception as e_curve_pred: self.log(f"Error pred/plot: {e_curve_pred}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Pred/Plot",f"Error al predecir/plotear:\n{e_curve_pred}",parent=dialog_pred_ref)
 
+    def export_model_summary(self):
+        if not self._check_model_selected_and_valid(): return
+        model_dict = self.selected_model_in_treeview
+        summary_text = self._generate_text_summary_for_model(model_dict)
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self.parent_for_dialogs,
+            title="Guardar Resumen del Modelo Como...",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("Markdown files", "*.md"), ("All files", "*.*")]
+        )
+
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(summary_text)
+                self.log(f"Resumen del modelo '{model_dict.get('model_name')}' exportado a: {file_path}", "SUCCESS")
+                messagebox.showinfo("Exportación Exitosa", f"Resumen del modelo guardado en:\n{file_path}", parent=self.parent_for_dialogs)
+            except Exception as e_export:
+                self.log(f"Error al exportar resumen del modelo: {e_export}", "ERROR")
+                messagebox.showerror("Error de Exportación", f"No se pudo guardar el resumen:\n{e_export}", parent=self.parent_for_dialogs)
+        else:
+            self.log("Exportación de resumen cancelada por el usuario.", "INFO")
+
     def generate_calibration_plot(self): # Ensure this line has correct class-level indentation
         if not self._check_model_selected_and_valid(): return
 
