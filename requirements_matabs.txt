@@ -1,7 +1,8 @@
 # Python Version Recommendation:
-# This project is best run with Python 3.9 or 3.10.
-# Using Python 3.11+ may lead to import errors with some dependencies (e.g., 'inspect.formatargspec').
-# Ensure your environment uses one of the recommended Python versions.
+# For the broadest compatibility with all listed dependencies, Python 3.10 or 3.11 is recommended.
+# Some older libraries in this list may have more stable pre-compiled versions for these Python releases.
+# Note: 'statsmodels' has been updated to a version compatible with Python 3.12.
+# If using Python 3.12 and encountering build issues with other packages, consider using Python 3.10/3.11 or installing C++ Build Tools.
 #
 bottleneck
 factor_analyzer
@@ -17,8 +18,8 @@ pyarrow
 scikit-learn
 scipy
 seaborn
-# statsmodels pinned to 0.13.5 for compatibility with numpy<2.0 and Python < 3.11.
-# Python < 3.11 (e.g., 3.9 or 3.10) is strongly recommended to avoid 'inspect.formatargspec' errors.
-statsmodels==0.13.5
+# statsmodels>=0.14.0 is required for Python 3.11+ (including 3.12) due to 'inspect.formatargspec' removal.
+# Version 0.14.1 is compatible with numpy<2.0 (requires numpy>=1.21).
+statsmodels==0.14.1
 plotly
 squarify
