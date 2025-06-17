@@ -1659,6 +1659,14 @@ class CoxModelingApp(ttk.Frame):
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
 
+    def create_results_controls(self):
+        r_content = self.tab_frame_results_content.interior
+        self.log("Creando controles para la pestaña de Resultados y Visualización...", "DEBUG")
+
+        ttk.Label(r_content, text="Controles de Resultados y Visualización (placeholder). Esta sección se desarrollará.").pack(padx=20, pady=20, anchor='center')
+
+        self.log("Controles de Resultados y Visualización (placeholder) creados.", "DEBUG")
+
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
         
