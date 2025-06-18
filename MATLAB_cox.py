@@ -29,7 +29,8 @@ from tkinter import scrolledtext
 import pandas as pd
 import numpy as np
 import scipy.stats
-from scipy.signal import savgol_filter # Added for smoothing
+# from scipy.signal import savgol_filter # noqa - Commented out, replaced by LOESS for h0(t)
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
@@ -2527,9 +2528,10 @@ class CoxModelingApp(ttk.Frame):
         ttk.Radiobutton(frame_opts_pred,text="Prob.Supervivencia",variable=type_var_pred_ui,value="Supervivencia").grid(row=0,column=1,padx=5,pady=3,sticky=tk.W)
         ttk.Radiobutton(frame_opts_pred,text="Riesgo Acumulado",variable=type_var_pred_ui,value="Riesgo").grid(row=0,column=2,padx=5,pady=3,sticky=tk.W)
         ttk.Radiobutton(frame_opts_pred,text="Prob. Evento Acum. (1-S(t))",variable=type_var_pred_ui,value="ProbEventoAcum").grid(row=0,column=3,padx=5,pady=3,sticky=tk.W)
+        ttk.Radiobutton(frame_opts_pred,text="Densidad Evento (f(t|x))",variable=type_var_pred_ui,value="DensidadEvento").grid(row=0,column=4,padx=5,pady=3,sticky=tk.W)
         
         ttk.Label(frame_opts_pred,text="Tiempo(s) (ej: 100 o 50,100):").grid(row=1,column=0,padx=5,pady=3,sticky=tk.W)
-        times_str_var_pred_ui = StringVar(value="") # Default a vacío para que sea opcional
+        times_str_var_pred_ui = StringVar(value="")
         if self.data is not None and md_pred.get('time_col_for_model') in self.data:
             try:
                 median_time = self.data[md_pred.get('time_col_for_model')].median()
@@ -2665,6 +2667,73 @@ class CoxModelingApp(ttk.Frame):
                 pred_col_name_for_times = pred_df.columns[0] if not pred_df.empty else None
                 pred_df_for_times = pred_df
             
+            elif type_ui_pred == "DensidadEvento":
+                title_curve_pred = f"Pred. Densidad de Evento Individual f(t|x) ({name_for_pred})"
+                label_prefix = "f"
+                ax_curve_pred.set_ylabel("f(t|X) - Densidad de Probabilidad de Evento")
+
+                survival_df_ftx = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
+                cum_hazard_df_ftx = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
+
+                if survival_df_ftx.empty or cum_hazard_df_ftx.empty or len(survival_df_ftx.index) < 2:
+                    self.log(f"Datos insuficientes para calcular f(t|x) para '{name_for_pred}'.", "ERROR")
+                    messagebox.showerror("Error de Cálculo", "No hay suficientes datos para calcular la densidad del evento.", parent=dialog_pred_ref)
+                    plt.close(fig_curve_pred)
+                    return
+
+                s_tx = survival_df_ftx.iloc[:, 0]
+                H_tx = cum_hazard_df_ftx.iloc[:, 0]
+                time_points_ftx = survival_df_ftx.index.to_numpy()
+
+                dt_ftx = np.diff(time_points_ftx)
+                dH_tx = np.diff(H_tx.to_numpy())
+
+                valid_dt_mask = dt_ftx > 1e-8 # Use a small epsilon to avoid issues with float precision
+
+                time_points_for_h_f = time_points_ftx[1:][valid_dt_mask]
+                dH_tx_valid = dH_tx[valid_dt_mask]
+                dt_ftx_valid = dt_ftx[valid_dt_mask]
+
+                if len(time_points_for_h_f) < 1:
+                    self.log(f"No hay suficientes puntos de tiempo válidos (dt > 0) para calcular h(t|x) para f(t|x) en '{name_for_pred}'.", "ERROR")
+                    messagebox.showerror("Error de Cálculo", "Intervalos de tiempo insuficientes para calcular la tasa de riesgo instantánea.", parent=dialog_pred_ref)
+                    plt.close(fig_curve_pred)
+                    return
+
+                h_tx_raw = dH_tx_valid / dt_ftx_valid
+
+                # Align s_tx with h_tx_raw and time_points_for_h_f
+                # s_tx corresponds to time_points_ftx. We need s_tx at time_points_for_h_f for the multiplication.
+                # Interpolation is safer if time_points_for_h_f is not perfectly time_points_ftx[1:] due to valid_dt_mask
+                s_tx_aligned_for_f = np.interp(time_points_for_h_f, time_points_ftx, s_tx.to_numpy())
+
+                f_tx_raw = h_tx_raw * s_tx_aligned_for_f
+                pred_df_for_times = pd.DataFrame({f'{df_patsy_input_pred.index[0]}_pred': f_tx_raw}, index=time_points_for_h_f)
+                pred_col_name_for_times = pred_df_for_times.columns[0]
+
+
+                ax_curve_pred.plot(time_points_for_h_f, f_tx_raw, label='f(t|x) Bruta Estimada', alpha=0.7, linestyle='--')
+
+                if len(f_tx_raw) > 5: # LOESS needs a minimum number of points
+                    try:
+                        # Ensure time points are strictly increasing for LOESS if it requires it (some versions might)
+                        # However, lowess from statsmodels should handle sorted x by default.
+                        # frac is the fraction of data used for smoothing each point.
+                        # it is the number of robustifying iterations.
+                        f_tx_smoothed = lowess(f_tx_raw, time_points_for_h_f, frac=0.3, it=1, return_sorted=False)
+                        ax_curve_pred.plot(time_points_for_h_f, f_tx_smoothed, label='f(t|x) Suavizada (LOESS)', color='green')
+                        # For point predictions, use smoothed data if available
+                        pred_df_for_times = pd.DataFrame({f'{df_patsy_input_pred.index[0]}_pred': f_tx_smoothed}, index=time_points_for_h_f)
+                        pred_col_name_for_times = pred_df_for_times.columns[0]
+                        self.log(f"LOESS smoothing aplicado a f(t|x) para '{name_for_pred}'.", "INFO")
+                    except Exception as e_loess:
+                        self.log(f"Error durante LOESS smoothing para f(t|x) en '{name_for_pred}': {e_loess}. Mostrando solo datos brutos.", "ERROR")
+                        traceback.print_exc(limit=2)
+                else:
+                    self.log(f"No hay suficientes puntos ({len(f_tx_raw)}) para LOESS smoothing en f(t|x) para '{name_for_pred}'.", "WARN")
+                ax_curve_pred.legend()
+
+
             # Logic for specific time point predictions
             if times_list_pred and pred_col_name_for_times and pred_df_for_times is not None and not pred_df_for_times.empty:
                 current_legend_items = len(ax_curve_pred.get_legend_handles_labels()[0]) if ax_curve_pred.get_legend() else 0
@@ -3269,33 +3338,21 @@ class CoxModelingApp(ttk.Frame):
             ax_bih.step(t_plot, h0_t_raw, where='post', label='h₀(t) Bruta (Estimada)', alpha=0.7, linestyle='--')
 
             h0_t_smoothed = None
-            if len(h0_t_raw) >= 5: # Minimum length for savgol_filter with typical small window
+            if len(h0_t_raw) > 5: # LOESS typically needs a reasonable number of points
                 try:
-                    # Ensure window_length is odd and less than data length
-                    # A common starting point: ~10% of data length, ensure it's odd, minimum 5
-                    potential_wl = max(5, int(len(h0_t_raw) * 0.1))
-                    window_length = potential_wl // 2 * 2 + 1 # Ensure odd
-                    if window_length >= len(h0_t_raw): # If calculated window is too large
-                        window_length = max(3, (len(h0_t_raw) -1) // 2 * 2 +1 ) # Adjust to be smaller and odd
-                        if window_length < 3 : window_length = len(h0_t_raw) # Use all if too small
-
-                    polyorder = min(3, window_length - 1 if window_length > 1 else 0) # polyorder must be < window_length
-
-                    if window_length > polyorder and window_length <= len(h0_t_raw) and polyorder >=0 : # Check conditions again
-                        h0_t_smoothed = savgol_filter(h0_t_raw, window_length=window_length, polyorder=polyorder)
-                        ax_bih.plot(t_plot, h0_t_smoothed, label=f'h₀(t) Suavizada (Savitzky-Golay, W={window_length}, P={polyorder})', color='red')
-                        self.log(f"Suavizado Savitzky-Golay aplicado a h₀(t) para '{name_bih}' (W={window_length}, P={polyorder}).", "INFO")
-                    else:
-                        self.log(f"No se pudo aplicar Savitzky-Golay para '{name_bih}' debido a longitud de datos ({len(h0_t_raw)}) vs. "
-                                   f"ventana ({window_length}) / polyorder ({polyorder}). Mostrando solo datos brutos.", "WARN")
-                except ValueError as e_savgol: # Catches issues like window_length too small, polyorder too large for window
-                    self.log(f"Error durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol}. Mostrando solo datos brutos.", "ERROR")
+                    # Apply LOESS smoothing
+                    # frac controls the smoothness (fraction of data used for each local regression)
+                    # it controls the number of robustifying iterations
+                    h0_t_smoothed_values = lowess(h0_t_raw, t_plot, frac=0.3, it=1, return_sorted=False)
+                    # lowess with return_sorted=False returns an array of y-values, ensure t_plot aligns
+                    ax_bih.plot(t_plot, h0_t_smoothed_values, label='h₀(t) Suavizada (LOESS, frac=0.3)', color='red')
+                    self.log(f"Suavizado LOESS aplicado a h₀(t) para '{name_bih}' (frac=0.3, it=1).", "INFO")
+                except Exception as e_loess:
+                    self.log(f"Error durante suavizado LOESS para h₀(t) en '{name_bih}': {e_loess}. Mostrando solo datos brutos.", "ERROR")
                     traceback.print_exc(limit=2)
-                except Exception as e_savgol_general: # Catch any other unexpected error
-                    self.log(f"Error inesperado durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol_general}. Mostrando solo datos brutos.", "ERROR")
-                    traceback.print_exc(limit=2)
+                    # h0_t_smoothed remains None implicitly if error, or explicitly set if needed for other logic
             else:
-                self.log(f"No hay suficientes puntos en h₀(t) ({len(h0_t_raw)}) para suavizado Savitzky-Golay para '{name_bih}'. Se requieren al menos 5. Mostrando solo datos brutos.", "WARN")
+                self.log(f"No hay suficientes puntos en h₀(t) ({len(h0_t_raw)}) para suavizado LOESS para '{name_bih}'. Se requieren más de 5. Mostrando solo datos brutos.", "WARN")
 
             opts_bih = self.current_plot_options.copy()
             opts_bih['title'] = opts_bih.get('title') or f"Riesgo Instantáneo Base h₀(t) ({name_bih})"
