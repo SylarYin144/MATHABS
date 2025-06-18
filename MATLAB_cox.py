@@ -718,6 +718,67 @@ class ModelSummaryWindow(Toplevel):
             messagebox.showerror("Error", f"Error al copiar: {e_copy}", parent=self)
 
 
+class CoxGraphSelectionDialog(tk.Toplevel):
+    def __init__(self, parent, title, graph_options_callbacks, apply_callback):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title(title)
+        self.parent = parent
+        self.graph_options_callbacks = graph_options_callbacks # Dict: {"Graph Name": callback_function}
+        self.apply_callback = apply_callback
+        self.selected_graphs = {} # Dict: {"Graph Name": tk.BooleanVar}
+
+        main_dialog_frame = ttk.Frame(self, padding="10")
+        main_dialog_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_dialog_frame, text="Seleccione los gráficos que desea generar:", font=("TkDefaultFont", 10, "bold")).pack(pady=(0,10), anchor='w')
+
+        # Scrolled Frame for Checkbuttons
+        scrolled_content_frame = ScrolledFrame(main_dialog_frame) # Assuming ScrolledFrame is available
+        scrolled_content_frame.pack(fill=tk.BOTH, expand=True, pady=(0,10))
+        checkbox_frame = scrolled_content_frame.interior
+
+        for graph_name in self.graph_options_callbacks.keys():
+            var = tk.BooleanVar(value=False)
+            self.selected_graphs[graph_name] = var
+            cb = ttk.Checkbutton(checkbox_frame, text=graph_name, variable=var)
+            cb.pack(anchor=tk.W, padx=5, pady=2)
+
+        buttons_frame = ttk.Frame(main_dialog_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10,0))
+
+        ttk.Button(buttons_frame, text="Generar Seleccionados", command=self._on_apply).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Seleccionar Todos", command=self._select_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Deseleccionar Todos", command=self._deselect_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def _on_apply(self):
+        graphs_to_generate = []
+        for graph_name, var in self.selected_graphs.items():
+            if var.get():
+                graphs_to_generate.append(graph_name)
+
+        if not graphs_to_generate:
+            messagebox.showwarning("Sin Selección", "No se seleccionó ningún gráfico para generar.", parent=self)
+            return
+
+        if self.apply_callback:
+            self.apply_callback(graphs_to_generate)
+        self.destroy()
+
+    def _select_all(self):
+        for var in self.selected_graphs.values():
+            var.set(True)
+
+    def _deselect_all(self):
+        for var in self.selected_graphs.values():
+            var.set(False)
+
+
 # --- CLASE PRINCIPAL DE LA APLICACIÓN ---
 class CoxModelingApp(ttk.Frame):
     def __init__(self, parent_notebook_tab):
@@ -1593,12 +1654,12 @@ class CoxModelingApp(ttk.Frame):
         frame_acciones.pack(fill=tk.X, pady=5)
         
         acciones_config_btns = [
-            ("Ver Resumen", self.show_selected_model_summary), ("Gráf. Schoenfeld", self.show_schoenfeld),
-            ("Sup. Base", self.show_baseline_survival), ("Riesgo Acum. Base", self.show_baseline_hazard),
-            ("Forest Plot", self.generar_forest_plot), ("Gráf. Calibración", self.generate_calibration_plot),
-            ("Gráf. Impacto Var (Log-HR)", self.show_variable_impact_plot), # New button
-            ("Predicción", self.realizar_prediccion), ("Exportar Resumen", self.export_model_summary),
-            ("Guardar Modelo", self.save_model), ("Cargar Modelo", self.load_model_from_file),
+            ("Ver Resumen", self.show_selected_model_summary),
+            ("Generar Gráficos Cox", self.open_graph_selection_dialog), # New consolidated button
+            ("Predicción", self.realizar_prediccion),
+            ("Exportar Resumen", self.export_model_summary),
+            ("Guardar Modelo", self.save_model),
+            ("Cargar Modelo", self.load_model_from_file),
             ("Reporte Metod.", self.show_methodological_report)
         ]
         
@@ -3083,6 +3144,63 @@ class CoxModelingApp(ttk.Frame):
 
     def _update_results_buttons_state(self): # Placeholder, botones en Tab 2
         pass
+
+    def open_graph_selection_dialog(self):
+        if not self._check_model_selected_and_valid():
+            # _check_model_selected_and_valid already shows a message if no model or invalid
+            return
+
+        # Define graph names and their corresponding methods
+        # Using the user-approved names where applicable
+        graph_callbacks = {
+            "Riesgo Acumulado Base H₀(t)": self.show_baseline_hazard,
+            "Gráf. Schoenfeld": self.show_schoenfeld,
+            "Supervivencia Base S₀(t)": self.show_baseline_survival,
+            "Forest Plot (HRs)": self.generar_forest_plot,
+            "Gráf. Calibración": self.generate_calibration_plot,
+            "Efecto Variable sobre Log(HR)": self.show_variable_impact_plot
+            # Add more graph types here if needed in the future
+        }
+
+        # Callback function to be executed when "Generar Seleccionados" is clicked in the dialog
+        def generate_selected_graphs(selected_graph_names):
+            if not selected_graph_names:
+                # This case should ideally be handled by the dialog itself, but as a safeguard:
+                self.log("Ningún gráfico seleccionado para generar desde el diálogo.", "INFO")
+                return
+
+            self.log(f"Generando gráficos seleccionados: {', '.join(selected_graph_names)}", "INFO")
+            for graph_name in selected_graph_names:
+                callback_method = graph_callbacks.get(graph_name)
+                if callback_method:
+                    try:
+                        # Check specific requirements for certain plots before calling
+                        if graph_name == "Gráf. Schoenfeld" or                            graph_name == "Forest Plot (HRs)" or                            graph_name == "Efecto Variable sobre Log(HR)":
+                            if not self._check_model_selected_and_valid(check_params=True):
+                                self.log(f"Modelo no válido o sin parámetros para '{graph_name}'. Saltando.", "WARN")
+                                continue # Skip this graph if model doesn't have params
+
+                        # For calibration plot, it has its own internal checks for LIFELINES_CALIBRATION_AVAILABLE
+                        # and prompts for t0.
+
+                        callback_method()
+                        self.log(f"Gráfico '{graph_name}' solicitado.", "DEBUG")
+                    except Exception as e_graph_gen:
+                        self.log(f"Error al generar gráfico '{graph_name}': {e_graph_gen}", "ERROR")
+                        messagebox.showerror("Error de Gráfico",
+                                             f"No se pudo generar el gráfico '{graph_name}':\n{e_graph_gen}",
+                                             parent=self.parent_for_dialogs) # Assuming self.parent_for_dialogs is accessible
+                        traceback.print_exc(limit=3)
+                else:
+                    self.log(f"No se encontró el método callback para el gráfico: {graph_name}", "WARN")
+
+        # Instantiate and show the dialog
+        CoxGraphSelectionDialog(
+            parent=self.parent_for_dialogs,
+            title="Seleccionar Gráficos Cox",
+            graph_options_callbacks=graph_callbacks,
+            apply_callback=generate_selected_graphs
+        )
     
     def show_methodological_report(self):
         if not self._check_model_selected_and_valid(): return
