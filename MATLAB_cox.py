@@ -29,7 +29,8 @@ from tkinter import scrolledtext
 import pandas as pd
 import numpy as np
 import scipy.stats
-from scipy.signal import savgol_filter # Added for smoothing
+# from scipy.signal import savgol_filter # noqa - Commented out, replaced by LOESS for h0(t)
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
@@ -2527,9 +2528,10 @@ class CoxModelingApp(ttk.Frame):
         ttk.Radiobutton(frame_opts_pred,text="Prob.Supervivencia",variable=type_var_pred_ui,value="Supervivencia").grid(row=0,column=1,padx=5,pady=3,sticky=tk.W)
         ttk.Radiobutton(frame_opts_pred,text="Riesgo Acumulado",variable=type_var_pred_ui,value="Riesgo").grid(row=0,column=2,padx=5,pady=3,sticky=tk.W)
         ttk.Radiobutton(frame_opts_pred,text="Prob. Evento Acum. (1-S(t))",variable=type_var_pred_ui,value="ProbEventoAcum").grid(row=0,column=3,padx=5,pady=3,sticky=tk.W)
+        ttk.Radiobutton(frame_opts_pred,text="Densidad Evento (f(t|x))",variable=type_var_pred_ui,value="DensidadEvento").grid(row=0,column=4,padx=5,pady=3,sticky=tk.W)
         
         ttk.Label(frame_opts_pred,text="Tiempo(s) (ej: 100 o 50,100):").grid(row=1,column=0,padx=5,pady=3,sticky=tk.W)
-        times_str_var_pred_ui = StringVar(value="") # Default a vacío para que sea opcional
+        times_str_var_pred_ui = StringVar(value="")
         if self.data is not None and md_pred.get('time_col_for_model') in self.data:
             try:
                 median_time = self.data[md_pred.get('time_col_for_model')].median()
@@ -2665,6 +2667,73 @@ class CoxModelingApp(ttk.Frame):
                 pred_col_name_for_times = pred_df.columns[0] if not pred_df.empty else None
                 pred_df_for_times = pred_df
             
+            elif type_ui_pred == "DensidadEvento":
+                title_curve_pred = f"Pred. Densidad de Evento Individual f(t|x) ({name_for_pred})"
+                label_prefix = "f"
+                ax_curve_pred.set_ylabel("f(t|X) - Densidad de Probabilidad de Evento")
+
+                survival_df_ftx = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
+                cum_hazard_df_ftx = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
+
+                if survival_df_ftx.empty or cum_hazard_df_ftx.empty or len(survival_df_ftx.index) < 2:
+                    self.log(f"Datos insuficientes para calcular f(t|x) para '{name_for_pred}'.", "ERROR")
+                    messagebox.showerror("Error de Cálculo", "No hay suficientes datos para calcular la densidad del evento.", parent=dialog_pred_ref)
+                    plt.close(fig_curve_pred)
+                    return
+
+                s_tx = survival_df_ftx.iloc[:, 0]
+                H_tx = cum_hazard_df_ftx.iloc[:, 0]
+                time_points_ftx = survival_df_ftx.index.to_numpy()
+
+                dt_ftx = np.diff(time_points_ftx)
+                dH_tx = np.diff(H_tx.to_numpy())
+
+                valid_dt_mask = dt_ftx > 1e-8 # Use a small epsilon to avoid issues with float precision
+
+                time_points_for_h_f = time_points_ftx[1:][valid_dt_mask]
+                dH_tx_valid = dH_tx[valid_dt_mask]
+                dt_ftx_valid = dt_ftx[valid_dt_mask]
+
+                if len(time_points_for_h_f) < 1:
+                    self.log(f"No hay suficientes puntos de tiempo válidos (dt > 0) para calcular h(t|x) para f(t|x) en '{name_for_pred}'.", "ERROR")
+                    messagebox.showerror("Error de Cálculo", "Intervalos de tiempo insuficientes para calcular la tasa de riesgo instantánea.", parent=dialog_pred_ref)
+                    plt.close(fig_curve_pred)
+                    return
+
+                h_tx_raw = dH_tx_valid / dt_ftx_valid
+
+                # Align s_tx with h_tx_raw and time_points_for_h_f
+                # s_tx corresponds to time_points_ftx. We need s_tx at time_points_for_h_f for the multiplication.
+                # Interpolation is safer if time_points_for_h_f is not perfectly time_points_ftx[1:] due to valid_dt_mask
+                s_tx_aligned_for_f = np.interp(time_points_for_h_f, time_points_ftx, s_tx.to_numpy())
+
+                f_tx_raw = h_tx_raw * s_tx_aligned_for_f
+                pred_df_for_times = pd.DataFrame({f'{df_patsy_input_pred.index[0]}_pred': f_tx_raw}, index=time_points_for_h_f)
+                pred_col_name_for_times = pred_df_for_times.columns[0]
+
+
+                ax_curve_pred.plot(time_points_for_h_f, f_tx_raw, label='f(t|x) Bruta Estimada', alpha=0.7, linestyle='--')
+
+                if len(f_tx_raw) > 5: # LOESS needs a minimum number of points
+                    try:
+                        # Ensure time points are strictly increasing for LOESS if it requires it (some versions might)
+                        # However, lowess from statsmodels should handle sorted x by default.
+                        # frac is the fraction of data used for smoothing each point.
+                        # it is the number of robustifying iterations.
+                        f_tx_smoothed = lowess(f_tx_raw, time_points_for_h_f, frac=0.3, it=1, return_sorted=False)
+                        ax_curve_pred.plot(time_points_for_h_f, f_tx_smoothed, label='f(t|x) Suavizada (LOESS)', color='green')
+                        # For point predictions, use smoothed data if available
+                        pred_df_for_times = pd.DataFrame({f'{df_patsy_input_pred.index[0]}_pred': f_tx_smoothed}, index=time_points_for_h_f)
+                        pred_col_name_for_times = pred_df_for_times.columns[0]
+                        self.log(f"LOESS smoothing aplicado a f(t|x) para '{name_for_pred}'.", "INFO")
+                    except Exception as e_loess:
+                        self.log(f"Error durante LOESS smoothing para f(t|x) en '{name_for_pred}': {e_loess}. Mostrando solo datos brutos.", "ERROR")
+                        traceback.print_exc(limit=2)
+                else:
+                    self.log(f"No hay suficientes puntos ({len(f_tx_raw)}) para LOESS smoothing en f(t|x) para '{name_for_pred}'.", "WARN")
+                ax_curve_pred.legend()
+
+
             # Logic for specific time point predictions
             if times_list_pred and pred_col_name_for_times and pred_df_for_times is not None and not pred_df_for_times.empty:
                 current_legend_items = len(ax_curve_pred.get_legend_handles_labels()[0]) if ax_curve_pred.get_legend() else 0
@@ -2906,18 +2975,30 @@ class CoxModelingApp(ttk.Frame):
                 hr_upper_ci = np.exp(effects_df['coef_upper_0.95'])
 
                 fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+
+                # Logging for main HR path
+                self.log(f"DEBUG: HR Plot X-values (index): {effects_df.index}", "DEBUG")
+                self.log(f"DEBUG: HR Plot Y-estimate (hr_estimate): {hr_estimate}", "DEBUG")
+                self.log(f"DEBUG: HR Plot Y-CI-lower (hr_lower_ci): {hr_lower_ci}", "DEBUG")
+                self.log(f"DEBUG: HR Plot Y-CI-upper (hr_upper_ci): {hr_upper_ci}", "DEBUG")
+
                 ax_vip.plot(effects_df.index, hr_estimate, label='HR Estimado')
                 ax_vip.fill_between(effects_df.index, hr_lower_ci, hr_upper_ci, alpha=0.2, label='IC 95% HR')
                 ax_vip.axhline(1.0, color='grey', linestyle='--', lw=0.8)
-                ax_vip.legend()
 
-                plot_title = f"Impacto de '{covariate_for_plot}' sobre Hazard Ratio (HR)"
-                plot_title += f"\nModelo: {model_name_vip}"
-                current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+                plot_title_str = f"Impacto de '{covariate_for_plot}' sobre Hazard Ratio (HR)\nModelo: {model_name_vip}"
+                ax_vip.set_title(plot_title_str) # Set title directly
+                ax_vip.set_ylabel("Hazard Ratio (HR)")
+                ax_vip.set_xlabel(f"Valor de {covariate_for_plot}")
+                ax_vip.legend() # Call legend before apply_plot_options
+
+                # Update current_opts_vip for apply_plot_options, but core elements are already set
+                current_opts_vip['title'] = current_opts_vip.get('title', plot_title_str) # Keep this for consistency if options dialog is used
                 current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', "Hazard Ratio (HR)")
                 current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
 
-            else: # Plot as Log(HR) - existing logic
+            # This is the primary plotting attempt for Log(HR) scale
+            elif not plot_as_hr: # Plot as Log(HR)
                 fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
                 cph_model_vip.plot_partial_effects_on_outcome(
                     covariate_for_plot,
@@ -2925,16 +3006,192 @@ class CoxModelingApp(ttk.Frame):
                     plot_baseline=False,
                     ax=ax_vip
                 )
-                # ax_vip.axhline(0.0, color='grey', linestyle='--', lw=0.8) # Already plotted by lifelines? Check if needed.
-                                                                          # If not, can be removed. Usually lifelines adds it.
+                plot_title_str = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)\nModelo: {model_name_vip}"
+                ax_vip.set_title(plot_title_str)
+                ax_vip.set_ylabel(f"Log(Hazard Ratio) para {covariate_for_plot}")
+                ax_vip.set_xlabel(f"Valor de {covariate_for_plot}")
 
-                plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)"
-                plot_title += f"\nModelo: {model_name_vip}"
-                current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+                current_opts_vip['title'] = current_opts_vip.get('title', plot_title_str)
                 current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}")
                 current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
 
-            apply_plot_options(ax_vip, current_opts_vip, self.log)
+            # apply_plot_options with try-except wrapper (common for both HR and LogHR main paths)
+            if fig_vip and ax_vip : # Ensure figure and axis were created
+                try:
+                    opts_to_apply = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy()
+                    apply_plot_options(ax_vip, opts_to_apply, self.log)
+                except TypeError as e_apply_opts:
+                    log_msg_prefix = f"Covariate: '{chosen_covariate}', Scale: {'HR' if plot_as_hr else 'Log(HR)'}."
+                    if "got an unexpected keyword argument 'plot'" in str(e_apply_opts):
+                        self.log(f"WARNING: {log_msg_prefix} apply_plot_options failed with 'plot' keyword error: {e_apply_opts}. Displaying with minimal styling.", "WARN")
+                        if hasattr(ax_vip, 'grid'):
+                            grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True
+                            if grid_option: ax_vip.grid(True, linestyle=':', alpha=0.6)
+                        if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr:
+                            handles, labels = ax_vip.get_legend_handles_labels()
+                            if handles and labels and not ax_vip.get_legend():
+                                ax_vip.legend()
+                    else:
+                        self.log(f"ERROR: {log_msg_prefix} Unexpected TypeError during apply_plot_options: {e_apply_opts}", "ERROR")
+                except Exception as e_general_apply_opts:
+                    self.log(f"ERROR: {log_msg_prefix} General error during apply_plot_options: {e_general_apply_opts}", "ERROR")
+
+                plt.tight_layout()
+                self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip}) - Escala {'HR' if plot_as_hr else 'Log(HR)'}")
+
+        except IndexError as e_vip_idx: # This IndexError fallback is now primarily for Log(HR) plotting issues
+            tb_str_vip = traceback.format_exc()
+            self.log(f"IndexError during initial plot attempt for '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}): {e_vip_idx}", "ERROR")
+            self.log(tb_str_vip, "DEBUG")
+
+            if "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip:
+                self.log(f"Specific IndexError detected for '{chosen_covariate}'. Attempting fallback plotting strategy.", "WARN")
+
+                df_fit = md_vip.get('_df_for_fit_main_INTERNAL_USE')
+                if df_fit is None or df_fit.empty:
+                    self.log("DataFrame de ajuste no disponible para fallback.", "ERROR")
+                    messagebox.showerror("Error de Gráfico (IndexError)", f"Error (IndexError) y datos de ajuste no disponibles para '{chosen_covariate}'.", parent=self.parent_for_dialogs)
+                    if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip) # Close if open
+                    return
+
+                series_for_fallback = df_fit.get(covariate_for_plot)
+                if series_for_fallback is None or series_for_fallback.empty or series_for_fallback.isna().all():
+                    self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía en df_fit para fallback.", "ERROR")
+                    messagebox.showerror("Error de Gráfico (IndexError)", f"Error (IndexError) y datos de la covariable '{covariate_for_plot}' no encontrados para fallback.", parent=self.parent_for_dialogs)
+                    if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+                    return
+
+                is_quantitative_fallback = self.covariables_type_config.get(original_name_from_q if match else chosen_covariate) == "Cuantitativa"
+                if (original_name_from_q if match else chosen_covariate) not in self.covariables_type_config:
+                    is_quantitative_fallback = pd.api.types.is_numeric_dtype(series_for_fallback.dtype)
+
+                if is_quantitative_fallback:
+                    min_val_fb, max_val_fb = series_for_fallback.min(), series_for_fallback.max()
+                    if min_val_fb == max_val_fb or pd.isna(min_val_fb) or pd.isna(max_val_fb):
+                        self.log(f"Rango no válido para fallback de '{covariate_for_plot}'.", "WARN")
+                        messagebox.showerror("Error de Gráfico (IndexError)", f"Error (IndexError) y rango de datos inválido para fallback de '{covariate_for_plot}'.", parent=self.parent_for_dialogs)
+                        if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+                        return
+
+                    manual_values_1d_fb = np.linspace(min_val_fb, max_val_fb, 150)
+                    manual_values_2d_fb = manual_values_1d_fb.reshape(-1, 1)
+
+                    try:
+                        self.log(f"Intentando fallback plot con valores manuales para '{covariate_for_plot}'. Escala: {'HR' if plot_as_hr else 'Log(HR)'}", "INFO")
+
+                        if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+                        fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+
+                        if plot_as_hr: # Fallback for HR scale
+                            # This path should ideally not be hit often if data retrieval for HR is robustly handled before this main try-except.
+                            # However, keeping it for completeness of the original fallback structure if a plotting-related IndexError occurred after successful HR data retrieval.
+                            effects_df_fb = cph_model_vip.plot_partial_effects_on_outcome(
+                                covariate_for_plot, values=manual_values_2d_fb, plot_baseline=False, plot=False
+                            )
+                            if effects_df_fb is None or effects_df_fb.empty:
+                                raise ValueError("Fallback data retrieval for HR scale failed within IndexError fallback.")
+
+                            hr_e_fb = np.exp(effects_df_fb['coef'])
+                            hr_l_fb = np.exp(effects_df_fb['coef_lower_0.95'])
+                            hr_u_fb = np.exp(effects_df_fb['coef_upper_0.95'])
+
+                            self.log(f"DEBUG: HR Fallback Plot X-values (manual_values_1d_fb): {manual_values_1d_fb}", "DEBUG")
+                            self.log(f"DEBUG: HR Fallback Plot Y-estimate (hr_e_fb): {hr_e_fb}", "DEBUG")
+                            self.log(f"DEBUG: HR Fallback Plot Y-CI-lower (hr_l_fb): {hr_l_fb}", "DEBUG")
+                            self.log(f"DEBUG: HR Fallback Plot Y-CI-upper (hr_u_fb): {hr_u_fb}", "DEBUG")
+
+                            ax_vip.plot(effects_df_fb.index, hr_e_fb, label='HR Estimado (Fallback)')
+                            ax_vip.fill_between(effects_df_fb.index, hr_l_fb, hr_u_fb, alpha=0.2, label='IC 95% HR (Fallback)')
+                            ax_vip.axhline(1.0, color='grey', linestyle='--', lw=0.8)
+
+                            fallback_plot_title_str = f"Impacto de '{covariate_for_plot}' sobre HR (Fallback)"
+                            ax_vip.set_title(fallback_plot_title_str)
+                            ax_vip.set_ylabel("Hazard Ratio (HR)")
+                            ax_vip.set_xlabel(f"Valor de {covariate_for_plot}")
+                            ax_vip.legend()
+
+                            current_opts_vip['title'] = fallback_plot_title_str
+                            current_opts_vip['ylabel'] = "Hazard Ratio (HR)"
+                            current_opts_vip['xlabel'] = f"Valor de {covariate_for_plot}"
+
+                        else: # Fallback for Log(HR) scale
+                            cph_model_vip.plot_partial_effects_on_outcome(
+                                covariate_for_plot,
+                                values=manual_values_2d_fb,
+                                plot_baseline=False,
+                                ax=ax_vip
+                            )
+                            fallback_plot_title_str = f"Impacto de '{covariate_for_plot}' sobre Log(HR) (Fallback)"
+                            ax_vip.set_title(fallback_plot_title_str)
+                            ax_vip.set_ylabel(f"Log(Hazard Ratio) para {covariate_for_plot}")
+                            ax_vip.set_xlabel(f"Valor de {covariate_for_plot}")
+
+                            current_opts_vip['title'] = fallback_plot_title_str
+                            current_opts_vip['ylabel'] = f"Log(Hazard Ratio) para {covariate_for_plot}"
+                            current_opts_vip['xlabel'] = f"Valor de {covariate_for_plot}"
+
+                        # apply_plot_options with try-except wrapper for fallback
+                        try:
+                            opts_to_apply_fb = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy()
+                            apply_plot_options(ax_vip, opts_to_apply_fb, self.log)
+                        except TypeError as e_apply_opts_fb:
+                            log_msg_prefix_fb = f"Fallback Covariate: '{chosen_covariate}', Scale: {'HR' if plot_as_hr else 'Log(HR)'}."
+                            if "got an unexpected keyword argument 'plot'" in str(e_apply_opts_fb):
+                                self.log(f"WARNING: {log_msg_prefix_fb} apply_plot_options failed with 'plot' keyword error: {e_apply_opts_fb}. Displaying with minimal styling.", "WARN")
+                                if hasattr(ax_vip, 'grid'):
+                                    grid_option_fb = opts_to_apply_fb.get('grid', True) if 'opts_to_apply_fb' in locals() and isinstance(opts_to_apply_fb, dict) else True
+                                    if grid_option_fb: ax_vip.grid(True, linestyle=':', alpha=0.6)
+                                if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr:
+                                    handles_fb, labels_fb = ax_vip.get_legend_handles_labels()
+                                    if handles_fb and labels_fb and not ax_vip.get_legend():
+                                        ax_vip.legend()
+                            else:
+                                self.log(f"ERROR: {log_msg_prefix_fb} Unexpected TypeError during apply_plot_options: {e_apply_opts_fb}", "ERROR")
+                        except Exception as e_general_apply_opts_fb:
+                            self.log(f"ERROR: {log_msg_prefix_fb} General error during apply_plot_options: {e_general_apply_opts_fb}", "ERROR")
+
+                        plt.tight_layout()
+                        self._create_plot_window(fig_vip, f"Impacto Variable (Fallback): {chosen_covariate} ({model_name_vip}) - Escala {'HR' if plot_as_hr else 'Log(HR)'}")
+                        self.log(f"Fallback plot para '{chosen_covariate}' generado exitosamente.", "SUCCESS")
+                        return
+                    except Exception as e_fallback_plot:
+                        self.log(f"Error durante fallback plot para '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}): {e_fallback_plot}", "ERROR")
+                        self.log(traceback.format_exc(), "DEBUG")
+                        messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y el intento de fallback también falló para '{chosen_covariate}'.\nDetalles: {e_fallback_plot}", parent=self.parent_for_dialogs)
+                        if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+                        return
+                else: # Not quantitative, fallback with manual values not applicable
+                    self.log(f"'{covariate_for_plot}' no es cuantitativa, fallback con linspace no aplicable para el IndexError específico.", "INFO")
+
+            # If not the specific IndexError or if fallback was not applicable/failed for quantitative
+            messagebox.showerror("Error de Gráfico (IndexError)", f"Se produjo un IndexError al generar el gráfico para '{chosen_covariate}':\n{e_vip_idx}", parent=self.parent_for_dialogs)
+            if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+
+        except Exception as e_vip: # General errors not caught by specific IndexErorr or data retrieval for HR
+            log_final_error_prefix = f"Error general al generar gráfico de impacto para '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}):"
+            self.log(f"{log_final_error_prefix} {e_vip}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip}", parent=self.parent_for_dialogs)
+            if fig_vip and plt.fignum_exists(fig_vip.number): plt.close(fig_vip)
+                opts_to_apply = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy()
+                apply_plot_options(ax_vip, opts_to_apply, self.log)
+            except TypeError as e_apply_opts:
+                log_msg_prefix = f"Covariate: '{chosen_covariate}', Scale: {'HR' if plot_as_hr else 'Log(HR)'}."
+                if "got an unexpected keyword argument 'plot'" in str(e_apply_opts):
+                    self.log(f"WARNING: {log_msg_prefix} apply_plot_options failed with 'plot' keyword error: {e_apply_opts}. Displaying with minimal styling.", "WARN")
+                    # Apply minimal styling if possible
+                    if hasattr(ax_vip, 'grid'):
+                        grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True
+                        if grid_option: ax_vip.grid(True, linestyle=':', alpha=0.6)
+                    if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr: # Only force legend for HR if it was set manually
+                        handles, labels = ax_vip.get_legend_handles_labels()
+                        if handles and labels and not ax_vip.get_legend():
+                            ax_vip.legend()
+                else:
+                    self.log(f"ERROR: {log_msg_prefix} Unexpected TypeError during apply_plot_options: {e_apply_opts}", "ERROR")
+            except Exception as e_general_apply_opts:
+                self.log(f"ERROR: {log_msg_prefix} General error during apply_plot_options: {e_general_apply_opts}", "ERROR")
+
             plt.tight_layout()
             self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip}) - Escala {'HR' if plot_as_hr else 'Log(HR)'}")
 
@@ -2979,26 +3236,37 @@ class CoxModelingApp(ttk.Frame):
 
                     try:
                         self.log(f"Intentando fallback plot con valores manuales para '{covariate_for_plot}'. Escala: {'HR' if plot_as_hr else 'Log(HR)'}", "INFO")
-                        # Re-create fig and ax for fallback attempt to ensure clean state
-                        if fig_vip: plt.close(fig_vip) # Close previous potentially problematic figure
+
+                        # Ensure fig_vip and ax_vip are from the outer scope if not re-creating, or re-create them if necessary.
+                        # For this fallback, it's safer to ensure ax_vip is clean or correctly targeted.
+                        # The original code structure re-created fig_vip, ax_vip here for the fallback.
+                        if fig_vip: plt.close(fig_vip)
                         fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
 
-                        if plot_as_hr:
+                        if plot_as_hr: # Fallback for HR scale
                             effects_df_fb = cph_model_vip.plot_partial_effects_on_outcome(
                                 covariate_for_plot, values=manual_values_2d_fb, plot_baseline=False, plot=False
                             )
-                            if effects_df_fb is None or effects_df_fb.empty: raise ValueError("Fallback data retrieval failed.")
-                            hr_e_fb = np.exp(effects_df_fb['coef']); hr_l_fb = np.exp(effects_df_fb['coef_lower_0.95']); hr_u_fb = np.exp(effects_df_fb['coef_upper_0.95'])
+                            if effects_df_fb is None or effects_df_fb.empty:
+                                raise ValueError("Fallback data retrieval for HR scale failed.")
+                            hr_e_fb = np.exp(effects_df_fb['coef'])
+                            hr_l_fb = np.exp(effects_df_fb['coef_lower_0.95'])
+                            hr_u_fb = np.exp(effects_df_fb['coef_upper_0.95'])
                             ax_vip.plot(effects_df_fb.index, hr_e_fb, label='HR Estimado (Fallback)')
                             ax_vip.fill_between(effects_df_fb.index, hr_l_fb, hr_u_fb, alpha=0.2, label='IC 95% HR (Fallback)')
                             ax_vip.axhline(1.0, color='grey', linestyle='--', lw=0.8)
                             ax_vip.legend()
                             current_opts_vip['title'] = f"Impacto de '{covariate_for_plot}' sobre HR (Fallback)"
                             current_opts_vip['ylabel'] = "Hazard Ratio (HR)"
-                        else: # Log(HR) scale
+                        else: # Fallback for Log(HR) scale
+                            # This is the critical path for the bug: ensure it plots Log(HR)
                             cph_model_vip.plot_partial_effects_on_outcome(
-                                covariate_for_plot, values=manual_values_2d_fb, plot_baseline=False, ax=ax_vip
+                                covariate_for_plot,
+                                values=manual_values_2d_fb, # Use manually generated values
+                                plot_baseline=False,
+                                ax=ax_vip # Plot directly on the new ax_vip for fallback
                             )
+                            # plot_partial_effects_on_outcome for Log(HR) should add its own y=0 line if applicable.
                             current_opts_vip['title'] = f"Impacto de '{covariate_for_plot}' sobre Log(HR) (Fallback)"
                             current_opts_vip['ylabel'] = f"Log(Hazard Ratio) para {covariate_for_plot}"
 
@@ -3009,7 +3277,7 @@ class CoxModelingApp(ttk.Frame):
                         self.log(f"Fallback plot para '{chosen_covariate}' generado exitosamente.", "SUCCESS")
                         return
                     except Exception as e_fallback_plot:
-                        self.log(f"Error durante fallback plot para '{chosen_covariate}': {e_fallback_plot}", "ERROR")
+                        self.log(f"Error durante fallback plot para '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}): {e_fallback_plot}", "ERROR")
                         self.log(traceback.format_exc(), "DEBUG")
                         messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y el intento de fallback también falló para '{chosen_covariate}'.\nDetalles: {e_fallback_plot}", parent=self.parent_for_dialogs)
                         if fig_vip: plt.close(fig_vip)
@@ -3269,33 +3537,21 @@ class CoxModelingApp(ttk.Frame):
             ax_bih.step(t_plot, h0_t_raw, where='post', label='h₀(t) Bruta (Estimada)', alpha=0.7, linestyle='--')
 
             h0_t_smoothed = None
-            if len(h0_t_raw) >= 5: # Minimum length for savgol_filter with typical small window
+            if len(h0_t_raw) > 5: # LOESS typically needs a reasonable number of points
                 try:
-                    # Ensure window_length is odd and less than data length
-                    # A common starting point: ~10% of data length, ensure it's odd, minimum 5
-                    potential_wl = max(5, int(len(h0_t_raw) * 0.1))
-                    window_length = potential_wl // 2 * 2 + 1 # Ensure odd
-                    if window_length >= len(h0_t_raw): # If calculated window is too large
-                        window_length = max(3, (len(h0_t_raw) -1) // 2 * 2 +1 ) # Adjust to be smaller and odd
-                        if window_length < 3 : window_length = len(h0_t_raw) # Use all if too small
-
-                    polyorder = min(3, window_length - 1 if window_length > 1 else 0) # polyorder must be < window_length
-
-                    if window_length > polyorder and window_length <= len(h0_t_raw) and polyorder >=0 : # Check conditions again
-                        h0_t_smoothed = savgol_filter(h0_t_raw, window_length=window_length, polyorder=polyorder)
-                        ax_bih.plot(t_plot, h0_t_smoothed, label=f'h₀(t) Suavizada (Savitzky-Golay, W={window_length}, P={polyorder})', color='red')
-                        self.log(f"Suavizado Savitzky-Golay aplicado a h₀(t) para '{name_bih}' (W={window_length}, P={polyorder}).", "INFO")
-                    else:
-                        self.log(f"No se pudo aplicar Savitzky-Golay para '{name_bih}' debido a longitud de datos ({len(h0_t_raw)}) vs. "
-                                   f"ventana ({window_length}) / polyorder ({polyorder}). Mostrando solo datos brutos.", "WARN")
-                except ValueError as e_savgol: # Catches issues like window_length too small, polyorder too large for window
-                    self.log(f"Error durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol}. Mostrando solo datos brutos.", "ERROR")
+                    # Apply LOESS smoothing
+                    # frac controls the smoothness (fraction of data used for each local regression)
+                    # it controls the number of robustifying iterations
+                    h0_t_smoothed_values = lowess(h0_t_raw, t_plot, frac=0.3, it=1, return_sorted=False)
+                    # lowess with return_sorted=False returns an array of y-values, ensure t_plot aligns
+                    ax_bih.plot(t_plot, h0_t_smoothed_values, label='h₀(t) Suavizada (LOESS, frac=0.3)', color='red')
+                    self.log(f"Suavizado LOESS aplicado a h₀(t) para '{name_bih}' (frac=0.3, it=1).", "INFO")
+                except Exception as e_loess:
+                    self.log(f"Error durante suavizado LOESS para h₀(t) en '{name_bih}': {e_loess}. Mostrando solo datos brutos.", "ERROR")
                     traceback.print_exc(limit=2)
-                except Exception as e_savgol_general: # Catch any other unexpected error
-                    self.log(f"Error inesperado durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol_general}. Mostrando solo datos brutos.", "ERROR")
-                    traceback.print_exc(limit=2)
+                    # h0_t_smoothed remains None implicitly if error, or explicitly set if needed for other logic
             else:
-                self.log(f"No hay suficientes puntos en h₀(t) ({len(h0_t_raw)}) para suavizado Savitzky-Golay para '{name_bih}'. Se requieren al menos 5. Mostrando solo datos brutos.", "WARN")
+                self.log(f"No hay suficientes puntos en h₀(t) ({len(h0_t_raw)}) para suavizado LOESS para '{name_bih}'. Se requieren más de 5. Mostrando solo datos brutos.", "WARN")
 
             opts_bih = self.current_plot_options.copy()
             opts_bih['title'] = opts_bih.get('title') or f"Riesgo Instantáneo Base h₀(t) ({name_bih})"
