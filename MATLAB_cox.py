@@ -2515,6 +2515,59 @@ class CoxModelingApp(ttk.Frame):
             self._create_plot_window(fig_bh, f"Riesgo Acum. Base: {name_bh}")
         except Exception as e_bh: self.log(f"Error Riesgo Acum.Base '{name_bh}': {e_bh}", "ERROR"); messagebox.showerror("Error Gráfico", f"Error Riesgo Acum.Base:\n{e_bh}", parent=self.parent_for_dialogs)
 
+    def show_baseline_cumulative_incidence(self):
+        if not self._check_model_selected_and_valid():
+            return
+
+        model_dict = self.selected_model_in_treeview
+        cph_model = model_dict.get('model')
+        model_name = model_dict.get('model_name', 'N/A')
+        time_col_name = model_dict.get('time_col_for_model', 'Tiempo')
+
+        if not hasattr(cph_model, 'baseline_survival_'):
+            self.log(f"baseline_survival_ no encontrado en el modelo '{model_name}'. No se puede calcular F₀(t).", "ERROR")
+            messagebox.showerror("Error de Datos",
+                                 f"Atributo baseline_survival_ no disponible en el modelo '{model_name}'.",
+                                 parent=self.parent_for_dialogs)
+            return
+
+        try:
+            baseline_survival = cph_model.baseline_survival_
+            baseline_cumulative_incidence = 1 - baseline_survival
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            baseline_cumulative_incidence.plot(ax=ax, legend=False, drawstyle='steps-post') # Often plotted as step function
+
+            # Prepare plot options
+            plot_opts = self.current_plot_options.copy()
+            plot_opts['title'] = plot_opts.get('title') or f"Incidencia Acumulada Base F₀(t) ({model_name})"
+            plot_opts['xlabel'] = plot_opts.get('xlabel') or f"{time_col_name}"
+            plot_opts['ylabel'] = plot_opts.get('ylabel') or "F₀(t) (Incidencia Acumulada)"
+
+            # Ensure y-axis starts at 0, and potentially goes up to 1 or slightly above if data dictates
+            current_ylim = ax.get_ylim()
+            final_ymin = 0
+            final_ymax = max(1.0, current_ylim[1]) # Ensure it at least goes to 1.0
+            if 'ylim_min' not in plot_opts or plot_opts['ylim_min'] is None: # User hasn't specified a min
+                 plot_opts['ylim_min'] = final_ymin
+            if 'ylim_max' not in plot_opts or plot_opts['ylim_max'] is None: # User hasn't specified a max
+                 plot_opts['ylim_max'] = final_ymax
+
+
+            apply_plot_options(ax, plot_opts, self.log)
+
+            self._create_plot_window(fig, f"Incidencia Acum. Base: {model_name}")
+            self.log(f"Gráfico de Incidencia Acumulada Base F₀(t) para '{model_name}' generado.", "INFO")
+
+        except Exception as e:
+            self.log(f"Error al generar gráfico de Incidencia Acumulada Base para '{model_name}': {e}", "ERROR")
+            messagebox.showerror("Error de Gráfico",
+                                 f"No se pudo generar el gráfico de Incidencia Acumulada Base:\n{e}",
+                                 parent=self.parent_for_dialogs)
+            if 'fig' in locals() and fig: # Ensure figure is closed if an error occurs after creation
+                plt.close(fig)
+            traceback.print_exc(limit=3)
+
     def generar_forest_plot(self):
         if not self._check_model_selected_and_valid(check_params=True): return
         md_fp = self.selected_model_in_treeview; name_fp = md_fp.get('model_name', 'N/A')
@@ -3156,6 +3209,7 @@ class CoxModelingApp(ttk.Frame):
             "Riesgo Acumulado Base H₀(t)": self.show_baseline_hazard,
             "Gráf. Schoenfeld": self.show_schoenfeld,
             "Supervivencia Base S₀(t)": self.show_baseline_survival,
+            "Incidencia Acumulada Base F₀(t)": self.show_baseline_cumulative_incidence, # New entry
             "Forest Plot (HRs)": self.generar_forest_plot,
             "Gráf. Calibración": self.generate_calibration_plot,
             "Efecto Variable sobre Log(HR)": self.show_variable_impact_plot
