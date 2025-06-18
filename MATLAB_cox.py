@@ -3025,7 +3025,7 @@ class CoxModelingApp(ttk.Frame):
                     if "got an unexpected keyword argument 'plot'" in str(e_apply_opts):
                         self.log(f"WARNING: {log_msg_prefix} apply_plot_options failed with 'plot' keyword error: {e_apply_opts}. Displaying with minimal styling.", "WARN")
                         if hasattr(ax_vip, 'grid'):
-                            grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True
+                            grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True # opts_to_apply is defined in try block
                             if grid_option: ax_vip.grid(True, linestyle=':', alpha=0.6)
                         if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr:
                             handles, labels = ax_vip.get_legend_handles_labels()
@@ -3139,6 +3139,7 @@ class CoxModelingApp(ttk.Frame):
                             if "got an unexpected keyword argument 'plot'" in str(e_apply_opts_fb):
                                 self.log(f"WARNING: {log_msg_prefix_fb} apply_plot_options failed with 'plot' keyword error: {e_apply_opts_fb}. Displaying with minimal styling.", "WARN")
                                 if hasattr(ax_vip, 'grid'):
+                                    # Ensure opts_to_apply_fb is in scope for the except block
                                     grid_option_fb = opts_to_apply_fb.get('grid', True) if 'opts_to_apply_fb' in locals() and isinstance(opts_to_apply_fb, dict) else True
                                     if grid_option_fb: ax_vip.grid(True, linestyle=':', alpha=0.6)
                                 if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr:
