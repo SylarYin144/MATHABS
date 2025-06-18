@@ -29,6 +29,7 @@ from tkinter import scrolledtext
 import pandas as pd
 import numpy as np
 import scipy.stats
+from scipy.signal import savgol_filter # Added for smoothing
 
 import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
@@ -1596,14 +1597,15 @@ class CoxModelingApp(ttk.Frame):
             ("Ver Resumen", self.show_selected_model_summary), ("Gráf. Schoenfeld", self.show_schoenfeld),
             ("Sup. Base", self.show_baseline_survival), ("Riesgo Acum. Base", self.show_baseline_hazard),
             ("Forest Plot", self.generar_forest_plot), ("Gráf. Calibración", self.generate_calibration_plot),
-            ("Gráf. Impacto Var (Log-HR)", self.show_variable_impact_plot), # New button
+            ("Gráf. Impacto Variable", self.show_variable_impact_plot), # Modified button text
             ("Predicción", self.realizar_prediccion), ("Exportar Resumen", self.export_model_summary),
             ("Guardar Modelo", self.save_model), ("Cargar Modelo", self.load_model_from_file),
-            ("Reporte Metod.", self.show_methodological_report)
+            ("Reporte Metod.", self.show_methodological_report),
+            ("Riesgo Inst. Base", self.show_baseline_instantaneous_hazard) # New button
         ]
         
         # Layout dinámico para botones de acción
-        max_btns_per_row = 6
+        max_btns_per_row = 7 # Adjusted for the new button
         current_row_frame_acciones = None
         for i, (text, cmd) in enumerate(acciones_config_btns):
             if i % max_btns_per_row == 0:
@@ -2589,18 +2591,70 @@ class CoxModelingApp(ttk.Frame):
 
         try:
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
+            pred_col_name_for_times = None # To store the name of the main prediction column for point predictions
+
             if type_ui_pred == "Supervivencia":
-                pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
-                pred_df.plot(ax=ax_curve_pred, legend=False)
-                ax_curve_pred.set_ylabel("S(t|X)")
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
                 label_prefix = "S"
+                ax_curve_pred.set_ylabel("S(t|X)")
+
+                try:
+                    # Request confidence intervals
+                    surv_func_and_ci_df = cph_model_for_pred.predict_survival_function(
+                        df_patsy_input_pred, return_confidence_intervals=True
+                    )
+
+                    # Dynamically find column names for a single prediction scenario
+                    # Assuming df_patsy_input_pred represents one individual, so one set of pred/CI cols
+                    base_col_name = str(df_patsy_input_pred.index[0]) # Usually '0' if not otherwise specified
+
+                    pred_col_name = f"{base_col_name}_pred"
+                    lower_ci_col_name = f"{base_col_name}_lower_0.95"
+                    upper_ci_col_name = f"{base_col_name}_upper_0.95"
+
+                    if pred_col_name in surv_func_and_ci_df.columns and \
+                       lower_ci_col_name in surv_func_and_ci_df.columns and \
+                       upper_ci_col_name in surv_func_and_ci_df.columns:
+
+                        ax_curve_pred.plot(surv_func_and_ci_df.index, surv_func_and_ci_df[pred_col_name], label='S(t|X) Estimada')
+                        ax_curve_pred.fill_between(surv_func_and_ci_df.index,
+                                                   surv_func_and_ci_df[lower_ci_col_name],
+                                                   surv_func_and_ci_df[upper_ci_col_name],
+                                                   alpha=0.2, label='IC 95%')
+                        ax_curve_pred.legend()
+                        pred_col_name_for_times = pred_col_name # Save for point predictions
+                        # For interp, use the main prediction series from surv_func_and_ci_df
+                        pred_df_for_times = surv_func_and_ci_df[[pred_col_name_for_times]]
+                        self.log("Gráfico de supervivencia individual con IC 95% generado.", "INFO")
+                    else: # Fallback if CI columns are not as expected
+                        self.log(f"Advertencia: Columnas de IC no encontradas ({pred_col_name}, {lower_ci_col_name}, {upper_ci_col_name}). "
+                                   f"Graficando supervivencia sin IC. Columnas disponibles: {surv_func_and_ci_df.columns.tolist()}", "WARN")
+                        # Plot just the first column as prediction if CI parts are missing
+                        # This assumes the first column is the prediction if CI parts are missing
+                        pred_df = surv_func_and_ci_df.iloc[:, [0]]
+                        pred_df.plot(ax=ax_curve_pred, legend=False, label='S(t|X) Estimada (sin IC)')
+                        ax_curve_pred.legend()
+                        pred_col_name_for_times = pred_df.columns[0]
+                        pred_df_for_times = pred_df # Use this for interp
+                except Exception as e_ci_plot:
+                    self.log(f"Error al intentar graficar supervivencia con IC: {e_ci_plot}. Fallback a graficar sin IC.", "ERROR")
+                    traceback.print_exc(limit=2)
+                    # Fallback to original plotting method if CI method fails
+                    pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
+                    pred_df.plot(ax=ax_curve_pred, legend=False, label='S(t|X) Estimada (sin IC - error)')
+                    ax_curve_pred.legend()
+                    pred_col_name_for_times = pred_df.columns[0] if not pred_df.empty else None
+                    pred_df_for_times = pred_df
+
             elif type_ui_pred == "Riesgo":
                 pred_df = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
                 pred_df.plot(ax=ax_curve_pred, legend=False)
                 ax_curve_pred.set_ylabel("H(t|X)")
                 title_curve_pred = f"Pred. Riesgo Acumulado ({name_for_pred})"
                 label_prefix = "H"
+                pred_col_name_for_times = pred_df.columns[0] if not pred_df.empty else None
+                pred_df_for_times = pred_df
+
             elif type_ui_pred == "ProbEventoAcum":
                 surv_df_temp = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
                 pred_df = 1 - surv_df_temp
@@ -2608,29 +2662,41 @@ class CoxModelingApp(ttk.Frame):
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
                 title_curve_pred = f"Pred. Prob. Evento Acumulado (1-S(t)) ({name_for_pred})"
                 label_prefix = "1-S"
+                pred_col_name_for_times = pred_df.columns[0] if not pred_df.empty else None
+                pred_df_for_times = pred_df
             
-            if times_list_pred: # Solo si se especificaron tiempos
+            # Logic for specific time point predictions
+            if times_list_pred and pred_col_name_for_times and pred_df_for_times is not None and not pred_df_for_times.empty:
+                current_legend_items = len(ax_curve_pred.get_legend_handles_labels()[0]) if ax_curve_pred.get_legend() else 0
+                show_time_legend = (current_legend_items == 0) # Show legend only if no other legend items from curve itself
+
                 for t_val in times_list_pred:
-                    if t_val < pred_df.index.min() or t_val > pred_df.index.max():
-                        results_text_pred.append(f"{label_prefix}(t={t_val}|X) = N/A (fuera de rango de curva)");
-                        self.log(f"Advertencia: Tiempo de predicción {t_val} fuera del rango de la curva de predicción.", "WARN")
+                    if t_val < pred_df_for_times.index.min() or t_val > pred_df_for_times.index.max():
+                        results_text_pred.append(f"{label_prefix}(t={t_val}|X) = N/A (fuera de rango)");
+                        self.log(f"Advertencia: Tiempo de predicción {t_val} fuera del rango de la curva.", "WARN")
                     else:
-                        val_plot = np.interp(t_val, pred_df.index, pred_df.iloc[:,0])
+                        # Use the specifically identified prediction column for interpolation
+                        val_plot = np.interp(t_val, pred_df_for_times.index, pred_df_for_times[pred_col_name_for_times])
                         results_text_pred.append(f"{label_prefix}(t={t_val}|X) = {val_plot:.3f}");
-                        ax_curve_pred.scatter([t_val],[val_plot],marker='o',color='r',s=50,zorder=5,label=f't={t_val}' if t_val==times_list_pred[0] else None)
-                if results_text_pred: ax_curve_pred.legend()
-            else: # Si no se especificaron tiempos, no mostrar resultados puntuales ni scatter
-                results_text_pred.append("Curva completa mostrada (no se especificaron tiempos puntuales).")
-                # ax_curve_pred.legend() # La leyenda de la curva ya se maneja por plot() si hay múltiples líneas, pero aquí solo hay una.
+                        ax_curve_pred.scatter([t_val],[val_plot],marker='o',color='r',s=50,zorder=5,
+                                              label=f'Pred. en t={t_val}' if show_time_legend and t_val==times_list_pred[0] else None)
+                if show_time_legend and any(l is not None for l in ax_curve_pred.get_legend_handles_labels()[1]): # if any label was set for scatter
+                     ax_curve_pred.legend()
+            elif times_list_pred :
+                 results_text_pred.append("No se pudieron obtener predicciones en tiempos específicos (columna de predicción no identificada o datos vacíos).")
+
 
             opts_curve_pred = self.current_plot_options.copy()
             opts_curve_pred['title'] = opts_curve_pred.get('title') or title_curve_pred
             opts_curve_pred['xlabel'] = opts_curve_pred.get('xlabel') or f"Tiempo ({md_dict_for_pred.get('time_col_for_model','T')})"
             apply_plot_options(ax_curve_pred, opts_curve_pred, self.log)
-            
+             # Ensure legend is present if any labels were added
+            if not ax_curve_pred.get_legend() and any(l is not None for l in ax_curve_pred.get_legend_handles_labels()[1]):
+                ax_curve_pred.legend()
+
             self._create_plot_window(fig_curve_pred, title_curve_pred)
             
-            if times_list_pred:
+            if results_text_pred: # Show results/info whether it's point predictions or just "curve shown"
                 messagebox.showinfo("Resultados Predicción", "Resultados en tiempos especificados:\n" + "\n".join(results_text_pred), parent=dialog_pred_ref)
             else:
                 messagebox.showinfo("Resultados Predicción", "Curva de predicción completa generada.", parent=dialog_pred_ref)
@@ -2755,26 +2821,27 @@ class CoxModelingApp(ttk.Frame):
             listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
 
-        chosen_covariate = None # To store the result
+        chosen_covariate = None
 
         def on_ok():
-            nonlocal chosen_covariate # chosen_covariate is defined outside on_ok
+            nonlocal chosen_covariate
             selected_value = None
             if listbox_covs_widget is not None and listbox_covs_widget.winfo_exists():
                 if listbox_covs_widget.curselection():
                     selected_value = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
             elif combo_covs_widget is not None and combo_covs_widget.winfo_exists():
-                selected_value = covariate_var.get() # covariate_var is the textvariable of combo_covs_widget
+                selected_value = covariate_var.get()
 
             if selected_value and selected_value.strip():
                 chosen_covariate = selected_value
                 dialog.destroy()
             else:
                  messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable de la lista.", parent=dialog)
-                 # chosen_covariate remains None or its previous value (None if first try)
-                 # Do not destroy dialog, let user correct.
+                 # chosen_covariate remains None
 
         def on_cancel():
+            nonlocal chosen_covariate # Ensure chosen_covariate can be set to signal cancellation
+            chosen_covariate = "##CANCELLED##" # Special value to indicate cancellation
             dialog.destroy()
 
         button_frame = ttk.Frame(dialog)
@@ -2784,150 +2851,181 @@ class CoxModelingApp(ttk.Frame):
 
         dialog.transient(self.parent_for_dialogs)
         dialog.grab_set()
-        self.parent_for_dialogs.wait_window(dialog) # Wait for dialog to close
+        self.parent_for_dialogs.wait_window(dialog)
 
-        if not chosen_covariate:
+        if not chosen_covariate or chosen_covariate == "##CANCELLED##":
             self.log("Selección de covariable para gráfico de impacto cancelada o no realizada.", "INFO")
             return
 
-        self.log(f"Generando gráfico de impacto para covariable (raw selected): '{chosen_covariate}' del modelo '{model_name_vip}'.", "INFO")
+        # Ask user for the scale
+        response = messagebox.askyesnocancel(
+            "Escala del Gráfico de Impacto",
+            "Presione 'Sí' para escala Hazard Ratio (HR).\n"
+            "Presione 'No' para escala Log(Hazard Ratio) (Log-HR).",
+            parent=self.parent_for_dialogs
+        )
+
+        if response is None: # Cancelled
+            self.log("Selección de escala para gráfico de impacto cancelada.", "INFO")
+            return
+
+        plot_as_hr = response # True for HR, False for Log(HR)
+
+        self.log(f"Generando gráfico de impacto para covariable: '{chosen_covariate}' del modelo '{model_name_vip}'. Escala: {'HR' if plot_as_hr else 'Log(HR)'}", "INFO")
 
         covariate_for_plot = chosen_covariate
         match = re.match(r"Q\('([^']+)'\)", chosen_covariate)
+        original_name_from_q = None
         if match:
             original_name_from_q = match.group(1)
-            # Check if this original name exists in the model's training data columns if possible,
-            # though plot_partial_effects_on_outcome should handle it if the model was formula-fitted.
-            # For now, assume lifelines will find it based on its internal formula processing.
             covariate_for_plot = original_name_from_q
             self.log(f"Extracted original name '{covariate_for_plot}' from Patsy term '{chosen_covariate}' for plotting.", "DEBUG")
         else:
             self.log(f"Using covariate name '{covariate_for_plot}' directly (not a Q-encoded term).", "DEBUG")
 
-        fig_vip = None  # Initialize fig_vip to None
+        fig_vip = None
+        ax_vip = None
+        current_opts_vip = self.current_plot_options.copy()
+
         try:
-            fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+            if plot_as_hr:
+                # Get data for HR plot
+                effects_df = cph_model_vip.plot_partial_effects_on_outcome(
+                    covariate_for_plot,
+                    values=None,
+                    plot_baseline=False,
+                    plot=False # Get DataFrame instead of plotting
+                )
+                if effects_df is None or effects_df.empty:
+                    messagebox.showerror("Error de Datos", f"No se pudieron obtener los datos de efectos para '{covariate_for_plot}'.", parent=self.parent_for_dialogs)
+                    self.log(f"plot_partial_effects_on_outcome devolvió None o DataFrame vacío para '{covariate_for_plot}' al intentar obtener datos para HR.", "ERROR")
+                    return
 
-            # plot_partial_effects_on_outcome plots log(HR) vs covariate value
-            # It automatically handles splines if the covariate was fitted with one.
-            cph_model_vip.plot_partial_effects_on_outcome(
-                covariate_for_plot, # USE THE EXTRACTED/ORIGINAL NAME HERE
-                values=None,  # Let lifelines choose appropriate values based on data range
-                plot_baseline=False, # Focus on the effect of the covariate itself
-                ax=ax_vip
-            )
+                hr_estimate = np.exp(effects_df['coef'])
+                hr_lower_ci = np.exp(effects_df['coef_lower_0.95'])
+                hr_upper_ci = np.exp(effects_df['coef_upper_0.95'])
 
-            plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)" # Use covariate_for_plot
-            plot_title += f"\nModelo: {model_name_vip}"
+                fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+                ax_vip.plot(effects_df.index, hr_estimate, label='HR Estimado')
+                ax_vip.fill_between(effects_df.index, hr_lower_ci, hr_upper_ci, alpha=0.2, label='IC 95% HR')
+                ax_vip.axhline(1.0, color='grey', linestyle='--', lw=0.8)
+                ax_vip.legend()
 
-            current_opts_vip = self.current_plot_options.copy()
-            current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}") # Use covariate_for_plot
-            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}") # Use covariate_for_plot
+                plot_title = f"Impacto de '{covariate_for_plot}' sobre Hazard Ratio (HR)"
+                plot_title += f"\nModelo: {model_name_vip}"
+                current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+                current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', "Hazard Ratio (HR)")
+                current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
+
+            else: # Plot as Log(HR) - existing logic
+                fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+                cph_model_vip.plot_partial_effects_on_outcome(
+                    covariate_for_plot,
+                    values=None,
+                    plot_baseline=False,
+                    ax=ax_vip
+                )
+                # ax_vip.axhline(0.0, color='grey', linestyle='--', lw=0.8) # Already plotted by lifelines? Check if needed.
+                                                                          # If not, can be removed. Usually lifelines adds it.
+
+                plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio)"
+                plot_title += f"\nModelo: {model_name_vip}"
+                current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
+                current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}")
+                current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
 
             apply_plot_options(ax_vip, current_opts_vip, self.log)
             plt.tight_layout()
-            self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip})")
+            self._create_plot_window(fig_vip, f"Impacto Variable: {chosen_covariate} ({model_name_vip}) - Escala {'HR' if plot_as_hr else 'Log(HR)'}")
 
         except IndexError as e_vip_idx:
             tb_str_vip = traceback.format_exc()
-            self.log(f"IndexError al generar gráfico de impacto para '{chosen_covariate}': {e_vip_idx}", "ERROR")
+            self.log(f"IndexError al generar gráfico de impacto para '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}): {e_vip_idx}", "ERROR")
             self.log(tb_str_vip, "DEBUG")
 
-            original_error_message_text = (
-                f"Se encontró un error conocido (IndexError: tuple index out of range, relacionado con 'values.shape[1]') "
-                f"al generar el gráfico de impacto para '{chosen_covariate}'.\n\n"
-                "Esto podría ser un problema interno de la librería 'lifelines', posiblemente "
-                "relacionado con su versión actual o la naturaleza de esta covariable.\n\n"
-                "Sugerencias:\n"
-                "- Intente actualizar la librería 'lifelines' (`pip install --upgrade lifelines`).\n"
-                "- Pruebe con una covariable diferente si el problema persiste.\n\n"
-                "El traceback completo ha sido registrado en el log para depuración."
-            )
-
+            # Fallback logic for the "tuple index out of range" error, now adapted for both scales
             if "tuple index out of range" in str(e_vip_idx) and "values.shape[1]" in tb_str_vip:
                 self.log(f"Detectado IndexError conocido para '{chosen_covariate}'. Intentando fallback plotting strategy.", "WARN")
 
                 df_fit = md_vip.get('_df_for_fit_main_INTERNAL_USE')
                 if df_fit is None or df_fit.empty:
-                    self.log("DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible o vacío. No se puede intentar fallback.", "ERROR")
-                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                    self.log("DataFrame de ajuste no disponible para fallback.", "ERROR")
+                    messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y datos de ajuste no disponibles para '{chosen_covariate}'.", parent=self.parent_for_dialogs)
                     if fig_vip: plt.close(fig_vip)
                     return
 
-                original_cov_name_for_type_lookup = original_name_from_q if match else chosen_covariate
-
-                series = df_fit.get(covariate_for_plot)
-                if series is None or series.empty or series.isna().all():
-                    self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía/toda NaN en df_fit. No se puede intentar fallback.", "ERROR")
-                    messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                series_for_fallback = df_fit.get(covariate_for_plot)
+                if series_for_fallback is None or series_for_fallback.empty or series_for_fallback.isna().all():
+                    self.log(f"Serie de datos para '{covariate_for_plot}' no encontrada o vacía en df_fit para fallback.", "ERROR")
+                    messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y datos de la covariable '{covariate_for_plot}' no encontrados para fallback.", parent=self.parent_for_dialogs)
                     if fig_vip: plt.close(fig_vip)
                     return
 
-                is_quantitative = self.covariables_type_config.get(original_cov_name_for_type_lookup) == "Cuantitativa"
-                if original_cov_name_for_type_lookup not in self.covariables_type_config:
-                    is_quantitative = pd.api.types.is_numeric_dtype(series.dtype)
+                # Determine if quantitative for fallback value generation
+                is_quantitative_fallback = self.covariables_type_config.get(original_name_from_q if match else chosen_covariate) == "Cuantitativa"
+                if (original_name_from_q if match else chosen_covariate) not in self.covariables_type_config:
+                    is_quantitative_fallback = pd.api.types.is_numeric_dtype(series_for_fallback.dtype)
 
-                if is_quantitative:
-                    self.log(f"'{covariate_for_plot}' es cuantitativa. Generando valores manuales para fallback.", "INFO")
-                    min_val, max_val = series.min(), series.max()
-                    if min_val == max_val or pd.isna(min_val) or pd.isna(max_val):
-                        self.log(f"No se pudo determinar un rango válido (min={min_val}, max={max_val}) para '{covariate_for_plot}'. Fallback no posible.", "WARN")
-                        messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
+                if is_quantitative_fallback:
+                    min_val_fb, max_val_fb = series_for_fallback.min(), series_for_fallback.max()
+                    if min_val_fb == max_val_fb or pd.isna(min_val_fb) or pd.isna(max_val_fb):
+                        self.log(f"Rango no válido para fallback de '{covariate_for_plot}'.", "WARN")
+                        messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y rango de datos inválido para fallback de '{covariate_for_plot}'.", parent=self.parent_for_dialogs)
                         if fig_vip: plt.close(fig_vip)
                         return
 
-                    manual_values_1d = np.linspace(min_val, max_val, 150)
-                    manual_values_2d = manual_values_1d.reshape(-1, 1)
+                    manual_values_1d_fb = np.linspace(min_val_fb, max_val_fb, 150)
+                    manual_values_2d_fb = manual_values_1d_fb.reshape(-1, 1)
 
                     try:
-                        self.log(f"Intentando plot_partial_effects_on_outcome con valores manuales para '{covariate_for_plot}'.", "INFO")
-                        # fig_vip and ax_vip should already be created from the outer try
-                        cph_model_vip.plot_partial_effects_on_outcome(
-                            covariate_for_plot,
-                            values=manual_values_2d,
-                            plot_baseline=False,
-                            ax=ax_vip
-                        )
-                        # If successful, proceed with original plotting finalization
-                        plot_title = f"Impacto de '{covariate_for_plot}' sobre Log(Hazard Ratio) (Fallback)"
-                        plot_title += f"\nModelo: {model_name_vip}"
-                        current_opts_vip = self.current_plot_options.copy()
-                        current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-                        current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}")
-                        current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}")
+                        self.log(f"Intentando fallback plot con valores manuales para '{covariate_for_plot}'. Escala: {'HR' if plot_as_hr else 'Log(HR)'}", "INFO")
+                        # Re-create fig and ax for fallback attempt to ensure clean state
+                        if fig_vip: plt.close(fig_vip) # Close previous potentially problematic figure
+                        fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
+
+                        if plot_as_hr:
+                            effects_df_fb = cph_model_vip.plot_partial_effects_on_outcome(
+                                covariate_for_plot, values=manual_values_2d_fb, plot_baseline=False, plot=False
+                            )
+                            if effects_df_fb is None or effects_df_fb.empty: raise ValueError("Fallback data retrieval failed.")
+                            hr_e_fb = np.exp(effects_df_fb['coef']); hr_l_fb = np.exp(effects_df_fb['coef_lower_0.95']); hr_u_fb = np.exp(effects_df_fb['coef_upper_0.95'])
+                            ax_vip.plot(effects_df_fb.index, hr_e_fb, label='HR Estimado (Fallback)')
+                            ax_vip.fill_between(effects_df_fb.index, hr_l_fb, hr_u_fb, alpha=0.2, label='IC 95% HR (Fallback)')
+                            ax_vip.axhline(1.0, color='grey', linestyle='--', lw=0.8)
+                            ax_vip.legend()
+                            current_opts_vip['title'] = f"Impacto de '{covariate_for_plot}' sobre HR (Fallback)"
+                            current_opts_vip['ylabel'] = "Hazard Ratio (HR)"
+                        else: # Log(HR) scale
+                            cph_model_vip.plot_partial_effects_on_outcome(
+                                covariate_for_plot, values=manual_values_2d_fb, plot_baseline=False, ax=ax_vip
+                            )
+                            current_opts_vip['title'] = f"Impacto de '{covariate_for_plot}' sobre Log(HR) (Fallback)"
+                            current_opts_vip['ylabel'] = f"Log(Hazard Ratio) para {covariate_for_plot}"
+
+                        current_opts_vip['xlabel'] = f"Valor de {covariate_for_plot}"
                         apply_plot_options(ax_vip, current_opts_vip, self.log)
                         plt.tight_layout()
-                        self._create_plot_window(fig_vip, f"Impacto Variable (Fallback): {chosen_covariate} ({model_name_vip})")
+                        self._create_plot_window(fig_vip, f"Impacto Variable (Fallback): {chosen_covariate} ({model_name_vip}) - Escala {'HR' if plot_as_hr else 'Log(HR)'}")
                         self.log(f"Fallback plot para '{chosen_covariate}' generado exitosamente.", "SUCCESS")
-                        return # Successfully plotted with fallback, exit method
-                    except Exception as e_fallback:
-                        self.log(f"Error durante el intento de fallback plot para '{chosen_covariate}': {e_fallback}", "ERROR")
+                        return
+                    except Exception as e_fallback_plot:
+                        self.log(f"Error durante fallback plot para '{chosen_covariate}': {e_fallback_plot}", "ERROR")
                         self.log(traceback.format_exc(), "DEBUG")
-                        original_error_message_text += "\n\nNOTA: Un intento de graficar con valores manuales (fallback) también falló."
-                        # Fall through to show the original error message (now augmented)
-                else: # Not quantitative
-                    self.log(f"'{covariate_for_plot}' (original: '{original_cov_name_for_type_lookup}') no es cuantitativa o no se pudo determinar. Fallback no aplicable.", "INFO")
+                        messagebox.showerror("Error de Gráfico (IndexError)", f"Error conocido (IndexError) y el intento de fallback también falló para '{chosen_covariate}'.\nDetalles: {e_fallback_plot}", parent=self.parent_for_dialogs)
+                        if fig_vip: plt.close(fig_vip)
+                        return
+                else: # Not quantitative, fallback with manual values not applicable
+                    self.log(f"'{covariate_for_plot}' no es cuantitativa, fallback con linspace no aplicable.", "INFO")
 
-                # If fallback was not quantitative, or quantitative checks failed, or fallback plot itself failed:
-                messagebox.showerror("Error Conocido de Gráfico (IndexError)", original_error_message_text, parent=self.parent_for_dialogs)
-                if fig_vip: plt.close(fig_vip)
-                return
-
-            else: # Not the specific "tuple index out of range" / "values.shape[1]" error
-                messagebox.showerror("Error de Gráfico (IndexError)",
-                                     f"Se produjo un IndexError inesperado al generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip_idx}\n\n"
-                                     "Consulte el log para más detalles.",
-                                     parent=self.parent_for_dialogs)
-            if fig_vip: # Ensure closure if any path above didn't return and fig_vip exists
-                plt.close(fig_vip)
+            # If not the specific IndexError or if fallback was not applicable/failed
+            messagebox.showerror("Error de Gráfico (IndexError)", f"Se produjo un IndexError al generar el gráfico para '{chosen_covariate}':\n{e_vip_idx}", parent=self.parent_for_dialogs)
+            if fig_vip: plt.close(fig_vip)
 
         except Exception as e_vip:
-            self.log(f"Error general al generar gráfico de impacto para '{chosen_covariate}': {e_vip}", "ERROR")
+            self.log(f"Error general al generar gráfico de impacto para '{chosen_covariate}' (Escala: {'HR' if plot_as_hr else 'Log(HR)'}): {e_vip}", "ERROR")
             self.log(traceback.format_exc(), "DEBUG")
             messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip}", parent=self.parent_for_dialogs)
-            if fig_vip:
-                plt.close(fig_vip)
+            if fig_vip: plt.close(fig_vip)
 
     def export_model_summary(self):
         if not self._check_model_selected_and_valid(): return
@@ -3113,6 +3211,115 @@ class CoxModelingApp(ttk.Frame):
         report_full += "5. Conclusión General (Placeholder):\n   [Interprete hallazgos en contexto.]\n"
         ModelSummaryWindow(self.parent_for_dialogs, f"Reporte Metodológico: {name_rep}", report_full)
         self.log(f"Mostrando reporte metodológico para '{name_rep}'.", "INFO")
+
+    def show_baseline_instantaneous_hazard(self):
+        if not self._check_model_selected_and_valid():
+            return
+
+        md_bih = self.selected_model_in_treeview
+        cph_bih = md_bih.get('model')
+        name_bih = md_bih.get('model_name', 'N/A')
+        time_col_name_bih = md_bih.get('time_col_for_model', 'T')
+
+        self.log(f"Generando gráfico de Riesgo Instantáneo Base h₀(t) para '{name_bih}'...", "INFO")
+
+        try:
+            baseline_hazard_df = cph_bih.baseline_hazard_
+            if baseline_hazard_df.empty or 'baseline hazard' not in baseline_hazard_df.columns:
+                self.log(f"DataFrame de riesgo base ('baseline_hazard_') vacío o sin columna 'baseline hazard' para '{name_bih}'.", "WARN")
+                messagebox.showwarning("Datos No Disponibles",
+                                       "El DataFrame de riesgo base está vacío o no contiene la columna 'baseline hazard'.",
+                                       parent=self.parent_for_dialogs)
+                return
+
+            t = baseline_hazard_df.index.values
+            H0_t = baseline_hazard_df['baseline hazard'].values
+
+            if len(t) < 2:
+                self.log(f"No hay suficientes puntos de datos en baseline_hazard_ para calcular h₀(t) para '{name_bih}'. Se requieren al menos 2.", "WARN")
+                messagebox.showwarning("Datos Insuficientes",
+                                       "No hay suficientes puntos de datos (<2) para calcular el riesgo instantáneo base.",
+                                       parent=self.parent_for_dialogs)
+                return
+
+            dt = np.diff(t)
+            dH0_t = np.diff(H0_t)
+
+            # Handle potential division by zero if dt has zero values (unlikely for distinct time points)
+            # dt can be zero if time points are not unique, filter those out
+            valid_diffs = dt > 0
+            if not np.all(valid_diffs):
+                self.log(f"Advertencia: Se encontraron intervalos de tiempo (dt) no positivos en '{name_bih}'. Se filtrarán.", "WARN")
+                t_plot = t[1:][valid_diffs]
+                h0_t_raw = dH0_t[valid_diffs] / dt[valid_diffs]
+                if len(t_plot) < 1: # After filtering, not enough points left
+                    self.log(f"No quedan suficientes puntos de datos válidos después de filtrar dt <= 0 para '{name_bih}'.", "WARN")
+                    messagebox.showwarning("Datos Insuficientes", "No quedan puntos válidos después de filtrar dt no positivos.", parent=self.parent_for_dialogs)
+                    return
+            else:
+                t_plot = t[1:]
+                h0_t_raw = dH0_t / dt
+
+            if len(h0_t_raw) == 0: # Should be caught by len(t_plot) < 1 already
+                 self.log(f"h0_t_raw está vacío después del cálculo para '{name_bih}'.", "WARN")
+                 messagebox.showwarning("Cálculo Fallido", "El cálculo del riesgo instantáneo base resultó en un conjunto vacío.", parent=self.parent_for_dialogs)
+                 return
+
+            fig_bih, ax_bih = plt.subplots(figsize=(10, 6))
+            ax_bih.step(t_plot, h0_t_raw, where='post', label='h₀(t) Bruta (Estimada)', alpha=0.7, linestyle='--')
+
+            h0_t_smoothed = None
+            if len(h0_t_raw) >= 5: # Minimum length for savgol_filter with typical small window
+                try:
+                    # Ensure window_length is odd and less than data length
+                    # A common starting point: ~10% of data length, ensure it's odd, minimum 5
+                    potential_wl = max(5, int(len(h0_t_raw) * 0.1))
+                    window_length = potential_wl // 2 * 2 + 1 # Ensure odd
+                    if window_length >= len(h0_t_raw): # If calculated window is too large
+                        window_length = max(3, (len(h0_t_raw) -1) // 2 * 2 +1 ) # Adjust to be smaller and odd
+                        if window_length < 3 : window_length = len(h0_t_raw) # Use all if too small
+
+                    polyorder = min(3, window_length - 1 if window_length > 1 else 0) # polyorder must be < window_length
+
+                    if window_length > polyorder and window_length <= len(h0_t_raw) and polyorder >=0 : # Check conditions again
+                        h0_t_smoothed = savgol_filter(h0_t_raw, window_length=window_length, polyorder=polyorder)
+                        ax_bih.plot(t_plot, h0_t_smoothed, label=f'h₀(t) Suavizada (Savitzky-Golay, W={window_length}, P={polyorder})', color='red')
+                        self.log(f"Suavizado Savitzky-Golay aplicado a h₀(t) para '{name_bih}' (W={window_length}, P={polyorder}).", "INFO")
+                    else:
+                        self.log(f"No se pudo aplicar Savitzky-Golay para '{name_bih}' debido a longitud de datos ({len(h0_t_raw)}) vs. "
+                                   f"ventana ({window_length}) / polyorder ({polyorder}). Mostrando solo datos brutos.", "WARN")
+                except ValueError as e_savgol: # Catches issues like window_length too small, polyorder too large for window
+                    self.log(f"Error durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol}. Mostrando solo datos brutos.", "ERROR")
+                    traceback.print_exc(limit=2)
+                except Exception as e_savgol_general: # Catch any other unexpected error
+                    self.log(f"Error inesperado durante suavizado Savitzky-Golay para '{name_bih}': {e_savgol_general}. Mostrando solo datos brutos.", "ERROR")
+                    traceback.print_exc(limit=2)
+            else:
+                self.log(f"No hay suficientes puntos en h₀(t) ({len(h0_t_raw)}) para suavizado Savitzky-Golay para '{name_bih}'. Se requieren al menos 5. Mostrando solo datos brutos.", "WARN")
+
+            opts_bih = self.current_plot_options.copy()
+            opts_bih['title'] = opts_bih.get('title') or f"Riesgo Instantáneo Base h₀(t) ({name_bih})"
+            opts_bih['xlabel'] = opts_bih.get('xlabel') or f"Tiempo ({time_col_name_bih})"
+            opts_bih['ylabel'] = opts_bih.get('ylabel') or "h₀(t) - Tasa de Riesgo Instantáneo Base"
+
+            apply_plot_options(ax_bih, opts_bih, self.log)
+            if ax_bih.get_legend() is None or not ax_bih.get_legend().get_texts(): # Ensure legend if not already by apply_plot_options
+                ax_bih.legend()
+
+            plt.tight_layout()
+            self._create_plot_window(fig_bih, f"Riesgo Instant. Base: {name_bih}")
+            self.log(f"Gráfico de Riesgo Instantáneo Base h₀(t) para '{name_bih}' generado y mostrado.", "SUCCESS")
+
+        except Exception as e_bih:
+            self.log(f"Error al generar gráfico de Riesgo Instantáneo Base h₀(t) para '{name_bih}': {e_bih}", "ERROR")
+            traceback.print_exc(limit=3)
+            messagebox.showerror("Error de Gráfico",
+                                 f"No se pudo generar el gráfico de Riesgo Instantáneo Base h₀(t):\n{e_bih}",
+                                 parent=self.parent_for_dialogs)
+            # Ensure figure is closed if it was created before the error
+            if 'fig_bih' in locals() and fig_bih is not None:
+                plt.close(fig_bih)
+
 
 # --- Fin de la clase CoxModelingApp ---
 
