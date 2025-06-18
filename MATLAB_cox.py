@@ -3017,15 +3017,15 @@ class CoxModelingApp(ttk.Frame):
 
             # apply_plot_options with try-except wrapper (common for both HR and LogHR main paths)
             if fig_vip and ax_vip : # Ensure figure and axis were created
-                try:
-                    opts_to_apply = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy()
-                    apply_plot_options(ax_vip, opts_to_apply, self.log)
+                try: # 16 spaces
+                    opts_to_apply = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy() # 20 spaces
+                    apply_plot_options(ax_vip, opts_to_apply, self.log) # 20 spaces
                 except TypeError as e_apply_opts:
                     log_msg_prefix = f"Covariate: '{chosen_covariate}', Scale: {'HR' if plot_as_hr else 'Log(HR)'}."
                     if "got an unexpected keyword argument 'plot'" in str(e_apply_opts):
                         self.log(f"WARNING: {log_msg_prefix} apply_plot_options failed with 'plot' keyword error: {e_apply_opts}. Displaying with minimal styling.", "WARN")
                         if hasattr(ax_vip, 'grid'):
-                            grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True # opts_to_apply is defined in try block
+                            grid_option = opts_to_apply.get('grid', True) if 'opts_to_apply' in locals() and isinstance(opts_to_apply, dict) else True
                             if grid_option: ax_vip.grid(True, linestyle=':', alpha=0.6)
                         if hasattr(ax_vip, 'get_legend_handles_labels') and plot_as_hr:
                             handles, labels = ax_vip.get_legend_handles_labels()
@@ -3131,9 +3131,9 @@ class CoxModelingApp(ttk.Frame):
                             current_opts_vip['xlabel'] = f"Valor de {covariate_for_plot}"
 
                         # apply_plot_options with try-except wrapper for fallback
-                        try:
-                            opts_to_apply_fb = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy()
-                            apply_plot_options(ax_vip, opts_to_apply_fb, self.log)
+                        try: # 24 spaces
+                            opts_to_apply_fb = current_opts_vip if isinstance(current_opts_vip, dict) else self.current_plot_options.copy() # 28 spaces
+                            apply_plot_options(ax_vip, opts_to_apply_fb, self.log) # 28 spaces
                         except TypeError as e_apply_opts_fb:
                             log_msg_prefix_fb = f"Fallback Covariate: '{chosen_covariate}', Scale: {'HR' if plot_as_hr else 'Log(HR)'}."
                             if "got an unexpected keyword argument 'plot'" in str(e_apply_opts_fb):
