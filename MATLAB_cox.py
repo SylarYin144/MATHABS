@@ -2985,9 +2985,10 @@ class CoxModelingApp(ttk.Frame):
             plot_title += f"\nModelo: {model_name_vip}"
 
             current_opts_vip = self.current_plot_options.copy()
-            current_opts_vip['title'] = current_opts_vip.get('title', plot_title)
-            current_opts_vip['ylabel'] = current_opts_vip.get('ylabel', f"Log(Hazard Ratio) para {covariate_for_plot}") # Use covariate_for_plot
-            current_opts_vip['xlabel'] = current_opts_vip.get('xlabel', f"Valor de {covariate_for_plot}") # Use covariate_for_plot
+            # Ensure specific title, xlabel, and ylabel for this plot, overriding globals for x/y labels
+            current_opts_vip['title'] = current_opts_vip.get('title', plot_title) # Allow global title to override specific default
+            current_opts_vip['xlabel'] = f"Valor de {covariate_for_plot}" # Force this xlabel
+            current_opts_vip['ylabel'] = "Log(Hazard Ratio)" # Force this ylabel
 
             apply_plot_options(ax_vip, current_opts_vip, self.log)
             plt.tight_layout()
@@ -3092,6 +3093,286 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Error Gráfico", f"No se pudo generar el gráfico de impacto para '{chosen_covariate}':\n{e_vip}", parent=self.parent_for_dialogs)
             if fig_vip:
                 plt.close(fig_vip)
+
+    def show_variable_impact_plot_hr_scale(self):
+        if not self._check_model_selected_and_valid(check_params=True):
+            return
+
+        md_vip = self.selected_model_in_treeview
+        cph_model_vip = md_vip.get('model')
+        model_name_vip = md_vip.get('model_name', 'N/A')
+
+        if not hasattr(cph_model_vip, 'params_') or cph_model_vip.params_.empty:
+            messagebox.showinfo("Sin Parámetros", "El modelo seleccionado no tiene covariables (parámetros) para analizar.", parent=self.parent_for_dialogs)
+            return
+
+        available_covariates = list(cph_model_vip.params_.index)
+        if not available_covariates:
+            messagebox.showinfo("Sin Covariables", "No se encontraron covariables en los parámetros del modelo.", parent=self.parent_for_dialogs)
+            return
+
+        dialog = Toplevel(self.parent_for_dialogs)
+        dialog.title("Seleccionar Covariable para Gráfico HR")
+        dialog.geometry("400x350")
+        ttk.Label(dialog, text="Seleccione la covariable para el gráfico de impacto (escala HR):", wraplength=380).pack(pady=10, padx=10)
+        covariate_var = StringVar()
+        combo_covs_widget = None
+        listbox_covs_widget = None
+
+        if len(available_covariates) < 20:
+            combo_covs_widget = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
+            if available_covariates:
+                combo_covs_widget.set(available_covariates[0])
+            combo_covs_widget.pack(pady=5, padx=10)
+        else:
+            ttk.Label(dialog, text="Covariables disponibles:").pack(pady=(5,0))
+            listbox_frame = ttk.Frame(dialog)
+            listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+            listbox_covs_widget = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
+            for cov_name_lb in available_covariates:
+                listbox_covs_widget.insert(tk.END, cov_name_lb)
+            if available_covariates:
+                listbox_covs_widget.selection_set(0)
+            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
+            listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
+            scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
+            listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        chosen_covariate = None
+        def on_ok():
+            nonlocal chosen_covariate
+            selected_value = None
+            if listbox_covs_widget and listbox_covs_widget.winfo_exists():
+                if listbox_covs_widget.curselection():
+                    selected_value = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
+            elif combo_covs_widget and combo_covs_widget.winfo_exists():
+                selected_value = covariate_var.get()
+            if selected_value and selected_value.strip():
+                chosen_covariate = selected_value
+                dialog.destroy()
+            else:
+                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable.", parent=dialog)
+
+        def on_cancel():
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
+        dialog.transient(self.parent_for_dialogs)
+        dialog.grab_set()
+        self.parent_for_dialogs.wait_window(dialog)
+
+        if not chosen_covariate:
+            self.log("Selección de covariable para gráfico de impacto HR cancelada.", "INFO")
+            return
+
+        covariate_for_plot = chosen_covariate
+        match = re.match(r"Q\('([^']+)'\)", chosen_covariate)
+        if match:
+            covariate_for_plot = match.group(1)
+
+        fig_vip_hr = None
+        try:
+            fig_vip_hr, ax_vip_hr = plt.subplots(figsize=(10, 6))
+
+            # Lifelines plots on log-hazard scale by default
+            cph_model_vip.plot_partial_effects_on_outcome(
+                covariate_for_plot,
+                values=None,
+                plot_baseline=False,
+                ax=ax_vip_hr
+            )
+
+            # Transform y-axis ticks to HR scale
+            current_yticks = ax_vip_hr.get_yticks()
+            ax_vip_hr.set_yticklabels([f"{np.exp(y_tick):.2f}" for y_tick in current_yticks])
+
+            # Add a horizontal line at HR = 1 (which is log(HR) = 0 on the original scale)
+            # The plot_partial_effects_on_outcome already draws a line at y=0 (log(HR)=0)
+            # We just need to make sure this line is understood as HR=1.
+            # If we want to be explicit or if the line style needs changing:
+            # ax_vip_hr.axhline(0, color='grey', linestyle=':', linewidth=1, label="HR = 1")
+            # This line is already at log(HR)=0. The tick transformation handles the perception.
+
+
+            plot_title = f"Impacto de '{covariate_for_plot}' sobre Hazard Ratio (HR)"
+            plot_title += f"\nModelo: {model_name_vip}"
+
+            current_opts_vip_hr = self.current_plot_options.copy()
+            current_opts_vip_hr['title'] = current_opts_vip_hr.get('title', plot_title)
+            current_opts_vip_hr['xlabel'] = current_opts_vip_hr.get('xlabel', f"Valor de {covariate_for_plot}")
+            # Explicitly set ylabel for this specific graph
+            current_opts_vip_hr['ylabel'] = f"Hazard Ratio (HR) para {covariate_for_plot}"
+
+            apply_plot_options(ax_vip_hr, current_opts_vip_hr, self.log)
+
+            # Adjust layout if y-tick labels are too wide
+            plt.tight_layout()
+            self._create_plot_window(fig_vip_hr, f"Impacto Variable (HR): {chosen_covariate} ({model_name_vip})")
+            self.log(f"Gráfico de impacto (escala HR) para '{chosen_covariate}' generado.", "SUCCESS")
+
+        except IndexError as e_vip_idx:
+            # Handle known IndexError from lifelines if necessary (as in show_variable_impact_plot)
+            # For brevity, this specific fallback is omitted here but could be added if needed.
+            tb_str_vip = traceback.format_exc()
+            self.log(f"IndexError al generar gráfico de impacto HR para '{chosen_covariate}': {e_vip_idx}", "ERROR")
+            self.log(tb_str_vip, "DEBUG")
+            messagebox.showerror("Error de Gráfico (IndexError)",
+                                 f"Se produjo un IndexError al generar el gráfico de impacto HR para '{chosen_covariate}':\n{e_vip_idx}\n\n"
+                                 "Esto puede ser un problema con la librería 'lifelines' o la covariable seleccionada. "
+                                 "Consulte el log para más detalles.",
+                                 parent=self.parent_for_dialogs)
+            if fig_vip_hr: plt.close(fig_vip_hr)
+        except Exception as e_vip:
+            self.log(f"Error general al generar gráfico de impacto HR para '{chosen_covariate}': {e_vip}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error Gráfico",
+                               f"No se pudo generar el gráfico de impacto HR para '{chosen_covariate}':\n{e_vip}",
+                               parent=self.parent_for_dialogs)
+            if fig_vip_hr:
+                plt.close(fig_vip_hr)
+
+    def show_variable_impact_plot_hr_scale(self):
+        if not self._check_model_selected_and_valid(check_params=True):
+            return
+
+        md_vip = self.selected_model_in_treeview
+        cph_model_vip = md_vip.get('model')
+        model_name_vip = md_vip.get('model_name', 'N/A')
+
+        if not hasattr(cph_model_vip, 'params_') or cph_model_vip.params_.empty:
+            messagebox.showinfo("Sin Parámetros", "El modelo seleccionado no tiene covariables (parámetros) para analizar.", parent=self.parent_for_dialogs)
+            return
+
+        available_covariates = list(cph_model_vip.params_.index)
+        if not available_covariates:
+            messagebox.showinfo("Sin Covariables", "No se encontraron covariables en los parámetros del modelo.", parent=self.parent_for_dialogs)
+            return
+
+        dialog = Toplevel(self.parent_for_dialogs)
+        dialog.title("Seleccionar Covariable para Gráfico HR")
+        dialog.geometry("400x350")
+        ttk.Label(dialog, text="Seleccione la covariable para el gráfico de impacto (escala HR):", wraplength=380).pack(pady=10, padx=10)
+        covariate_var = StringVar()
+        combo_covs_widget = None
+        listbox_covs_widget = None
+
+        if len(available_covariates) < 20:
+            combo_covs_widget = ttk.Combobox(dialog, textvariable=covariate_var, values=available_covariates, state="readonly", width=40)
+            if available_covariates:
+                combo_covs_widget.set(available_covariates[0])
+            combo_covs_widget.pack(pady=5, padx=10)
+        else:
+            ttk.Label(dialog, text="Covariables disponibles:").pack(pady=(5,0))
+            listbox_frame = ttk.Frame(dialog)
+            listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+            listbox_covs_widget = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
+            for cov_name_lb in available_covariates:
+                listbox_covs_widget.insert(tk.END, cov_name_lb)
+            if available_covariates:
+                listbox_covs_widget.selection_set(0)
+            scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
+            listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
+            scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
+            listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        chosen_covariate = None
+        def on_ok():
+            nonlocal chosen_covariate
+            selected_value = None
+            if listbox_covs_widget and listbox_covs_widget.winfo_exists():
+                if listbox_covs_widget.curselection():
+                    selected_value = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
+            elif combo_covs_widget and combo_covs_widget.winfo_exists():
+                selected_value = covariate_var.get()
+            if selected_value and selected_value.strip():
+                chosen_covariate = selected_value
+                dialog.destroy()
+            else:
+                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable.", parent=dialog)
+
+        def on_cancel():
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
+        dialog.transient(self.parent_for_dialogs)
+        dialog.grab_set()
+        self.parent_for_dialogs.wait_window(dialog)
+
+        if not chosen_covariate:
+            self.log("Selección de covariable para gráfico de impacto HR cancelada.", "INFO")
+            return
+
+        covariate_for_plot = chosen_covariate
+        match = re.match(r"Q\('([^']+)'\)", chosen_covariate)
+        if match:
+            covariate_for_plot = match.group(1)
+
+        fig_vip_hr = None
+        try:
+            fig_vip_hr, ax_vip_hr = plt.subplots(figsize=(10, 6))
+
+            # Lifelines plots on log-hazard scale by default
+            cph_model_vip.plot_partial_effects_on_outcome(
+                covariate_for_plot,
+                values=None,
+                plot_baseline=False,
+                ax=ax_vip_hr
+            )
+
+            # Transform y-axis ticks to HR scale
+            current_yticks = ax_vip_hr.get_yticks()
+            ax_vip_hr.set_yticklabels([f"{np.exp(y_tick):.2f}" for y_tick in current_yticks])
+
+            # Add a horizontal line at HR = 1 (which is log(HR) = 0 on the original scale)
+            # The plot_partial_effects_on_outcome already draws a line at y=0 (log(HR)=0)
+            # We just need to make sure this line is understood as HR=1.
+            # If we want to be explicit or if the line style needs changing:
+            # ax_vip_hr.axhline(0, color='grey', linestyle=':', linewidth=1, label="HR = 1")
+            # This line is already at log(HR)=0. The tick transformation handles the perception.
+
+
+            plot_title = f"Impacto de '{covariate_for_plot}' sobre Hazard Ratio (HR)"
+            plot_title += f"\nModelo: {model_name_vip}"
+
+            current_opts_vip_hr = self.current_plot_options.copy()
+            current_opts_vip_hr['title'] = current_opts_vip_hr.get('title', plot_title)
+            current_opts_vip_hr['xlabel'] = current_opts_vip_hr.get('xlabel', f"Valor de {covariate_for_plot}")
+            # Explicitly set ylabel for this specific graph
+            current_opts_vip_hr['ylabel'] = f"Hazard Ratio (HR) para {covariate_for_plot}"
+
+            apply_plot_options(ax_vip_hr, current_opts_vip_hr, self.log)
+
+            # Adjust layout if y-tick labels are too wide
+            plt.tight_layout()
+            self._create_plot_window(fig_vip_hr, f"Impacto Variable (HR): {chosen_covariate} ({model_name_vip})")
+            self.log(f"Gráfico de impacto (escala HR) para '{chosen_covariate}' generado.", "SUCCESS")
+
+        except IndexError as e_vip_idx:
+            # Handle known IndexError from lifelines if necessary (as in show_variable_impact_plot)
+            # For brevity, this specific fallback is omitted here but could be added if needed.
+            tb_str_vip = traceback.format_exc()
+            self.log(f"IndexError al generar gráfico de impacto HR para '{chosen_covariate}': {e_vip_idx}", "ERROR")
+            self.log(tb_str_vip, "DEBUG")
+            messagebox.showerror("Error de Gráfico (IndexError)",
+                                 f"Se produjo un IndexError al generar el gráfico de impacto HR para '{chosen_covariate}':\n{e_vip_idx}\n\n"
+                                 "Esto puede ser un problema con la librería 'lifelines' o la covariable seleccionada. "
+                                 "Consulte el log para más detalles.",
+                                 parent=self.parent_for_dialogs)
+            if fig_vip_hr: plt.close(fig_vip_hr)
+        except Exception as e_vip:
+            self.log(f"Error general al generar gráfico de impacto HR para '{chosen_covariate}': {e_vip}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error Gráfico",
+                               f"No se pudo generar el gráfico de impacto HR para '{chosen_covariate}':\n{e_vip}",
+                               parent=self.parent_for_dialogs)
+            if fig_vip_hr:
+                plt.close(fig_vip_hr)
 
     def export_model_summary(self):
         if not self._check_model_selected_and_valid(): return
