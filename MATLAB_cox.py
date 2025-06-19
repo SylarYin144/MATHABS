@@ -2752,67 +2752,117 @@ class CoxModelingApp(ttk.Frame):
 
 
     def generate_calibration_plot(self):
-        if not self._check_model_selected_and_valid(): return
-        if not LIFELINES_CALIBRATION_AVAILABLE: messagebox.showwarning("No Disponible","Gráf. Calibración no disponible.",parent=self.parent_for_dialogs); return
-        md_cal = self.selected_model_in_treeview; cph_cal = md_cal.get('model'); name_cal = md_cal.get('model_name','N/A')
+        # 1. Verificar que hay un modelo seleccionado y válido
+        if not self._check_model_selected_and_valid():
+            return
+
+        # 2. Verificar si la función de calibración está disponible
+        if not LIFELINES_CALIBRATION_AVAILABLE:
+            messagebox.showwarning("Función No Disponible",
+                                   "La gráfica de calibración no está disponible. "
+                                   "Asegúrese de que su versión de 'lifelines' es reciente.",
+                                   parent=self.parent_for_dialogs)
+            return
+
+        # 3. Obtener los objetos necesarios del modelo guardado
+        md_cal = self.selected_model_in_treeview
+        cph_model = md_cal.get('model')
+        model_name = md_cal.get('model_name', 'N/A')
+
+        # Es crucial usar los mismos datos con los que se ajustó el modelo
+        # _df_for_fit_main_INTERNAL_USE was the original full df used for patsy design matrix creation
+        # _X_design_rm_INTERNAL_USE was the design matrix
+        # _y_survival_rm_INTERNAL_USE was the T,E outcome df
+        # The survival_probability_calibration function expects the dataframe that was used to fit the model,
+        # which means the one that includes the original columns before patsy transformation,
+        # as lifelines will handle the formula application internally if the model was fit with a formula.
+        training_data = md_cal.get('_df_for_fit_main_INTERNAL_USE') # This should be the correct one.
         
-        X_dsgn_cal = md_cal.get('_X_design_rm_INTERNAL_USE')
-        y_surv_cal_dict = md_cal.get('_y_survival_rm_INTERNAL_USE') 
+        if training_data is None:
+            self.log(f"DataFrame de ajuste ('_df_for_fit_main_INTERNAL_USE') no disponible en el modelo '{model_name}'. No se puede generar gráfico de calibración.", "ERROR")
+            messagebox.showerror("Error de Datos",
+                               "Los datos de ajuste no se encontraron en el modelo guardado. "
+                               "No se puede generar el gráfico de calibración.",
+                               parent=self.parent_for_dialogs)
+            return
         
-        if X_dsgn_cal is None or y_surv_cal_dict is None:
-            self.log(f"Datos (X o y) para calibración no disponibles en modelo '{name_cal}'.", "ERROR")
-            messagebox.showerror("Error Datos","Faltan datos X_design o y_survival para calibración en el modelo guardado.",parent=self.parent_for_dialogs); return
-        if X_dsgn_cal.empty and md_cal.get('covariates_processed',[]): 
-            self.log(f"X_design para calibración está vacía pero el modelo tiene covariables ('{name_cal}').", "WARN")
-            messagebox.showwarning("Datos Inconsistentes","X_design para calibración está vacía. Gráfico puede no ser significativo.", parent=self.parent_for_dialogs)
+        # Ensure the training_data still contains the necessary columns as per the model's formula
+        # This is a sanity check, as the model fitting process itself would have required these.
+        # CoxPHFitter stores the formula if fitted that way.
+        if hasattr(cph_model, 'formula') and cph_model.formula:
+            try:
+                # Attempt a quick dmatrix creation with a single row to check for column presence
+                # This is an indirect way to check if training_data is suitable for the model's formula
+                # Note: This might be slow for very wide data, but generally okay.
+                # Consider if there's a more direct way to get required columns from formula.
+                dmatrix(cph_model.formula, training_data.head(1), return_type='dataframe')
+            except Exception as e_col_check:
+                self.log(f"Error al verificar columnas en training_data para calibración (modelo '{model_name}'): {e_col_check}. Los datos podrían no ser adecuados para la fórmula del modelo.", "WARN")
+                # Proceed with caution, or could even error out here if strictness is required.
+                # For now, let lifelines handle potential errors during calibration call.
 
-        t_col_cal, e_col_cal = md_cal.get('time_col_for_model'), md_cal.get('event_col_for_model')
-        if not t_col_cal or not e_col_cal:
-             self.log(f"Nombres de columnas T/E no encontrados en modelo '{name_cal}'.", "ERROR")
-             messagebox.showerror("Error Interno", "Nombres T/E faltan en modelo.", parent=self.parent_for_dialogs); return
 
-        T_cal_series = y_surv_cal_dict[t_col_cal]
-        E_cal_series = y_surv_cal_dict[e_col_cal]
-
-        t0_cal_str = simpledialog.askstring("Tiempo Calibración","Ingrese t0 para calibración:",parent=self.parent_for_dialogs)
-        if not t0_cal_str: return
-        try: t0_val_cal = float(t0_cal_str); assert t0_val_cal > 0
-        except: messagebox.showerror("Tiempo Inválido",f"Tiempo t0 inválido.",parent=self.parent_for_dialogs); return
+        # 4. Pedir al usuario el tiempo de calibración t₀
+        t0_str = simpledialog.askstring("Tiempo de Calibración",
+                                        "Ingrese el punto de tiempo (t₀) para evaluar la calibración:",
+                                        parent=self.parent_for_dialogs)
+        if not t0_str:
+            self.log("Generación de gráfico de calibración cancelada.", "INFO")
+            return
         try:
-            fig_cal, ax_cal = plt.subplots(figsize=(8,8))
-            if X_dsgn_cal.empty and not md_cal.get('covariates_processed',[]): 
-                 self.log("Calibración no es aplicable a un modelo nulo sin covariables.", "INFO")
-                 messagebox.showinfo("No Aplicable", "Gráfico de calibración no aplica a modelos nulos.", parent=self.parent_for_dialogs)
-                 plt.close(fig_cal) 
-                 return
+            t0_value = float(t0_str)
+            if t0_value <= 0:
+                raise ValueError("El tiempo debe ser positivo.")
+        except ValueError:
+            messagebox.showerror("Valor Inválido",
+                               f"'{t0_str}' no es un tiempo válido.",
+                               parent=self.parent_for_dialogs)
+            return
 
-            df_actually_used_for_fit = md_cal.get('_df_for_fit_main_INTERNAL_USE')
-            if df_actually_used_for_fit is None:
-                self.log(f"DataFrame used for fitting ('_df_for_fit_main_INTERNAL_USE') not found in model data for calibration model '{name_cal}'. Calibration plot cannot be generated.", "ERROR")
-                messagebox.showerror("Error Calibración", f"Datos de ajuste no encontrados en el modelo '{name_cal}' para generar el gráfico de calibración.", parent=self.parent_for_dialogs)
-                plt.close(fig_cal) # Close the figure if data is missing
-                return
+        # 5. Generar la gráfica
+        fig_cal = None
+        try:
+            # Crear la figura y los ejes
+            fig_cal, ax_cal = plt.subplots(figsize=(8, 8))
 
-            survival_probability_calibration(cph_cal, df_actually_used_for_fit, t0=t0_val_cal, ax=ax_cal)
-            opts_cal = self.current_plot_options.copy(); opts_cal['title'] = opts_cal.get('title') or f"Calibración en t0={t0_val_cal} ({name_cal})"; apply_plot_options(ax_cal, opts_cal, self.log)
-            self._create_plot_window(fig_cal, f"Calibración t0={t0_val_cal}: {name_cal}")
-        except Exception as e_cal:
-            self.log(f"Error gráf.calibración '{name_cal}': {e_cal}","ERROR")
-            import traceback # Explicitly import traceback here
-            self.log(traceback.format_exc(), "DEBUG") # Log the full traceback for debugging this specific error
-            messagebox.showerror("Error Gráfico",f"Error al generar gráfico de calibración para '{name_cal}':\n{e_cal}",parent=self.parent_for_dialogs)
+            # Llamar a la función de lifelines
+            # survival_probability_calibration uses the fitted model (cph_model)
+            # and the original training_data. It will internally use the model's
+            # formula and duration/event columns specified during the model's fit.
+            survival_probability_calibration(
+                cph_model,      # The fitted CoxPHFitter object
+                training_data,  # The DataFrame used to fit the model
+                t0=t0_value,    # The specific time point for calibration
+                ax=ax_cal       # The matplotlib axes to plot on
+            )
 
-            # Ensure figure created by plt.subplots is closed if an error occurs
-            # before it's properly managed by _create_plot_window or if _create_plot_window itself fails.
-            if 'fig_cal' in locals():
-                try:
-                    # Check if the window for this figure still exists or was ever created.
-                    # This is a bit tricky as canvas might not be there if plt.subplots() itself failed,
-                    # or if _create_plot_window was never reached.
-                    # A simpler plt.close(fig_cal) is often sufficient.
-                    plt.close(fig_cal)
-                except Exception as e_close_fig:
-                    self.log(f"DEBUG: Minor error trying to close fig_cal during calibration error handling: {e_close_fig}", "DEBUG")
+            # Personalizar y mostrar la gráfica
+            plot_title = f"Gráfico de Calibración para t₀={t0_value}\nModelo: {model_name}"
+
+            # Use a fresh plot_opts dictionary for this specific plot
+            # to avoid interference from self.current_plot_options for these specific labels
+            current_opts_cal = self.current_plot_options.copy()
+            current_opts_cal['title'] = current_opts_cal.get('title', plot_title)
+            current_opts_cal['xlabel'] = current_opts_cal.get('xlabel', "Predicción (Probabilidad de Supervivencia Estimada)")
+            current_opts_cal['ylabel'] = current_opts_cal.get('ylabel', "Observación (Proporción Real de Supervivencia)")
+
+            apply_plot_options(ax_cal, current_opts_cal, self.log) # Apply combined/defaulted options
+
+            # Crear la ventana para mostrar el gráfico
+            self._create_plot_window(fig_cal, f"Calibración: {model_name} (t₀={t0_value})")
+
+            self.log(f"Gráfico de calibración generado para t0={t0_value} para el modelo '{model_name}'.", "SUCCESS")
+
+        except Exception as e:
+            # Cerrar la figura si se creó pero hubo un error
+            if fig_cal is not None:
+                plt.close(fig_cal)
+
+            self.log(f"Error al generar gráfico de calibración: {e}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG") # Log full traceback for detailed debugging
+            messagebox.showerror("Error de Gráfico",
+                               f"No se pudo generar el gráfico de calibración:\n{e}",
+                               parent=self.parent_for_dialogs)
 
     def show_variable_impact_plot(self):
         if not self._check_model_selected_and_valid(check_params=True):
