@@ -780,6 +780,106 @@ class CoxGraphSelectionDialog(tk.Toplevel):
         for var in self.selected_graphs.values():
             var.set(False)
 
+
+class CalibrationPlotOptionsDialog(tk.Toplevel):
+    def __init__(self, parent, available_strat_vars, log_func=print):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title("Opciones de Gráfico de Calibración (OOS)")
+        self.parent_app = parent # Assuming parent is the CoxModelingApp instance
+        self.log = log_func
+        self.available_strat_vars = available_strat_vars # List of potential stratification columns
+        self.result = None # Will store dict: {'time_horizon': t, 'plot_type': 'decile'/'stratified', 'strat_var': name_if_stratified}
+
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 1. Time Horizon Entry
+        time_frame = ttk.Frame(main_frame)
+        time_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(time_frame, text="Horizonte de Tiempo (t) para P(T <= t):").pack(side=tk.LEFT, padx=(0,5))
+        self.time_horizon_var = tk.StringVar()
+        self.time_horizon_entry = ttk.Entry(time_frame, textvariable=self.time_horizon_var, width=10)
+        self.time_horizon_entry.pack(side=tk.LEFT)
+
+        # 2. Plot Type Selection
+        plot_type_frame = ttk.LabelFrame(main_frame, text="Tipo de Gráfico de Calibración", padding="5")
+        plot_type_frame.pack(fill=tk.X, pady=5)
+        self.plot_type_var = tk.StringVar(value="decile") # Default to decile
+
+        rb_decile = ttk.Radiobutton(plot_type_frame, text="Por Deciles de Riesgo",
+                                    variable=self.plot_type_var, value="decile", command=self._toggle_strat_var_combo)
+        rb_decile.pack(anchor=tk.W)
+
+        rb_stratified = ttk.Radiobutton(plot_type_frame, text="Estratificado por Variable",
+                                        variable=self.plot_type_var, value="stratified", command=self._toggle_strat_var_combo)
+        rb_stratified.pack(anchor=tk.W)
+
+        # 3. Stratification Variable Selection (conditionally enabled)
+        self.strat_var_frame = ttk.Frame(plot_type_frame) # Place it inside plot_type_frame for grouping
+        self.strat_var_frame.pack(fill=tk.X, padx=20, pady=(5,0)) # Indent slightly
+
+        ttk.Label(self.strat_var_frame, text="Variable de Estratificación:").pack(side=tk.LEFT, padx=(0,5))
+        self.strat_var_combo = ttk.Combobox(self.strat_var_frame, state="disabled", values=self.available_strat_vars, width=25)
+        if self.available_strat_vars:
+            self.strat_var_combo.set(self.available_strat_vars[0])
+        self.strat_var_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Initial state update for the combobox
+        self._toggle_strat_var_combo()
+
+        # OK/Cancel Buttons
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10,0))
+        ttk.Button(buttons_frame, text="Generar Gráfico", command=self._on_ok).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.time_horizon_entry.focus_set()
+        self.wait_window(self)
+
+    def _toggle_strat_var_combo(self):
+        if self.plot_type_var.get() == "stratified":
+            self.strat_var_combo.config(state="readonly" if self.available_strat_vars else "disabled")
+        else:
+            self.strat_var_combo.config(state="disabled")
+
+    def _on_ok(self):
+        try:
+            t_horizon = float(self.time_horizon_var.get())
+            if t_horizon <= 0:
+                raise ValueError("El horizonte de tiempo debe ser positivo.")
+        except ValueError:
+            messagebox.showerror("Valor Inválido",
+                               "Por favor, ingrese un valor numérico positivo para el horizonte de tiempo.",
+                               parent=self)
+            return
+
+        plot_type = self.plot_type_var.get()
+        strat_var_name = None
+        if plot_type == "stratified":
+            strat_var_name = self.strat_var_combo.get()
+            if not strat_var_name and self.available_strat_vars:
+                 messagebox.showwarning("Selección Requerida",
+                                   "Por favor, seleccione una variable de estratificación.",
+                                   parent=self)
+                 return
+            elif not self.available_strat_vars and strat_var_name is None: # Check if strat_var_name is None when no variables available
+                 messagebox.showerror("Error",
+                                   "No hay variables disponibles para estratificación y ninguna seleccionada.",
+                                   parent=self)
+                 return
+
+
+        self.result = {
+            'time_horizon': t_horizon,
+            'plot_type': plot_type,
+            'strat_var': strat_var_name
+        }
+        self.log(f"Opciones de calibración seleccionadas: {self.result}", "DEBUG")
+        self.destroy()
+
 # --- CLASE PRINCIPAL DE LA APLICACIÓN ---
 class CoxModelingApp(ttk.Frame):
     def __init__(self, parent_notebook_tab):
@@ -804,6 +904,7 @@ class CoxModelingApp(ttk.Frame):
         self.generated_models_data = []
         # Diccionario del modelo seleccionado en la Treeview
         self.selected_model_in_treeview = None
+        self.btn_oos_calibration = None
 
         # Variables de control para la UI (Pestaña 2: Modelado)
         self.cox_model_type_var = StringVar(value="Multivariado")  # "Univariado" | "Multivariado"
@@ -1656,7 +1757,8 @@ class CoxModelingApp(ttk.Frame):
         
         acciones_config_btns = [
             ("Ver Resumen", self.show_selected_model_summary),
-            ("Generar Gráficos Cox", self.open_graph_selection_dialog), # New consolidated button
+            ("Generar Gráficos Cox", self.open_graph_selection_dialog),
+            ("Calibración OOS (CV)", self.show_new_calibration_plots), # New OOS Calibration button
             ("Predicción", self.realizar_prediccion),
             ("Exportar Resumen", self.export_model_summary),
             ("Guardar Modelo", self.save_model),
@@ -1665,20 +1767,26 @@ class CoxModelingApp(ttk.Frame):
         ]
         
         # Layout dinámico para botones de acción
-        max_btns_per_row = 6
+        max_btns_per_row = 6 # Adjust as needed, maybe 4 or 5 now with more buttons
         current_row_frame_acciones = None
         for i, (text, cmd) in enumerate(acciones_config_btns):
             if i % max_btns_per_row == 0:
                 current_row_frame_acciones = ttk.Frame(frame_acciones)
                 current_row_frame_acciones.pack(fill=tk.X, pady=1)
-            ttk.Button(current_row_frame_acciones, text=text, command=cmd).pack(side=tk.LEFT, padx=3, pady=2, fill=tk.X, expand=True)
+
+            button_widget = ttk.Button(current_row_frame_acciones, text=text, command=cmd)
+            button_widget.pack(side=tk.LEFT, padx=3, pady=2, fill=tk.X, expand=True)
+
+            if text == "Calibración OOS (CV)":
+                self.btn_oos_calibration = button_widget
+
+        if self.btn_oos_calibration:
+            self.btn_oos_calibration.config(state=tk.DISABLED)
 
         # Add the new button row for clear models
         clear_models_frame = ttk.Frame(frame_acciones)
         clear_models_frame.pack(fill=tk.X, pady=5)
         ttk.Button(clear_models_frame, text="Limpiar Todos los Modelos", command=self._clear_all_generated_models).pack(side=tk.RIGHT, padx=5)
-
-        # Add the new button row for clear models
 
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
@@ -1949,7 +2057,8 @@ class CoxModelingApp(ttk.Frame):
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
             "schoenfeld_status_message": None, # Initialize status message
-            "proportional_hazard_test_summary": None # Initialize new key
+            "proportional_hazard_test_summary": None, # Initialize new key
+            "oos_predictions": None # ADDED KEY FOR OOS PREDICTIONS
         }
  
         try:
@@ -2148,12 +2257,12 @@ class CoxModelingApp(ttk.Frame):
                 try:
                     kf_cv = KFold(n_splits=self.cv_num_kfolds_var.get(), shuffle=True, random_state=self.cv_random_seed_var.get())
                     c_indices_cv_list = []
+                    all_oos_predictions_data = [] # Initialize list to store OOS prediction data
                     for train_idx, test_idx in kf_cv.split(df_lifelines_rm): # Usar df_lifelines_rm para split
                         
                         df_fold_for_fit_cv = df_lifelines_rm.iloc[train_idx].copy() # Siempre usar el DF original
                         
-                        # X_te_cv ya no se necesita para fit, solo para predict_partial_hazard
-                        # y_te_cv se usa para concordance_index
+                        # y_te_cv se usa para concordance_index y para obtener true_time/event_subject
                         y_te_cv = y_survival_rm.iloc[test_idx]
 
                         if df_fold_for_fit_cv.empty or y_te_cv.empty: continue
@@ -2167,8 +2276,39 @@ class CoxModelingApp(ttk.Frame):
                         c_idx_fold = concordance_index(y_te_cv[time_col_rm], -preds_te_fold, y_te_cv[event_col_rm])
                         c_indices_cv_list.append(c_idx_fold)
 
+                        # Predict OOS survival functions for the current test fold
+                        try:
+                            # df_test_fold_original_cols contiene los valores de las covariables originales para los sujetos del test fold
+                            df_test_fold_original_cols = df_lifelines_rm.iloc[test_idx]
+                            oos_survival_functions_fold = cph_fold.predict_survival_function(df_test_fold_original_cols)
+                            # oos_survival_functions_fold es un DataFrame: filas son timepoints, columnas son subject indices del test_idx
+
+                            for subject_original_idx in df_test_fold_original_cols.index: # Iterar sobre los índices originales de los sujetos en el test fold
+                                true_time_subject = y_te_cv.loc[subject_original_idx, time_col_rm]
+                                true_event_subject = y_te_cv.loc[subject_original_idx, event_col_rm]
+                                # Acceder a la serie de supervivencia para el sujeto actual usando su índice original
+                                predicted_sf_subject = oos_survival_functions_fold[subject_original_idx]
+
+                                all_oos_predictions_data.append({
+                                    "subject_id": subject_original_idx,
+                                    "true_time": true_time_subject,
+                                    "true_event": true_event_subject,
+                                    "predicted_survival_function": predicted_sf_subject # pd.Series
+                                })
+                        except Exception as e_pred_sf_cv:
+                            self.log(f"Error predicting OOS survival function in CV fold: {e_pred_sf_cv}", "WARN")
+                            # traceback.print_exc(limit=1) # Descomentar para más detalle si es necesario
+
                     if c_indices_cv_list: model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list); model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
                     self.log(f"C-Index CV: Media={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
+
+                    if all_oos_predictions_data:
+                        model_data_rm["oos_predictions"] = all_oos_predictions_data # Store list of dicts
+                        self.log(f"Stored {len(all_oos_predictions_data)} out-of-sample predictions from CV.", "INFO")
+                    else:
+                        # model_data_rm["oos_predictions"] remains None (set at initialization) if list is empty
+                        self.log("No out-of-sample predictions were stored from CV.", "WARN")
+
                 except Exception as e_cv_rm: self.log(f"Error C-Index CV: {e_cv_rm}", "ERROR"); traceback.print_exc(limit=3)
             elif self.calculate_cv_cindex_var.get(): self.log("C-Index CV no calculado (modelo nulo o sin X_design).", "INFO")
 
@@ -2342,6 +2482,13 @@ class CoxModelingApp(ttk.Frame):
                 else: self.selected_model_in_treeview = None; self.log("Índice modelo fuera de rango.", "WARN")
             except ValueError: self.selected_model_in_treeview = None; self.log("Error obteniendo índice modelo.", "WARN")
         else: self.selected_model_in_treeview = None; self.log("Ningún modelo seleccionado.", "INFO")
+
+        if self.btn_oos_calibration: # Check if button exists
+            if self.selected_model_in_treeview and self.selected_model_in_treeview.get("oos_predictions"):
+                self.btn_oos_calibration.config(state=tk.NORMAL)
+            else:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
+
         self._update_results_buttons_state()
 
     def show_selected_model_summary(self):
@@ -3566,6 +3713,8 @@ class CoxModelingApp(ttk.Frame):
             self.generated_models_data = []
             self._update_models_treeview()
             self.selected_model_in_treeview = None
+            if self.btn_oos_calibration:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
             self._update_results_buttons_state() # Deshabilitar botones de resultados
             self.log("Todos los modelos generados han sido eliminados.", "INFO")
 
@@ -3702,6 +3851,358 @@ class CoxModelingApp(ttk.Frame):
         report_full += "5. Conclusión General (Placeholder):\n   [Interprete hallazgos en contexto.]\n"
         ModelSummaryWindow(self.parent_for_dialogs, f"Reporte Metodológico: {name_rep}", report_full)
         self.log(f"Mostrando reporte metodológico para '{name_rep}'.", "INFO")
+
+
+    def show_new_calibration_plots(self):
+        self.log("Attempting to show new calibration plots...", "INFO")
+        if not self._check_model_selected_and_valid():
+            return # Message already shown by _check_model_selected_and_valid
+
+        model_dict = self.selected_model_in_treeview
+        model_name = model_dict.get('model_name', 'N/A')
+
+        oos_predictions_data = model_dict.get("oos_predictions")
+
+        if not oos_predictions_data:
+            messagebox.showwarning("Datos No Disponibles",
+                                   f"No se encontraron predicciones Out-of-Sample para el modelo '{model_name}'.\n"
+                                   "Asegúrese de que la Validación Cruzada ('Calcular C-Index con CV') se ejecutó al crear este modelo.",
+                                   parent=self.parent_for_dialogs)
+            self.log(f"No hay datos OOS para calibración en modelo '{model_name}'.", "WARN")
+            return
+
+        self.log(f"Datos OOS encontrados para el modelo '{model_name}'. {len(oos_predictions_data)} sujetos.", "INFO")
+
+        # --- Replace placeholder with this new logic ---
+
+        # Determine available stratification variables from self.data
+        available_vars_for_strat = []
+        if self.data is not None:
+            excluded_cols = [self.combo_col_tiempo.get(), self.combo_col_evento.get()]
+            # For simplicity, allow all non-time/event columns. Can be refined later.
+            available_vars_for_strat = [col for col in self.data.columns if col not in excluded_cols]
+        else:
+            self.log("self.data is None, no stratification variables available.", "WARN")
+            # Dialog will handle empty list if self.data is None
+
+        dialog = CalibrationPlotOptionsDialog(parent=self, # Pass app instance as parent
+                                              available_strat_vars=sorted(list(set(available_vars_for_strat))),
+                                              log_func=self.log)
+
+        if dialog.result is None:
+            self.log("Opciones de calibración canceladas por el usuario.", "INFO")
+            return
+
+        user_choices = dialog.result
+        time_h = user_choices['time_horizon']
+        plot_t = user_choices['plot_type']
+        strat_v = user_choices['strat_var']
+
+        fig_cal_oos, ax_cal_oos = plt.subplots(figsize=(8, 8)) # Ensure plt is imported
+
+        try:
+            if plot_t == 'decile':
+                self._generate_decile_calibration_plot_oos(oos_predictions_data, time_h, ax_cal_oos)
+                plot_specific_title = f"Calibración OOS por Deciles (t={time_h:.2f})"
+            elif plot_t == 'stratified':
+                if not strat_v:
+                    messagebox.showerror("Error", "No se seleccionó variable de estratificación para el gráfico estratificado.", parent=self.parent_for_dialogs)
+                    self.log("Intento de gráfico de calibración estratificado sin variable de estratificación.", "ERROR")
+                    plt.close(fig_cal_oos) # Close the figure if error
+                    return
+                self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h, strat_v, ax_cal_oos)
+                plot_specific_title = f"Calibración OOS por '{strat_v}' (t={time_h:.2f})"
+            else:
+                self.log(f"Tipo de gráfico de calibración desconocido: {plot_t}", "ERROR")
+                messagebox.showerror("Error", f"Tipo de gráfico de calibración desconocido: {plot_t}", parent=self.parent_for_dialogs)
+                plt.close(fig_cal_oos) # Close the figure
+                return
+
+            # Check if anything was plotted on ax_cal_oos by looking at its children or data limits
+            if not ax_cal_oos.has_data():
+                 self.log("El método de generación de gráfico de calibración no añadió datos al eje. No se mostrará la ventana.", "WARN")
+                 plt.close(fig_cal_oos) # Close if no data was actually plotted
+                 # Optionally show a messagebox to the user
+                 messagebox.showwarning("Gráfico Vacío", "No se pudieron generar datos para el gráfico de calibración seleccionado.", parent=self.parent_for_dialogs)
+                 return
+
+            self._create_plot_window(fig_cal_oos, f"{plot_specific_title} - Modelo: {model_name}")
+
+        except Exception as e_cal_main:
+            self.log(f"Error al generar o mostrar el gráfico de calibración OOS: {e_cal_main}", "ERROR")
+            if fig_cal_oos: plt.close(fig_cal_oos)
+            traceback.print_exc(limit=3)
+            messagebox.showerror("Error de Gráfico",
+                               f"No se pudo generar el gráfico de calibración OOS:\n{e_cal_main}",
+                               parent=self.parent_for_dialogs)
+        # --- End of new logic ---
+
+
+    def _generate_decile_calibration_plot_oos(self, oos_predictions_list, time_horizon_t, ax):
+        self.log(f"Generando gráfico de calibración por deciles para t={time_horizon_t}...", "INFO")
+
+        if not oos_predictions_list:
+            self.log("No OOS prediction data provided for decile calibration plot.", "ERROR")
+            ax.text(0.5, 0.5, "No hay datos OOS para generar el gráfico.", ha='center', va='center')
+            return
+
+        # 1. Data Preparation: Convert list of dicts to DataFrame and get predicted event prob at time_horizon_t
+        subject_data = []
+        for item in oos_predictions_list:
+            pred_sf_series = item["predicted_survival_function"]
+            # Interpolate survival probability at time_horizon_t
+            # Ensure time_horizon_t is within the bounds of the series' index (time points)
+            # Use .get(key, default) for series if time_horizon_t might not be exact index
+
+            # Create a common time grid for interpolation if necessary, or interpolate directly
+            # For simplicity, using direct interpolation and handling bounds.
+            min_time_pred = pred_sf_series.index.min()
+            max_time_pred = pred_sf_series.index.max()
+
+            if time_horizon_t < min_time_pred:
+                predicted_s_at_t = 1.0
+            elif time_horizon_t > max_time_pred:
+                predicted_s_at_t = pred_sf_series.iloc[-1] # Survival at last predicted time
+            else:
+                # Interpolate (linear should be fine for SF)
+                predicted_s_at_t = np.interp(time_horizon_t, pred_sf_series.index, pred_sf_series.values)
+
+            predicted_event_prob_at_t = 1.0 - predicted_s_at_t
+
+            subject_data.append({
+                "subject_id": item["subject_id"],
+                "true_time": item["true_time"],
+                "true_event": item["true_event"],
+                "predicted_event_prob": predicted_event_prob_at_t
+            })
+
+        if not subject_data:
+            self.log("No subject data after processing predictions for decile calibration.", "ERROR")
+            ax.text(0.5, 0.5, "No se pudieron procesar las predicciones.", ha='center', va='center')
+            return
+
+        oos_df = pd.DataFrame(subject_data)
+        oos_df.dropna(subset=["predicted_event_prob"], inplace=True) # Should not happen if handled above
+
+        if oos_df.empty:
+            self.log("DataFrame OOS vacío después de calcular probabilidades de evento predichas.", "ERROR")
+            ax.text(0.5, 0.5, "DataFrame OOS vacío.", ha='center', va='center')
+            return
+
+        # 2. Decile Grouping
+        try:
+            # Ensure at least 10 unique prediction values for qcut to work well, or handle fewer.
+            # If fewer than 10 unique values, qcut might create fewer than 10 bins or error.
+            num_unique_preds = oos_df["predicted_event_prob"].nunique()
+            n_quantiles = min(10, num_unique_preds) if num_unique_preds > 1 else 1 # Avoid error if only 1 unique value
+
+            if n_quantiles <= 1 : # Not enough diversity for deciles
+                 self.log(f"No hay suficientes valores predichos únicos ({num_unique_preds}) para crear deciles significativos. Se mostrará un solo punto si es posible.", "WARN")
+                 # Create a single group if n_quantiles is 1
+                 oos_df["decile"] = 0
+            else:
+                 oos_df["decile"] = pd.qcut(oos_df["predicted_event_prob"], q=n_quantiles, labels=False, duplicates='drop')
+
+        except ValueError as e_qcut:
+            self.log(f"Error al crear deciles con pd.qcut: {e_qcut}. Puede haber muy pocos puntos de datos o valores no únicos. Intentando agrupar por un solo grupo.", "WARN")
+            oos_df["decile"] = 0 # Fallback to a single group
+
+        # 3. Calculate X and Y Coordinates for Each Decile
+        calibration_points = []
+        for i, group_df in oos_df.groupby("decile"):
+            if group_df.empty:
+                continue
+
+            mean_predicted_prob = group_df["predicted_event_prob"].mean()
+
+            kmf_decile = KaplanMeierFitter()
+            kmf_decile.fit(group_df["true_time"], event_observed=group_df["true_event"])
+
+            # Get survival probability S(t) at time_horizon_t for the decile
+            # This also needs interpolation or careful handling if t is not an event time
+            survival_at_t_decile_df = kmf_decile.survival_function_at_times([time_horizon_t])
+            observed_s_at_t_decile = survival_at_t_decile_df.iloc[0,0] if not survival_at_t_decile_df.empty else 1.0 # Default to 1 if t is before any event/data
+
+            observed_event_incidence_decile = 1.0 - observed_s_at_t_decile
+
+            # Confidence Interval for observed incidence
+            # CI for S(t) is [S_lower, S_upper]. So CI for P(T<=t) = 1-S(t) is [1-S_upper, 1-S_lower]
+            kmf_ci_sf_decile = kmf_decile.confidence_interval_survival_function_ # This is a DataFrame
+
+            # Find CI for time_horizon_t (may need interpolation or selection of closest time)
+            # For simplicity, find closest available time point in CI index
+            ci_idx_time = kmf_ci_sf_decile.index.get_indexer([time_horizon_t], method='nearest')[0]
+            s_lower_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 0] # Lower CI for S(t)
+            s_upper_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 1] # Upper CI for S(t)
+
+            ci_observed_incidence_lower = 1.0 - s_upper_at_t
+            ci_observed_incidence_upper = 1.0 - s_lower_at_t
+
+            # Error for error bar: distance from mean observation to CI bounds
+            y_error_lower = observed_event_incidence_decile - ci_observed_incidence_lower
+            y_error_upper = ci_observed_incidence_upper - observed_event_incidence_decile
+
+            calibration_points.append({
+                "x_pred": mean_predicted_prob,
+                "y_obs": observed_event_incidence_decile,
+                "y_err": [[y_error_lower], [y_error_upper]] # Format for ax.errorbar
+            })
+
+        if not calibration_points:
+            self.log("No se generaron puntos de calibración.", "ERROR")
+            ax.text(0.5, 0.5, "No se pudieron generar los puntos de calibración.", ha='center', va='center')
+            return
+
+        cal_df = pd.DataFrame(calibration_points)
+
+        # 4. Plotting
+        ax.plot(cal_df["x_pred"], cal_df["y_obs"], marker='o', linestyle='-', label="Calibración por Deciles")
+        ax.errorbar(cal_df["x_pred"], cal_df["y_obs"],
+                    yerr=np.array(cal_df["y_err"].tolist()).reshape(2, -1), # Reshape error list
+                    fmt='none', ecolor='gray', capsize=3, elinewidth=1)
+
+        ax.plot([0, 1], [0, 1], linestyle='--', color='red', label="Calibración Perfecta")
+
+        ax.set_xlabel("Probabilidad Predicha de Evento P(T <= t)")
+        ax.set_ylabel("Probabilidad Observada de Evento (Kaplan-Meier)")
+        ax.set_title(f"Calibración OOS por Deciles (t={time_horizon_t:.2f})")
+        ax.legend()
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.grid(True, linestyle=':', alpha=0.7)
+        self.log("Gráfico de calibración por deciles OOS generado.", "SUCCESS")
+
+
+    def _generate_stratified_calibration_plot_oos(self, oos_predictions_list, time_horizon_t, stratification_variable_name, ax):
+        self.log(f"Generando gráfico de calibración estratificado por '{stratification_variable_name}' para t={time_horizon_t}...", "INFO")
+
+        if not oos_predictions_list:
+            self.log("No OOS prediction data provided for stratified calibration plot.", "ERROR")
+            ax.text(0.5, 0.5, "No hay datos OOS para generar el gráfico.", ha='center', va='center')
+            return
+
+        if not self.data: # self.data is the initially loaded full dataset
+            self.log("Dataset original (self.data) no cargado. No se puede obtener variable de estratificación.", "ERROR")
+            messagebox.showerror("Error de Datos", "Dataset original no disponible para obtener la variable de estratificación.", parent=self.parent_for_dialogs)
+            ax.text(0.5, 0.5, "Dataset original no disponible.", ha='center', va='center')
+            return
+
+        if stratification_variable_name not in self.data.columns:
+            self.log(f"Variable de estratificación '{stratification_variable_name}' no encontrada en self.data.", "ERROR")
+            messagebox.showerror("Error de Variable", f"Variable de estratificación '{stratification_variable_name}' no encontrada.", parent=self.parent_for_dialogs)
+            ax.text(0.5, 0.5, f"Variable '{stratification_variable_name}' no encontrada.", ha='center', va='center')
+            return
+
+        # 1. Data Preparation
+        subject_data_for_strat_plot = []
+        for item in oos_predictions_list:
+            pred_sf_series = item["predicted_survival_function"]
+            min_time_pred = pred_sf_series.index.min()
+            max_time_pred = pred_sf_series.index.max()
+
+            if time_horizon_t < min_time_pred: predicted_s_at_t = 1.0
+            elif time_horizon_t > max_time_pred: predicted_s_at_t = pred_sf_series.iloc[-1]
+            else: predicted_s_at_t = np.interp(time_horizon_t, pred_sf_series.index, pred_sf_series.values)
+
+            predicted_event_prob_at_t = 1.0 - predicted_s_at_t
+
+            subject_data_for_strat_plot.append({
+                "subject_id": item["subject_id"], # This is the original index
+                "true_time": item["true_time"],
+                "true_event": item["true_event"],
+                "predicted_event_prob": predicted_event_prob_at_t
+            })
+
+        if not subject_data_for_strat_plot:
+            self.log("No subject data after processing OOS predictions for stratified calibration.", "ERROR")
+            ax.text(0.5, 0.5, "No se pudieron procesar las predicciones OOS.", ha='center', va='center')
+            return
+
+        oos_df = pd.DataFrame(subject_data_for_strat_plot)
+        oos_df.dropna(subset=["predicted_event_prob"], inplace=True)
+
+        # Merge with original data to get stratification variable, using subject_id as index
+        # Assuming self.data's index are the subject_ids
+        if not self.data.index.name: # If self.data index is not named, try to set it if it looks like IDs
+            if self.data.index.is_unique and oos_df['subject_id'].isin(self.data.index).all():
+                 pass # Index seems usable
+            else: # Attempt to use a common column if 'subject_id' exists in self.data.columns
+                 if 'subject_id' in self.data.columns and self.data['subject_id'].is_unique:
+                     oos_df = oos_df.merge(self.data[['subject_id', stratification_variable_name]], on="subject_id", how="left")
+                 else: # Fallback or error if cannot reliably join
+                     self.log("No se pudo determinar una clave de unión fiable para la variable de estratificación. Verifique el índice de 'self.data' o una columna 'subject_id'.", "ERROR")
+                     messagebox.showerror("Error de Fusión de Datos", "No se pudo unir con datos de estratificación.", parent=self.parent_for_dialogs)
+                     ax.text(0.5,0.5, "Error al unir datos de estratificación.", ha='center', va='center')
+                     return
+        else: # self.data.index is named, assume it's the subject_id key
+            oos_df = oos_df.set_index("subject_id").join(self.data[stratification_variable_name], how="left").reset_index()
+
+
+        if oos_df[stratification_variable_name].isnull().any():
+            self.log(f"Algunos sujetos OOS no tienen valor para la variable de estratificación '{stratification_variable_name}'. Serán excluidos.", "WARN")
+            oos_df.dropna(subset=[stratification_variable_name], inplace=True)
+
+        if oos_df.empty:
+            self.log("DataFrame OOS vacío después de merge/dropna para estratificación.", "ERROR")
+            ax.text(0.5, 0.5, "No hay datos para estratificar.", ha='center', va='center')
+            return
+
+        # 2. Group by Stratification Variable & Calculate Points
+        calibration_points_strat = []
+        for strat_value, group_df in oos_df.groupby(stratification_variable_name):
+            if group_df.empty or len(group_df) < 2: # Need at least 2 for KM to be meaningful for CI
+                self.log(f"Estrato '{strat_value}' tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
+                continue
+
+            mean_predicted_prob_strat = group_df["predicted_event_prob"].mean()
+
+            kmf_strat = KaplanMeierFitter()
+            kmf_strat.fit(group_df["true_time"], event_observed=group_df["true_event"])
+
+            survival_at_t_strat_df = kmf_strat.survival_function_at_times([time_horizon_t])
+            observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0] if not survival_at_t_strat_df.empty else 1.0
+            observed_event_incidence_strat = 1.0 - observed_s_at_t_strat
+
+            kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
+            ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
+            s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
+            s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
+
+            ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
+            ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+
+            y_err_lower_strat = observed_event_incidence_strat - ci_observed_incidence_lower_strat
+            y_err_upper_strat = ci_observed_incidence_upper_strat - observed_event_incidence_strat
+
+            calibration_points_strat.append({
+                "stratum_name": str(strat_value),
+                "x_pred": mean_predicted_prob_strat,
+                "y_obs": observed_event_incidence_strat,
+                "y_err": [[y_err_lower_strat], [y_err_upper_strat]]
+            })
+
+        if not calibration_points_strat:
+            self.log("No se generaron puntos de calibración estratificados.", "ERROR")
+            ax.text(0.5, 0.5, "No se pudieron generar puntos de calibración estratificados.", ha='center', va='center')
+            return
+
+        # 3. Plotting
+        for point_data in calibration_points_strat:
+            ax.errorbar(point_data["x_pred"], point_data["y_obs"],
+                        yerr=np.array(point_data["y_err"]).reshape(2,-1),
+                        fmt='o', label=point_data["stratum_name"], capsize=3, elinewidth=1, markersize=6)
+            # ax.text(point_data["x_pred"] + 0.01, point_data["y_obs"], point_data["stratum_name"], fontsize=9) # Optional: text label next to point
+
+        ax.plot([0, 1], [0, 1], linestyle='--', color='red', label="Calibración Perfecta")
+
+        ax.set_xlabel("Probabilidad Predicha de Evento P(T <= t)")
+        ax.set_ylabel("Probabilidad Observada de Evento (Kaplan-Meier)")
+        ax.set_title(f"Calibración OOS por '{stratification_variable_name}' (t={time_horizon_t:.2f})")
+        ax.legend(title=f"{stratification_variable_name}", fontsize='small')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.grid(True, linestyle=':', alpha=0.7)
+        self.log(f"Gráfico de calibración OOS estratificado por '{stratification_variable_name}' generado.", "SUCCESS")
 
 # --- Fin de la clase CoxModelingApp ---
 
