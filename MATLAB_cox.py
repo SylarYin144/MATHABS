@@ -2956,7 +2956,7 @@ class CoxModelingApp(ttk.Frame):
             ax.axvline(0, color='grey', linestyle='--', linewidth=0.8)
             ax.set_yticks([0])
             ax.set_yticklabels([chosen_model_term], fontdict={'fontsize': 9})
-            ax.margins(yaxis=0.4)
+            ax.margins(y=0.4)
 
             plot_title_text = f"Coeficiente: Log(Hazard Ratio) para '{chosen_model_term}'\nModelo: {model_name_vip}"
 
