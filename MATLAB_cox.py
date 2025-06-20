@@ -2871,51 +2871,104 @@ class CoxModelingApp(ttk.Frame):
         md_vip = self.selected_model_in_treeview
         cph_model_vip = md_vip.get('model')
         model_name_vip = md_vip.get('model_name', 'N/A')
-        model_summary_df = md_vip.get('metrics', {}).get('summary_df')
 
-        if model_summary_df is None or model_summary_df.empty:
-            messagebox.showinfo("Sin Resumen",
-                                f"El resumen del modelo '{model_name_vip}' no está disponible o está vacío. No se puede generar el gráfico de impacto.",
-                                parent=self.parent_for_dialogs)
-            self.log(f"Resumen de modelo no disponible para '{model_name_vip}' en show_variable_impact_plot.", "WARN")
+        if not hasattr(cph_model_vip, 'params_') or cph_model_vip.params_.empty:
+            messagebox.showinfo("Sin Parámetros", "El modelo seleccionado no tiene covariables (parámetros) para analizar.", parent=self.parent_for_dialogs)
             return
 
-        available_model_terms = list(model_summary_df.index)
+        # available_covariates should be the terms that can be passed to plot_partial_effects_on_outcome
+        # These are typically the original variable names, not necessarily all terms from cph_model_vip.params_.index
+        # For simplicity, we'll list params_ index, but be mindful that plot_partial_effects_on_outcome
+        # might behave differently for Patsy-generated terms like C(var)[T.level] or spline terms.
+        # The ideal list would be unique original variable names involved in the model.
 
-        if not available_model_terms:
-            messagebox.showinfo("Sin Covariables en Resumen",
-                                "No se encontraron covariables (términos) en el resumen del modelo.",
+        # For now, using .params_.index as before, user needs to pick a base variable name for splines/categoricals.
+        available_terms_for_dialog = list(cph_model_vip.params_.index)
+
+        # Attempt to get unique original variable names for a cleaner dialog
+        # This requires parsing Q('') and parts of spline/category terms
+        original_vars_in_model = set()
+        if hasattr(cph_model_vip, 'formula'): # Model was likely formula-fitted
+            formula_terms = re.findall(r"Q\('([^']+)'\)|([a-zA-Z_][a-zA-Z0-9_]*)", cph_model_vip.formula)
+            for q_term, raw_term in formula_terms:
+                if q_term:
+                    original_vars_in_model.add(q_term)
+                elif raw_term and raw_term not in ['Intercept', '0', '1'] and not any(func in raw_term for func in ['cr(', 'bs(', 'C(']):
+                    # Add raw terms if they are likely variable names and not patsy operators/functions
+                    # This part is heuristic
+                    if self.data is not None and raw_term in self.data.columns:
+                         original_vars_in_model.add(raw_term)
+
+        # If we couldn't reliably parse original vars, fallback to terms from params, but this might be less user-friendly
+        # for selecting the 'covariate' argument of plot_partial_effects_on_outcome.
+        # The user should ideally select an *original* variable name.
+        # For this version, let's refine the list for the dialog.
+        # We want to offer the underlying variable names, not each dummy or spline basis function.
+
+        candidate_vars_for_plot = set()
+        df_fit_cols = []
+        if md_vip.get('_df_for_fit_main_INTERNAL_USE') is not None:
+            df_fit_cols = md_vip.get('_df_for_fit_main_INTERNAL_USE').columns
+
+        for term in available_terms_for_dialog:
+            match_q = re.match(r"Q\('([^']+)'\)", term)
+            if match_q:
+                candidate_vars_for_plot.add(match_q.group(1))
+            else:
+                # Attempt to extract from C(variable)[T.level] or spline_func(variable, ...)[...]
+                match_func = re.match(r"(?:cr|bs|C)\(Q\('([^']+)'\).*", term)
+                if match_func:
+                    candidate_vars_for_plot.add(match_func.group(1))
+                elif term in df_fit_cols: # If the term is a raw column name
+                    candidate_vars_for_plot.add(term)
+
+        # If still empty, it's problematic, but try with original_vars_in_model as a last resort
+        if not candidate_vars_for_plot and original_vars_in_model:
+             candidate_vars_for_plot = original_vars_in_model
+
+        if not candidate_vars_for_plot:
+             # Fallback to all params if no candidates found (less ideal)
+             if available_terms_for_dialog:
+                candidate_vars_for_plot.update(available_terms_for_dialog)
+
+
+        if not candidate_vars_for_plot:
+            messagebox.showinfo("Sin Covariables Adecuadas",
+                                "No se pudieron identificar covariables adecuadas para este gráfico a partir de los términos del modelo.",
                                 parent=self.parent_for_dialogs)
-            self.log(f"No hay términos en el resumen del modelo '{model_name_vip}'.", "WARN")
             return
 
         dialog = Toplevel(self.parent_for_dialogs)
-        dialog.title("Seleccionar Término del Modelo")
-        dialog.geometry("450x400")
-        ttk.Label(dialog, text="Seleccione el término del modelo para visualizar su coeficiente Log(HR) y CI:", wraplength=430).pack(pady=10, padx=10)
+        dialog.title("Seleccionar Covariable para Gráfico de Efecto")
+        dialog.geometry("400x350")
+        ttk.Label(dialog, text="Seleccione la covariable para visualizar su efecto parcial:", wraplength=380).pack(pady=10, padx=10)
 
-        term_var = StringVar()
+        covariate_var = StringVar()
+        # Using sorted list for consistent order in dialog
+        sorted_candidates = sorted(list(candidate_vars_for_plot))
+
         listbox_frame = ttk.Frame(dialog)
         listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
-        listbox_terms = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=10)
-        for term_name_lb in available_model_terms:
-            listbox_terms.insert(tk.END, term_name_lb)
-        if available_model_terms:
-            listbox_terms.selection_set(0)
+        listbox_covs_widget = Listbox(listbox_frame, selectmode=SINGLE, exportselection=False, height=8)
+        for cov_name_lb in sorted_candidates:
+            listbox_covs_widget.insert(tk.END, cov_name_lb)
+        if sorted_candidates:
+            listbox_covs_widget.selection_set(0)
+            covariate_var.set(sorted_candidates[0]) # Keep variable in sync if needed elsewhere
 
-        scrollbar_y_terms = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_terms.yview)
-        listbox_terms.config(yscrollcommand=scrollbar_y_terms.set)
-        scrollbar_y_terms.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox_terms.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
+        listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
+        scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        chosen_model_term = None
+        chosen_covariate_for_plot = None
         def on_ok():
-            nonlocal chosen_model_term
-            if listbox_terms.curselection():
-                chosen_model_term = listbox_terms.get(listbox_terms.curselection()[0])
+            nonlocal chosen_covariate_for_plot
+            if listbox_covs_widget.curselection():
+                chosen_covariate_for_plot = listbox_covs_widget.get(listbox_covs_widget.curselection()[0])
                 dialog.destroy()
             else:
-                 messagebox.showwarning("Selección Requerida", "Debe seleccionar un término de la lista.", parent=dialog)
+                 messagebox.showwarning("Selección Requerida", "Debe seleccionar una covariable de la lista.", parent=dialog)
 
         def on_cancel():
             dialog.destroy()
@@ -2928,64 +2981,54 @@ class CoxModelingApp(ttk.Frame):
         dialog.grab_set()
         self.parent_for_dialogs.wait_window(dialog)
 
-        if not chosen_model_term:
-            self.log("Selección de término del modelo cancelada.", "INFO")
+        if not chosen_covariate_for_plot:
+            self.log("Selección de covariable para gráfico de impacto cancelada o no realizada.", "INFO")
             return
 
-        self.log(f"Generando gráfico de coeficiente para término: '{chosen_model_term}' del modelo '{model_name_vip}'.", "INFO")
+        self.log(f"Generando gráfico de efecto parcial para covariable: '{chosen_covariate_for_plot}' del modelo '{model_name_vip}'.", "INFO")
 
-        fig_coef_plot = None
+        fig_vip = None
         try:
-            term_data = model_summary_df.loc[chosen_model_term]
-            log_hr = term_data.get('coef')
-            se_log_hr = term_data.get('se(coef)')
+            fig_vip, ax_vip = plt.subplots(figsize=(10, 6))
 
-            if pd.isna(log_hr) or pd.isna(se_log_hr):
-                messagebox.showerror("Datos Faltantes",
-                                     f"No se encontró 'coef' o 'se(coef)' para el término '{chosen_model_term}' en el resumen del modelo.",
-                                     parent=self.parent_for_dialogs)
-                self.log(f"Datos de coeficientes faltantes para '{chosen_model_term}' en show_variable_impact_plot", "ERROR")
-                return
+            cph_model_vip.plot_partial_effects_on_outcome(
+                chosen_covariate_for_plot,
+                values=None, # Let lifelines determine values for continuous, or handle categorical
+                plot_baseline=False,
+                ax=ax_vip
+            )
 
-            ci_lower = log_hr - 1.96 * se_log_hr
-            ci_upper = log_hr + 1.96 * se_log_hr
+            plot_title_text = f"Efecto Parcial de '{chosen_covariate_for_plot}' sobre Log(Hazard Ratio)\nModelo: {model_name_vip}"
 
-            fig_coef_plot, ax = plt.subplots(figsize=(8, 6))
-            ax.errorbar(x=[log_hr], y=[0], xerr=[[log_hr - ci_lower], [ci_upper - log_hr]],
-                        fmt='o', color='blue', capsize=5, markersize=8, elinewidth=1.5)
-            ax.axvline(0, color='grey', linestyle='--', linewidth=0.8)
-            ax.set_yticks([0])
-            ax.set_yticklabels([chosen_model_term], fontdict={'fontsize': 9})
-            ax.margins(y=0.4)
+            current_opts_vip = self.current_plot_options.copy()
+            current_opts_vip['title'] = current_opts_vip.get('title', plot_title_text)
+            current_opts_vip['xlabel'] = f"Valor de {chosen_covariate_for_plot}"
+            current_opts_vip['ylabel'] = "Log(Hazard Ratio) (efecto parcial)"
 
-            plot_title_text = f"Coeficiente: Log(Hazard Ratio) para '{chosen_model_term}'\nModelo: {model_name_vip}"
+            apply_plot_options(ax_vip, current_opts_vip, self.log)
+            plt.tight_layout()
+            self._create_plot_window(fig_vip, f"Efecto Parcial: {chosen_covariate_for_plot} ({model_name_vip})")
 
-            current_opts_coef = self.current_plot_options.copy()
-            current_opts_coef['title'] = current_opts_coef.get('title', plot_title_text)
-            current_opts_coef['xlabel'] = "Log(Hazard Ratio) y IC 95%"
-            current_opts_coef['ylabel'] = "Término del Modelo"
-
-            apply_plot_options(ax, current_opts_coef, self.log)
-            plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-
-            window_title = f"Coeficiente Log(HR): {chosen_model_term}"
-            self._create_plot_window(fig_coef_plot, window_title)
-            self.log(f"Gráfico de coeficiente Log(HR) para '{chosen_model_term}' generado.", "SUCCESS")
-
-        except KeyError as ke:
-            self.log(f"Error de Key: No se encontró el término '{chosen_model_term}' o una de sus propiedades ('coef', 'se(coef)') en el resumen del modelo. Detalle: {ke}", "ERROR")
-            messagebox.showerror("Error de Datos",
-                               f"No se pudieron extraer los datos para el término '{chosen_model_term}'. Verifique el resumen del modelo y el log.",
+        except IndexError as e_vip_idx:
+            # This specific IndexError handling might be needed if the issue with values.shape[1] persists
+            # For now, a general error message is provided. A more sophisticated fallback could be reinstated if needed.
+            tb_str_vip = traceback.format_exc()
+            self.log(f"IndexError al generar gráfico de efecto parcial para '{chosen_covariate_for_plot}': {e_vip_idx}", "ERROR")
+            self.log(tb_str_vip, "DEBUG")
+            messagebox.showerror("Error de Gráfico (IndexError)",
+                                 f"Se produjo un IndexError al generar el gráfico de efecto parcial para '{chosen_covariate_for_plot}':\n{e_vip_idx}\n\n"
+                                 "Esto podría ser un problema con la librería 'lifelines', la covariable seleccionada, o su tipo (ej. categórica pura sin especificar 'values'). "
+                                 "Consulte el log para más detalles.",
+                                 parent=self.parent_for_dialogs)
+            if fig_vip: plt.close(fig_vip)
+        except Exception as e_vip:
+            self.log(f"Error general al generar gráfico de efecto parcial para '{chosen_covariate_for_plot}': {e_vip}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error Gráfico",
+                               f"No se pudo generar el gráfico de efecto parcial para '{chosen_covariate_for_plot}':\n{e_vip}",
                                parent=self.parent_for_dialogs)
-            if fig_coef_plot: plt.close(fig_coef_plot)
-            traceback.print_exc(limit=3)
-        except Exception as e:
-            self.log(f"Error al generar gráfico de coeficiente Log(HR) para '{chosen_model_term}': {e}", "ERROR")
-            if fig_coef_plot: plt.close(fig_coef_plot)
-            traceback.print_exc(limit=3)
-            messagebox.showerror("Error de Gráfico",
-                               f"No se pudo generar el gráfico de coeficiente:\n{e}",
-                               parent=self.parent_for_dialogs)
+            if fig_vip:
+                plt.close(fig_vip)
 
     def show_variable_impact_plot_hr_scale(self):
         if not self._check_model_selected_and_valid(check_params=True):
@@ -3436,7 +3479,7 @@ class CoxModelingApp(ttk.Frame):
             "Incidencia Acumulada Base F₀(t)": self.show_baseline_cumulative_incidence, # New entry
             "Forest Plot (HRs)": self.generar_forest_plot,
             "Gráf. Calibración": self.generate_calibration_plot,
-            "Coeficiente Log(HR) de Término": self.show_variable_impact_plot
+            "Efecto de Variable (Log-HR)": self.show_variable_impact_plot
             # Add more graph types here if needed in the future
         }
 
