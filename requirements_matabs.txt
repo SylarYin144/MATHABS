@@ -7,16 +7,16 @@
 bottleneck
 factor_analyzer
 flask
-geopandas
-lifelines
+geopandas  # Note: Can have complex dependencies
+lifelines==0.27.8
 matplotlib
 numexpr
-numpy<2.0  # Important for compatibility with older pandas or specific lifelines versions
+numpy>=1.21.0,<2.0.0
 openpyxl
-pandas
+pandas==2.0.3
 pyarrow
-scikit-learn
-scipy
+scikit-learn==1.3.2
+scipy==1.11.4
 seaborn
 # statsmodels>=0.14.0 is required for Python 3.11+ (including 3.12) due to 'inspect.formatargspec' removal.
 # Version 0.14.1 is compatible with numpy<2.0 (requires numpy>=1.21).
