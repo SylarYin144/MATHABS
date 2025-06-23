@@ -919,7 +919,7 @@ class CoxModelingApp(ttk.Frame):
         self.penalizer_strength_var = DoubleVar(value=0.1)  # Valor de lambda (alpha en lifelines)
         self.l1_ratio_for_elasticnet_var = DoubleVar(value=0.5)  # Ratio L1 para ElasticNet (0=Ridge, 1=Lasso)
         self.tie_handling_method_var = StringVar(value="efron")  # "efron" | "breslow" | "exact"
-        self.calculate_cv_cindex_var = BooleanVar(value=False)  # Calcular C-Index por CV
+        self.calculate_cv_cindex_var = BooleanVar(value=True)  # Calcular C-Index por CV
         self.cv_num_kfolds_var = IntVar(value=5)  # Número de folds para CV
         self.cv_random_seed_var = IntVar(value=42)  # Semilla aleatoria para CV
 
@@ -4045,7 +4045,8 @@ class CoxModelingApp(ttk.Frame):
             calibration_points.append({
                 "x_pred": mean_predicted_prob,
                 "y_obs": observed_event_incidence_decile,
-                "y_err": [[y_error_lower], [y_error_upper]] # Format for ax.errorbar
+                "y_err_lower": y_error_lower,
+                "y_err_upper": y_error_upper
             })
 
         if not calibration_points:
@@ -4057,8 +4058,11 @@ class CoxModelingApp(ttk.Frame):
 
         # 4. Plotting
         ax.plot(cal_df["x_pred"], cal_df["y_obs"], marker='o', linestyle='-', label="Calibración por Deciles")
+
+        # Construct yerr appropriately for errorbar
+        y_errors_for_plot = [cal_df["y_err_lower"].values, cal_df["y_err_upper"].values]
         ax.errorbar(cal_df["x_pred"], cal_df["y_obs"],
-                    yerr=np.array(cal_df["y_err"].tolist()).reshape(2, -1), # Reshape error list
+                    yerr=y_errors_for_plot,
                     fmt='none', ecolor='gray', capsize=3, elinewidth=1)
 
         ax.plot([0, 1], [0, 1], linestyle='--', color='red', label="Calibración Perfecta")
