@@ -73,14 +73,23 @@ echo Entorno virtual activado.
 echo.
 
 set REQUIREMENTS_PATH=%APP_ROOT_DIR%\%REQUIREMENTS_FILE_NAME%
-echo Instalando dependencias desde "%REQUIREMENTS_PATH%"...
-pip install -r "%REQUIREMENTS_PATH%"
+echo Actualizando pip...
+python -m pip install --upgrade pip
 if errorlevel 1 (
-    echo ERROR: No se pudieron instalar las dependencias. Revisa el archivo "%REQUIREMENTS_PATH%" y la salida de pip.
+    echo WARNING: No se pudo actualizar pip. Continuando con la version actual...
+)
+
+echo Instalando/Verificando dependencias desde "%REQUIREMENTS_PATH%"...
+python -m pip install --force-reinstall -r "%REQUIREMENTS_PATH%"
+if errorlevel 1 (
+    echo ERROR: No se pudieron instalar las dependencias.
+    echo Revisa el archivo "%REQUIREMENTS_PATH%" y la salida de pip.
+    echo Asegurate de tener Microsoft C++ Build Tools instalado si hay errores de compilacion.
+    echo (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
     pause
     exit /b 1
 )
-echo Dependencias instaladas correctamente.
+echo Dependencias instaladas/verificadas correctamente.
 echo.
 
 set MAIN_APP_SCRIPT_PATH_IN_ROOT=%MAIN_APP_FILE_NAME%
