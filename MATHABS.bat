@@ -80,7 +80,7 @@ if errorlevel 1 (
 )
 
 echo Instalando/Verificando dependencias desde "%REQUIREMENTS_PATH%"...
-python -m pip install --force-reinstall -r "%REQUIREMENTS_PATH%"
+python -m pip install -r "%REQUIREMENTS_PATH%"
 if errorlevel 1 (
     echo ERROR: No se pudieron instalar las dependencias.
     echo Revisa el archivo "%REQUIREMENTS_PATH%" y la salida de pip.
@@ -98,7 +98,7 @@ echo.
 
 REM Cambiamos al directorio de la aplicacion para que las rutas relativas dentro del script de Python funcionen correctamente.
 pushd "%APP_ROOT_DIR%"
-"%VENV_DIR%\Scripts\python.exe" "%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
+start "MATLAB_main_app" "%VENV_DIR%\Scripts\python.exe" "%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
 popd
 
 echo.
