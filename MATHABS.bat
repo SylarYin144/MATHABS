@@ -98,7 +98,7 @@ echo.
 
 REM Cambiamos al directorio de la aplicacion para que las rutas relativas dentro del script de Python funcionen correctamente.
 pushd "%APP_ROOT_DIR%"
-python "%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
+"%VENV_DIR%\Scripts\python.exe" "%MAIN_APP_SCRIPT_PATH_IN_ROOT%"
 popd
 
 echo.
