@@ -4025,7 +4025,15 @@ class CoxModelingApp(ttk.Frame):
             self.log(f"Decile group {i}: survival_at_t_decile_df head:\n{survival_at_t_decile_df.head().to_string() if isinstance(survival_at_t_decile_df, pd.DataFrame) and not survival_at_t_decile_df.empty else 'N/A'}", "DEBUG")
 
             if survival_at_t_decile_df is not None and not survival_at_t_decile_df.empty:
-                observed_s_at_t_decile = survival_at_t_decile_df.iloc[0,0]
+                if isinstance(survival_at_t_decile_df, pd.DataFrame):
+                    observed_s_at_t_decile = survival_at_t_decile_df.iloc[0,0]
+                    self.log(f"Decile group {i}: Accessed observed_s_at_t_decile from DataFrame.", "DEBUG")
+                elif isinstance(survival_at_t_decile_df, pd.Series):
+                    observed_s_at_t_decile = survival_at_t_decile_df.iloc[0]
+                    self.log(f"Decile group {i}: Accessed observed_s_at_t_decile from Series.", "DEBUG")
+                else:
+                    observed_s_at_t_decile = 1.0 # Fallback
+                    self.log(f"Decile group {i}: survival_at_t_decile_df is not DataFrame or Series (Type: {type(survival_at_t_decile_df)}). Defaulting observed_s_at_t_decile to 1.0.", "WARN")
             else:
                 observed_s_at_t_decile = 1.0
                 self.log(f"Decile group {i}: survival_at_t_decile_df was None or empty. Defaulting observed_s_at_t_decile to 1.0.", "WARN")
@@ -4180,7 +4188,15 @@ class CoxModelingApp(ttk.Frame):
             self.log(f"Stratum '{strat_value}': survival_at_t_strat_df head:\n{survival_at_t_strat_df.head().to_string() if isinstance(survival_at_t_strat_df, pd.DataFrame) and not survival_at_t_strat_df.empty else 'N/A'}", "DEBUG")
 
             if survival_at_t_strat_df is not None and not survival_at_t_strat_df.empty:
-                observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
+                if isinstance(survival_at_t_strat_df, pd.DataFrame):
+                    observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
+                    self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from DataFrame.", "DEBUG")
+                elif isinstance(survival_at_t_strat_df, pd.Series):
+                    observed_s_at_t_strat = survival_at_t_strat_df.iloc[0]
+                    self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from Series.", "DEBUG")
+                else:
+                    observed_s_at_t_strat = 1.0 # Fallback
+                    self.log(f"Stratum '{strat_value}': survival_at_t_strat_df is not DataFrame or Series (Type: {type(survival_at_t_strat_df)}). Defaulting observed_s_at_t_strat to 1.0.", "WARN")
             else:
                 observed_s_at_t_strat = 1.0
                 self.log(f"Stratum '{strat_value}': survival_at_t_strat_df was None or empty. Defaulting observed_s_at_t_strat to 1.0.", "WARN")
