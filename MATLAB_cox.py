@@ -4105,8 +4105,8 @@ class CoxModelingApp(ttk.Frame):
             ax.text(0.5, 0.5, "No hay datos OOS para generar el gráfico.", ha='center', va='center')
             return
 
-        if not self.data: # self.data is the initially loaded full dataset
-            self.log("Dataset original (self.data) no cargado. No se puede obtener variable de estratificación.", "ERROR")
+        if self.data is None or self.data.empty: # More explicit check for DataFrame
+            self.log("Dataset original (self.data) no cargado o vacío. No se puede obtener variable de estratificación.", "ERROR")
             messagebox.showerror("Error de Datos", "Dataset original no disponible para obtener la variable de estratificación.", parent=self.parent_for_dialogs)
             ax.text(0.5, 0.5, "Dataset original no disponible.", ha='center', va='center')
             return
