@@ -4021,26 +4021,38 @@ class CoxModelingApp(ttk.Frame):
             # Get survival probability S(t) at time_horizon_t for the decile
             # This also needs interpolation or careful handling if t is not an event time
             survival_at_t_decile_df = kmf_decile.survival_function_at_times([time_horizon_t])
-            observed_s_at_t_decile = survival_at_t_decile_df.iloc[0,0] if not survival_at_t_decile_df.empty else 1.0 # Default to 1 if t is before any event/data
+            self.log(f"Decile group {i}: survival_at_t_decile_df type: {type(survival_at_t_decile_df)}, shape: {survival_at_t_decile_df.shape if isinstance(survival_at_t_decile_df, pd.DataFrame) else 'N/A'}, empty: {survival_at_t_decile_df.empty if isinstance(survival_at_t_decile_df, pd.DataFrame) else 'N/A'}", "DEBUG")
+            self.log(f"Decile group {i}: survival_at_t_decile_df head:\n{survival_at_t_decile_df.head().to_string() if isinstance(survival_at_t_decile_df, pd.DataFrame) and not survival_at_t_decile_df.empty else 'N/A'}", "DEBUG")
+
+            if survival_at_t_decile_df is not None and not survival_at_t_decile_df.empty:
+                observed_s_at_t_decile = survival_at_t_decile_df.iloc[0,0]
+            else:
+                observed_s_at_t_decile = 1.0
+                self.log(f"Decile group {i}: survival_at_t_decile_df was None or empty. Defaulting observed_s_at_t_decile to 1.0.", "WARN")
 
             observed_event_incidence_decile = 1.0 - observed_s_at_t_decile
 
             # Confidence Interval for observed incidence
-            # CI for S(t) is [S_lower, S_upper]. So CI for P(T<=t) = 1-S(t) is [1-S_upper, 1-S_lower]
             kmf_ci_sf_decile = kmf_decile.confidence_interval_survival_function_ # This is a DataFrame
+            self.log(f"Decile group {i}: kmf_ci_sf_decile type: {type(kmf_ci_sf_decile)}, shape: {kmf_ci_sf_decile.shape if isinstance(kmf_ci_sf_decile, pd.DataFrame) else 'N/A'}, empty: {kmf_ci_sf_decile.empty if isinstance(kmf_ci_sf_decile, pd.DataFrame) else 'N/A'}", "DEBUG")
+            if kmf_ci_sf_decile is None or (isinstance(kmf_ci_sf_decile, pd.DataFrame) and kmf_ci_sf_decile.empty):
+                self.log(f"Decile group {i}: kmf_ci_sf_decile is None or empty. Skipping CI calculation for this group.", "WARN")
+                y_error_lower = 0.0
+                y_error_upper = 0.0
+            else:
+                # CI for S(t) is [S_lower, S_upper]. So CI for P(T<=t) = 1-S(t) is [1-S_upper, 1-S_lower]
+                # Find CI for time_horizon_t (may need interpolation or selection of closest time)
+                # For simplicity, find closest available time point in CI index
+                ci_idx_time = kmf_ci_sf_decile.index.get_indexer([time_horizon_t], method='nearest')[0]
+                s_lower_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 0] # Lower CI for S(t)
+                s_upper_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 1] # Upper CI for S(t)
 
-            # Find CI for time_horizon_t (may need interpolation or selection of closest time)
-            # For simplicity, find closest available time point in CI index
-            ci_idx_time = kmf_ci_sf_decile.index.get_indexer([time_horizon_t], method='nearest')[0]
-            s_lower_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 0] # Lower CI for S(t)
-            s_upper_at_t = kmf_ci_sf_decile.iloc[ci_idx_time, 1] # Upper CI for S(t)
+                ci_observed_incidence_lower = 1.0 - s_upper_at_t
+                ci_observed_incidence_upper = 1.0 - s_lower_at_t
 
-            ci_observed_incidence_lower = 1.0 - s_upper_at_t
-            ci_observed_incidence_upper = 1.0 - s_lower_at_t
-
-            # Error for error bar: distance from mean observation to CI bounds
-            y_error_lower = observed_event_incidence_decile - ci_observed_incidence_lower
-            y_error_upper = ci_observed_incidence_upper - observed_event_incidence_decile
+                # Error for error bar: distance from mean observation to CI bounds
+                y_error_lower = observed_event_incidence_decile - ci_observed_incidence_lower
+                y_error_upper = ci_observed_incidence_upper - observed_event_incidence_decile
 
             calibration_points.append({
                 "x_pred": mean_predicted_prob,
@@ -4164,19 +4176,44 @@ class CoxModelingApp(ttk.Frame):
             kmf_strat.fit(group_df["true_time"], event_observed=group_df["true_event"])
 
             survival_at_t_strat_df = kmf_strat.survival_function_at_times([time_horizon_t])
-            observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0] if not survival_at_t_strat_df.empty else 1.0
+            self.log(f"Stratum '{strat_value}': survival_at_t_strat_df type: {type(survival_at_t_strat_df)}, shape: {survival_at_t_strat_df.shape if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}, empty: {survival_at_t_strat_df.empty if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}", "DEBUG")
+            self.log(f"Stratum '{strat_value}': survival_at_t_strat_df head:\n{survival_at_t_strat_df.head().to_string() if isinstance(survival_at_t_strat_df, pd.DataFrame) and not survival_at_t_strat_df.empty else 'N/A'}", "DEBUG")
+
+            if survival_at_t_strat_df is not None and not survival_at_t_strat_df.empty:
+                observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
+            else:
+                observed_s_at_t_strat = 1.0
+                self.log(f"Stratum '{strat_value}': survival_at_t_strat_df was None or empty. Defaulting observed_s_at_t_strat to 1.0.", "WARN")
+
             observed_event_incidence_strat = 1.0 - observed_s_at_t_strat
 
-            kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
-            ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
-            s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
-            s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
+            y_err_lower_strat = 0.0  # Default
+            y_err_upper_strat = 0.0  # Default
+            try:
+                kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
+                self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat type: {type(kmf_ci_sf_strat)}, shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}, empty: {kmf_ci_sf_strat.empty if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "DEBUG")
+                if kmf_ci_sf_strat is None or (isinstance(kmf_ci_sf_strat, pd.DataFrame) and kmf_ci_sf_strat.empty):
+                    self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat is None or empty. CI for this stratum will be zero.", "WARN")
+                else:
+                    self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index: {kmf_ci_sf_strat.index}", "DEBUG")
 
-            ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
-            ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+                    if kmf_ci_sf_strat.index.empty:
+                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index is empty. Cannot get CI. CI for this stratum will be zero.", "WARN")
+                    else:
+                        ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
+                        self.log(f"Stratum '{strat_value}': ci_idx_time_strat: {ci_idx_time_strat}", "DEBUG")
+                        s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
+                        s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
 
-            y_err_lower_strat = observed_event_incidence_strat - ci_observed_incidence_lower_strat
-            y_err_upper_strat = ci_observed_incidence_upper_strat - observed_event_incidence_strat
+                        ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
+                        ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+
+                        y_err_lower_strat = observed_event_incidence_strat - ci_observed_incidence_lower_strat
+                        y_err_upper_strat = ci_observed_incidence_upper_strat - observed_event_incidence_strat
+            except IndexError as e_idx_strat:
+                self.log(f"Stratum '{strat_value}': IndexError calculating CI: {e_idx_strat}. CI for this stratum will be zero. kmf_ci_sf_strat shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "ERROR")
+            except Exception as e_ci_strat:
+                self.log(f"Stratum '{strat_value}': Generic error calculating CI: {e_ci_strat}. CI for this stratum will be zero.", "ERROR")
 
             calibration_points_strat.append({
                 "stratum_name": str(strat_value),
