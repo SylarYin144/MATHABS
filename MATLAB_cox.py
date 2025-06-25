@@ -4058,9 +4058,9 @@ class CoxModelingApp(ttk.Frame):
                 ci_observed_incidence_lower = 1.0 - s_upper_at_t
                 ci_observed_incidence_upper = 1.0 - s_lower_at_t
 
-                # Error for error bar: distance from mean observation to CI bounds
-                y_error_lower = observed_event_incidence_decile - ci_observed_incidence_lower
-                y_error_upper = ci_observed_incidence_upper - observed_event_incidence_decile
+                # Ensure error magnitudes are positive for errorbar
+                y_error_lower = abs(observed_event_incidence_decile - ci_observed_incidence_lower)
+                y_error_upper = abs(ci_observed_incidence_upper - observed_event_incidence_decile)
 
             calibration_points.append({
                 "x_pred": mean_predicted_prob,
@@ -4224,8 +4224,9 @@ class CoxModelingApp(ttk.Frame):
                         ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
                         ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
 
-                        y_err_lower_strat = observed_event_incidence_strat - ci_observed_incidence_lower_strat
-                        y_err_upper_strat = ci_observed_incidence_upper_strat - observed_event_incidence_strat
+                        # Ensure error magnitudes are positive for errorbar
+                        y_err_lower_strat = abs(observed_event_incidence_strat - ci_observed_incidence_lower_strat)
+                        y_err_upper_strat = abs(ci_observed_incidence_upper_strat - observed_event_incidence_strat)
             except IndexError as e_idx_strat:
                 self.log(f"Stratum '{strat_value}': IndexError calculating CI: {e_idx_strat}. CI for this stratum will be zero. kmf_ci_sf_strat shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "ERROR")
             except Exception as e_ci_strat:
