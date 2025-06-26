@@ -4161,21 +4161,31 @@ class CoxModelingApp(ttk.Frame):
         else: # self.data.index is named, assume it's the subject_id key
             oos_df = oos_df.set_index("subject_id").join(self.data[stratification_variable_name], how="left").reset_index()
 
+        self.log(f"Stratified Plot: oos_df columns before isnull check: {list(oos_df.columns)}", "DEBUG")
+        self.log(f"Stratified Plot: stratification_variable_name: '{stratification_variable_name}'", "DEBUG")
+        try:
+            if oos_df[stratification_variable_name].isnull().any():
+                self.log(f"Algunos sujetos OOS no tienen valor para la variable de estratificación '{stratification_variable_name}'. Serán excluidos.", "WARN")
+                oos_df.dropna(subset=[stratification_variable_name], inplace=True)
+        except KeyError as e_key_strat_check:
+            self.log(f"KeyError al verificar/eliminar NaNs para '{stratification_variable_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
+            self.log(f"Error: {e_key_strat_check}", "ERROR")
+            ax.text(0.5, 0.5, f"Error interno: Clave '{stratification_variable_name}' no encontrada post-merge.", ha='center', va='center')
+            return
 
-        if oos_df[stratification_variable_name].isnull().any():
-            self.log(f"Algunos sujetos OOS no tienen valor para la variable de estratificación '{stratification_variable_name}'. Serán excluidos.", "WARN")
-            oos_df.dropna(subset=[stratification_variable_name], inplace=True)
-
-        if oos_df.empty:
+        if oos_df.empty: # This check remains outside, after potential dropna
             self.log("DataFrame OOS vacío después de merge/dropna para estratificación.", "ERROR")
             ax.text(0.5, 0.5, "No hay datos para estratificar.", ha='center', va='center')
             return
 
         # 2. Group by Stratification Variable & Calculate Points
         calibration_points_strat = []
-        for strat_value, group_df in oos_df.groupby(stratification_variable_name):
-            if group_df.empty or len(group_df) < 2: # Need at least 2 for KM to be meaningful for CI
-                self.log(f"Estrato '{strat_value}' tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
+        self.log(f"Stratified Plot: oos_df columns before groupby: {list(oos_df.columns)}", "DEBUG")
+        self.log(f"Stratified Plot: stratification_variable_name for groupby: '{stratification_variable_name}'", "DEBUG")
+        try:
+            for strat_value, group_df in oos_df.groupby(stratification_variable_name):
+                if group_df.empty or len(group_df) < 2: # Need at least 2 for KM to be meaningful for CI
+                    self.log(f"Estrato '{strat_value}' tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
                 continue
 
             mean_predicted_prob_strat = group_df["predicted_event_prob"].mean()
@@ -4238,6 +4248,11 @@ class CoxModelingApp(ttk.Frame):
                 "y_obs": observed_event_incidence_strat,
                 "y_err": [[y_err_lower_strat], [y_err_upper_strat]]
             })
+    except KeyError as e_key_strat_group:
+        self.log(f"KeyError en groupby para '{stratification_variable_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
+        self.log(f"Error: {e_key_strat_group}", "ERROR")
+        ax.text(0.5, 0.5, f"Error interno: Clave '{stratification_variable_name}' no encontrada para groupby.", ha='center', va='center')
+        return
 
         if not calibration_points_strat:
             self.log("No se generaron puntos de calibración estratificados.", "ERROR")
