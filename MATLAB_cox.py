@@ -4186,75 +4186,75 @@ class CoxModelingApp(ttk.Frame):
             for strat_value, group_df in oos_df.groupby(stratification_variable_name):
                 if group_df.empty or len(group_df) < 2: # Need at least 2 for KM to be meaningful for CI
                     self.log(f"Estrato '{strat_value}' tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
-                continue
+                    continue # Correctly indented under the if, inside the for loop
 
-            mean_predicted_prob_strat = group_df["predicted_event_prob"].mean()
+                mean_predicted_prob_strat = group_df["predicted_event_prob"].mean()
 
-            kmf_strat = KaplanMeierFitter()
-            kmf_strat.fit(group_df["true_time"], event_observed=group_df["true_event"])
+                kmf_strat = KaplanMeierFitter()
+                kmf_strat.fit(group_df["true_time"], event_observed=group_df["true_event"])
 
-            survival_at_t_strat_df = kmf_strat.survival_function_at_times([time_horizon_t])
-            self.log(f"Stratum '{strat_value}': survival_at_t_strat_df type: {type(survival_at_t_strat_df)}, shape: {survival_at_t_strat_df.shape if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}, empty: {survival_at_t_strat_df.empty if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}", "DEBUG")
-            self.log(f"Stratum '{strat_value}': survival_at_t_strat_df head:\n{survival_at_t_strat_df.head().to_string() if isinstance(survival_at_t_strat_df, pd.DataFrame) and not survival_at_t_strat_df.empty else 'N/A'}", "DEBUG")
+                survival_at_t_strat_df = kmf_strat.survival_function_at_times([time_horizon_t])
+                self.log(f"Stratum '{strat_value}': survival_at_t_strat_df type: {type(survival_at_t_strat_df)}, shape: {survival_at_t_strat_df.shape if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}, empty: {survival_at_t_strat_df.empty if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}", "DEBUG")
+                self.log(f"Stratum '{strat_value}': survival_at_t_strat_df head:\n{survival_at_t_strat_df.head().to_string() if isinstance(survival_at_t_strat_df, pd.DataFrame) and not survival_at_t_strat_df.empty else 'N/A'}", "DEBUG")
 
-            if survival_at_t_strat_df is not None and not survival_at_t_strat_df.empty:
-                if isinstance(survival_at_t_strat_df, pd.DataFrame):
-                    observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
-                    self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from DataFrame.", "DEBUG")
-                elif isinstance(survival_at_t_strat_df, pd.Series):
-                    observed_s_at_t_strat = survival_at_t_strat_df.iloc[0]
-                    self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from Series.", "DEBUG")
-                else:
-                    observed_s_at_t_strat = 1.0 # Fallback
-                    self.log(f"Stratum '{strat_value}': survival_at_t_strat_df is not DataFrame or Series (Type: {type(survival_at_t_strat_df)}). Defaulting observed_s_at_t_strat to 1.0.", "WARN")
-            else:
-                observed_s_at_t_strat = 1.0
-                self.log(f"Stratum '{strat_value}': survival_at_t_strat_df was None or empty. Defaulting observed_s_at_t_strat to 1.0.", "WARN")
-
-            observed_event_incidence_strat = 1.0 - observed_s_at_t_strat
-
-            y_err_lower_strat = 0.0  # Default
-            y_err_upper_strat = 0.0  # Default
-            try:
-                kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
-                self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat type: {type(kmf_ci_sf_strat)}, shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}, empty: {kmf_ci_sf_strat.empty if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "DEBUG")
-                if kmf_ci_sf_strat is None or (isinstance(kmf_ci_sf_strat, pd.DataFrame) and kmf_ci_sf_strat.empty):
-                    self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat is None or empty. CI for this stratum will be zero.", "WARN")
-                else:
-                    self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index: {kmf_ci_sf_strat.index}", "DEBUG")
-
-                    if kmf_ci_sf_strat.index.empty:
-                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index is empty. Cannot get CI. CI for this stratum will be zero.", "WARN")
+                if survival_at_t_strat_df is not None and not survival_at_t_strat_df.empty:
+                    if isinstance(survival_at_t_strat_df, pd.DataFrame):
+                        observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
+                        self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from DataFrame.", "DEBUG")
+                    elif isinstance(survival_at_t_strat_df, pd.Series):
+                        observed_s_at_t_strat = survival_at_t_strat_df.iloc[0]
+                        self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from Series.", "DEBUG")
                     else:
-                        ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
-                        self.log(f"Stratum '{strat_value}': ci_idx_time_strat: {ci_idx_time_strat}", "DEBUG")
-                        s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
-                        s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
+                        observed_s_at_t_strat = 1.0 # Fallback
+                        self.log(f"Stratum '{strat_value}': survival_at_t_strat_df is not DataFrame or Series (Type: {type(survival_at_t_strat_df)}). Defaulting observed_s_at_t_strat to 1.0.", "WARN")
+                else:
+                    observed_s_at_t_strat = 1.0
+                    self.log(f"Stratum '{strat_value}': survival_at_t_strat_df was None or empty. Defaulting observed_s_at_t_strat to 1.0.", "WARN")
 
-                        ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
-                        ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+                observed_event_incidence_strat = 1.0 - observed_s_at_t_strat
 
-                        # Ensure error magnitudes are positive for errorbar
-                        y_err_lower_strat = abs(observed_event_incidence_strat - ci_observed_incidence_lower_strat)
-                        y_err_upper_strat = abs(ci_observed_incidence_upper_strat - observed_event_incidence_strat)
-            except IndexError as e_idx_strat:
-                self.log(f"Stratum '{strat_value}': IndexError calculating CI: {e_idx_strat}. CI for this stratum will be zero. kmf_ci_sf_strat shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "ERROR")
-            except Exception as e_ci_strat:
-                self.log(f"Stratum '{strat_value}': Generic error calculating CI: {e_ci_strat}. CI for this stratum will be zero.", "ERROR")
+                y_err_lower_strat = 0.0  # Default
+                y_err_upper_strat = 0.0  # Default
+                try:
+                    kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
+                    self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat type: {type(kmf_ci_sf_strat)}, shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}, empty: {kmf_ci_sf_strat.empty if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "DEBUG")
+                    if kmf_ci_sf_strat is None or (isinstance(kmf_ci_sf_strat, pd.DataFrame) and kmf_ci_sf_strat.empty):
+                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat is None or empty. CI for this stratum will be zero.", "WARN")
+                    else:
+                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index: {kmf_ci_sf_strat.index}", "DEBUG")
 
-            calibration_points_strat.append({
-                "stratum_name": str(strat_value),
-                "x_pred": mean_predicted_prob_strat,
-                "y_obs": observed_event_incidence_strat,
-                "y_err": [[y_err_lower_strat], [y_err_upper_strat]]
-            })
-    except KeyError as e_key_strat_group:
-        self.log(f"KeyError en groupby para '{stratification_variable_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
-        self.log(f"Error: {e_key_strat_group}", "ERROR")
-        ax.text(0.5, 0.5, f"Error interno: Clave '{stratification_variable_name}' no encontrada para groupby.", ha='center', va='center')
-        return
+                        if kmf_ci_sf_strat.index.empty:
+                            self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index is empty. Cannot get CI. CI for this stratum will be zero.", "WARN")
+                        else:
+                            ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
+                            self.log(f"Stratum '{strat_value}': ci_idx_time_strat: {ci_idx_time_strat}", "DEBUG")
+                            s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
+                            s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
 
-        if not calibration_points_strat:
+                            ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
+                            ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+
+                            # Ensure error magnitudes are positive for errorbar
+                            y_err_lower_strat = abs(observed_event_incidence_strat - ci_observed_incidence_lower_strat)
+                            y_err_upper_strat = abs(ci_observed_incidence_upper_strat - observed_event_incidence_strat)
+                except IndexError as e_idx_strat:
+                    self.log(f"Stratum '{strat_value}': IndexError calculating CI: {e_idx_strat}. CI for this stratum will be zero. kmf_ci_sf_strat shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "ERROR")
+                except Exception as e_ci_strat:
+                    self.log(f"Stratum '{strat_value}': Generic error calculating CI: {e_ci_strat}. CI for this stratum will be zero.", "ERROR")
+
+                calibration_points_strat.append({
+                    "stratum_name": str(strat_value),
+                    "x_pred": mean_predicted_prob_strat,
+                    "y_obs": observed_event_incidence_strat,
+                    "y_err": [[y_err_lower_strat], [y_err_upper_strat]]
+                })
+        except KeyError as e_key_strat_group:
+            self.log(f"KeyError en groupby para '{stratification_variable_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
+            self.log(f"Error: {e_key_strat_group}", "ERROR")
+            ax.text(0.5, 0.5, f"Error interno: Clave '{stratification_variable_name}' no encontrada para groupby.", ha='center', va='center')
+            return
+
+        if not calibration_points_strat: # This block should be outside the try...except for groupby
             self.log("No se generaron puntos de calibración estratificados.", "ERROR")
             ax.text(0.5, 0.5, "No se pudieron generar puntos de calibración estratificados.", ha='center', va='center')
             return
