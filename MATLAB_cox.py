@@ -816,14 +816,28 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
         rb_stratified.pack(anchor=tk.W)
 
         # 3. Stratification Variable Selection (conditionally enabled)
-        self.strat_var_frame = ttk.Frame(plot_type_frame) # Place it inside plot_type_frame for grouping
-        self.strat_var_frame.pack(fill=tk.X, padx=20, pady=(5,0)) # Indent slightly
+        self.strat_var_frame = ttk.Frame(plot_type_frame)
+        self.strat_var_frame.pack(fill=tk.X, padx=20, pady=(5,0))
 
-        ttk.Label(self.strat_var_frame, text="Variable de Estratificación:").pack(side=tk.LEFT, padx=(0,5))
+        # Label for stratification variable combobox
+        strat_label = ttk.Label(self.strat_var_frame, text="Variable de Estratificación:")
+        strat_label.grid(row=0, column=0, sticky=tk.W, padx=(0,5), pady=2)
+
+        # Combobox for selecting stratification variable
         self.strat_var_combo = ttk.Combobox(self.strat_var_frame, state="disabled", values=self.available_strat_vars, width=25)
         if self.available_strat_vars:
             self.strat_var_combo.set(self.available_strat_vars[0])
-        self.strat_var_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.strat_var_combo.grid(row=0, column=1, sticky=tk.EW, padx=(0,5), pady=2)
+
+        # Checkbox for grouping quantitative variables by deciles
+        self.group_quantitative_by_deciles_var = tk.BooleanVar(value=True)
+        self.cb_group_by_deciles = ttk.Checkbutton(self.strat_var_frame,
+                                                   text="Agrupar var. cuantitativa por deciles/cuantiles",
+                                                   variable=self.group_quantitative_by_deciles_var)
+        self.cb_group_by_deciles.grid(row=0, column=2, sticky=tk.W, padx=(10,0), pady=2)
+
+        # Configure column weights for proper expansion
+        self.strat_var_frame.columnconfigure(1, weight=1) # Allow combobox to expand
 
         # Initial state update for the combobox
         self._toggle_strat_var_combo()
@@ -839,10 +853,24 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
         self.wait_window(self)
 
     def _toggle_strat_var_combo(self):
-        if self.plot_type_var.get() == "stratified":
+        if self.plot_type_var.get() == "stratified" and self.strat_var_combo.get():
             self.strat_var_combo.config(state="readonly" if self.available_strat_vars else "disabled")
+            self.cb_group_by_deciles.config(state=tk.NORMAL)
+            # Optional: More sophisticated logic to enable checkbox only if selected strat_var is numeric
+            # selected_var_for_dtype_check = self.strat_var_combo.get()
+            # if self.parent_app and self.parent_app.data is not None and selected_var_for_dtype_check in self.parent_app.data:
+            #    if pd.api.types.is_numeric_dtype(self.parent_app.data[selected_var_for_dtype_check]):
+            #        self.cb_group_by_deciles.config(state=tk.NORMAL)
+            #    else:
+            #        self.cb_group_by_deciles.config(state=tk.DISABLED)
+            #        self.group_quantitative_by_deciles_var.set(False) # Uncheck if var is not numeric
+            # else: # No data or var not found, disable
+            #    self.cb_group_by_deciles.config(state=tk.DISABLED)
+            #    self.group_quantitative_by_deciles_var.set(False)
         else:
             self.strat_var_combo.config(state="disabled")
+            self.cb_group_by_deciles.config(state=tk.DISABLED)
+            # self.group_quantitative_by_deciles_var.set(True) # REMOVE THIS LINE
 
     def _on_ok(self):
         try:
@@ -874,7 +902,8 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
         self.result = {
             'time_horizon': t_horizon,
             'plot_type': plot_type,
-            'strat_var': strat_var_name
+            'strat_var': strat_var_name,
+            'group_by_deciles': self.group_quantitative_by_deciles_var.get() if plot_type == "stratified" else False
         }
         self.log(f"Opciones de calibración seleccionadas: {self.result}", "DEBUG")
         self.destroy()
@@ -3896,6 +3925,7 @@ class CoxModelingApp(ttk.Frame):
         time_h = user_choices['time_horizon']
         plot_t = user_choices['plot_type']
         strat_v = user_choices['strat_var']
+        group_by_deciles_choice = user_choices.get('group_by_deciles', False) # Default to False if not present
 
         fig_cal_oos, ax_cal_oos = plt.subplots(figsize=(8, 8)) # Ensure plt is imported
 
@@ -3909,7 +3939,7 @@ class CoxModelingApp(ttk.Frame):
                     self.log("Intento de gráfico de calibración estratificado sin variable de estratificación.", "ERROR")
                     plt.close(fig_cal_oos) # Close the figure if error
                     return
-                self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h, strat_v, ax_cal_oos)
+                self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h, strat_v, ax_cal_oos, group_quantitative_by_deciles=group_by_deciles_choice)
                 plot_specific_title = f"Calibración OOS por '{strat_v}' (t={time_h:.2f})"
             else:
                 self.log(f"Tipo de gráfico de calibración desconocido: {plot_t}", "ERROR")
@@ -4096,8 +4126,8 @@ class CoxModelingApp(ttk.Frame):
         self.log("Gráfico de calibración por deciles OOS generado.", "SUCCESS")
 
 
-    def _generate_stratified_calibration_plot_oos(self, oos_predictions_list, time_horizon_t, stratification_variable_name, ax):
-        self.log(f"Generando gráfico de calibración estratificado por '{stratification_variable_name}' para t={time_horizon_t}...", "INFO")
+    def _generate_stratified_calibration_plot_oos(self, oos_predictions_list, time_horizon_t, stratification_variable_name, ax, group_quantitative_by_deciles: bool):
+        self.log(f"Generando gráfico de calibración estratificado por '{stratification_variable_name}' para t={time_horizon_t} (Agrupar Cuantitativas: {group_quantitative_by_deciles})...", "INFO")
 
         if not oos_predictions_list:
             self.log("No OOS prediction data provided for stratified calibration plot.", "ERROR")
@@ -4144,7 +4174,57 @@ class CoxModelingApp(ttk.Frame):
         oos_df = pd.DataFrame(subject_data_for_strat_plot)
         oos_df.dropna(subset=["predicted_event_prob"], inplace=True)
 
-        oos_df = oos_df.merge(self.data[['subject_id', stratification_variable_name]], on='subject_id', how='left', suffixes=('_oos', '_originaldata'))
+        self.log(f"Stratified Plot: Preparing for merge. oos_df columns: {list(oos_df.columns)}", "DEBUG")
+        self.log(f"Stratified Plot: stratification_variable_name: '{stratification_variable_name}'", "DEBUG")
+        if self.data is not None:
+            self.log(f"Stratified Plot: self.data is present. Index name: {self.data.index.name}", "DEBUG")
+            self.log(f"Stratified Plot: self.data columns: {list(self.data.columns)}", "DEBUG")
+            self.log(f"Stratified Plot: self.data head (first 3 rows):\n{self.data.head(3).to_string()}", "DEBUG")
+            if 'subject_id' in oos_df.columns:
+                self.log(f"Stratified Plot: oos_df['subject_id'] head (first 3):\n{oos_df['subject_id'].head(3).to_string()}", "DEBUG")
+            else:
+                self.log(f"Stratified Plot: 'subject_id' not in oos_df columns before merge.", "WARN")
+        else:
+            self.log(f"Stratified Plot: self.data is None. Cannot proceed with merge.", "ERROR")
+            # It's already checked earlier, but as a safeguard for this specific logging context
+            ax.text(0.5, 0.5, "Error: self.data es None.", ha='center', va='center')
+            return
+
+        self.log(f"Stratified Plot: Checking 'subject_id' in self.data. Columns: {list(self.data.columns)}. Index name: {self.data.index.name}", "DEBUG")
+
+        if 'subject_id' in self.data.columns:
+            self.log("Using 'subject_id' as a column from self.data for merge.", "DEBUG")
+            # Ensure no duplicate columns are selected if stratification_variable_name is 'subject_id'
+            columns_to_select_from_self_data = ['subject_id']
+            if stratification_variable_name != 'subject_id':
+                columns_to_select_from_self_data.append(stratification_variable_name)
+            else: # stratification_variable_name IS 'subject_id', avoid duplicate selection
+                self.log(f"Stratification variable is also 'subject_id'. Selecting only 'subject_id' once from self.data for merge key.", "DEBUG")
+
+            merge_data_df = self.data[list(set(columns_to_select_from_self_data))] # Use set to ensure unique columns
+            oos_df = oos_df.merge(merge_data_df, on='subject_id', how='left', suffixes=('_oos', '_originaldata'))
+        elif self.data.index.name == 'subject_id':
+            self.log("Using 'subject_id' as the index from self.data for merge.", "DEBUG")
+            # When merging on index, self.data should not have 'subject_id' also as a column if it's the index name.
+            # We only need stratification_variable_name from self.data's columns.
+            if stratification_variable_name == 'subject_id': # This case is tricky if strat_var is the index name
+                self.log(f"Stratification variable is 'subject_id', which is also the index name. This implies grouping by each subject ID from the index.", "DEBUG")
+                # Create the stratification column in oos_df from its own 'subject_id' (which are index values)
+                oos_df[stratification_variable_name] = oos_df['subject_id']
+            else:
+                merge_data_df = self.data[[stratification_variable_name]]
+                oos_df = oos_df.merge(merge_data_df, left_on='subject_id', right_index=True, how='left', suffixes=('_oos', '_originaldata'))
+        else:
+            self.log("'subject_id' not found as a column or as the index name in self.data. Cannot merge for stratification.", "ERROR")
+            messagebox.showerror("Error de Datos", "'subject_id' no encontrado en los datos para la estratificación.", parent=self.parent_for_dialogs if hasattr(self, 'parent_for_dialogs') else None)
+            if ax: ax.text(0.5, 0.5, "Error: 'subject_id' no encontrado en self.data.", ha='center', va='center')
+            return
+
+        self.log(f"Stratified Plot: oos_df columns after merge attempt: {list(oos_df.columns)}", "DEBUG")
+        if stratification_variable_name in oos_df.columns and not oos_df[stratification_variable_name].isnull().all(): # Check if merge actually brought new data and column exists
+            self.log(f"Stratified Plot: '{stratification_variable_name}' column head after merge:\n{oos_df[stratification_variable_name].head().to_string()}", "DEBUG")
+        else:
+            self.log(f"Stratified Plot: '{stratification_variable_name}' column is all NaN or missing after merge. Merge might have failed to find matches or column was already all NaN.", "WARN")
 
         # The existing logging and try-except blocks for isnull/dropna and groupby should follow this new merge logic.
         self.log(f"Stratified Plot: oos_df columns before isnull check: {list(oos_df.columns)}", "DEBUG")
@@ -4164,15 +4244,64 @@ class CoxModelingApp(ttk.Frame):
             ax.text(0.5, 0.5, "No hay datos para estratificar.", ha='center', va='center')
             return
 
-        # 2. Group by Stratification Variable & Calculate Points
+        # 2. Determine Variable Type and Create Groups for Stratification
+        group_by_column_name = stratification_variable_name
+        stratum_name_prefix = ""
+        # Ensure self.data and the stratification_variable_name column exist before checking dtype
+        if self.data is None or stratification_variable_name not in self.data.columns:
+            self.log(f"Error: self.data no está disponible o '{stratification_variable_name}' no es una columna válida.", "ERROR")
+            ax.text(0.5, 0.5, "Error de datos para estratificación.", ha='center', va='center')
+            return
+        is_numeric_strat_var = pd.api.types.is_numeric_dtype(self.data[stratification_variable_name])
+
+        perform_deciling = is_numeric_strat_var and group_quantitative_by_deciles
+        plot_title_detail = "" # Will be set below
+
+        if perform_deciling:
+            self.log(f"Variable '{stratification_variable_name}' es numérico y se solicitó agrupar por deciles/cuantiles.", "INFO")
+            try:
+                oos_df['strat_group_numeric_deciles'] = pd.qcut(oos_df[stratification_variable_name], q=10, labels=False, duplicates='drop')
+                group_by_column_name = 'strat_group_numeric_deciles'
+                stratum_name_prefix = "Decil "
+                plot_title_detail = f"por Deciles de '{stratification_variable_name}'"
+                self.log("Deciles (q=10) creados para la variable numérica de estratificación.", "INFO")
+            except ValueError:
+                self.log(f"Error al crear 10 deciles para '{stratification_variable_name}'. Intentando 5 cuantiles.", "WARN")
+                try:
+                    oos_df['strat_group_numeric_deciles'] = pd.qcut(oos_df[stratification_variable_name], q=5, labels=False, duplicates='drop')
+                    group_by_column_name = 'strat_group_numeric_deciles'
+                    stratum_name_prefix = "Quintil "
+                    plot_title_detail = f"por Quintiles de '{stratification_variable_name}'"
+                    self.log("Quintiles (q=5) creados para la variable numérica de estratificación.", "INFO")
+                except ValueError:
+                    self.log(f"Error al crear 5 cuantiles para '{stratification_variable_name}'. Agrupando como única categoría.", "WARN")
+                    oos_df['strat_group_numeric_deciles'] = 0 # Fallback to a single group
+                    group_by_column_name = 'strat_group_numeric_deciles'
+                    stratum_name_prefix = "Grupo "
+                    plot_title_detail = f"para '{stratification_variable_name}' (agrupado)"
+        else: # Categorical OR (Numeric AND checkbox for deciling is OFF)
+            if is_numeric_strat_var: # Numeric but deciling checkbox was off
+                self.log(f"Variable de estratificación '{stratification_variable_name}' es numérica, pero no se solicitó agrupar por deciles. Usando valores únicos.", "INFO")
+                plot_title_detail = f"por Valores Únicos de '{stratification_variable_name}'"
+                # Ensure the column is treated as categorical for grouping if it's numeric but not deciled
+                if pd.api.types.is_numeric_dtype(oos_df[stratification_variable_name]):
+                     oos_df[stratification_variable_name] = oos_df[stratification_variable_name].astype(str)
+            else: # Categorical
+                self.log(f"Variable de estratificación '{stratification_variable_name}' es categórica. Usando valores únicos.", "INFO")
+                plot_title_detail = f"por Categorías de '{stratification_variable_name}'"
+
+            group_by_column_name = stratification_variable_name
+            stratum_name_prefix = ""
+
+
         calibration_points_strat = []
-        self.log(f"Stratified Plot: oos_df columns before groupby: {list(oos_df.columns)}", "DEBUG")
-        self.log(f"Stratified Plot: stratification_variable_name for groupby: '{stratification_variable_name}'", "DEBUG")
+        self.log(f"Stratified Plot: Grouping by column '{group_by_column_name}'.", "DEBUG")
+
         try:
-            for strat_value, group_df in oos_df.groupby(stratification_variable_name):
-                if group_df.empty or len(group_df) < 2: # Need at least 2 for KM to be meaningful for CI
-                    self.log(f"Estrato '{strat_value}' tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
-                    continue # Correctly indented under the if, inside the for loop
+            for strat_value, group_df in oos_df.groupby(group_by_column_name):
+                if group_df.empty or len(group_df) < 2:
+                    self.log(f"Estrato '{strat_value}' (col: {group_by_column_name}) tiene muy pocos datos ({len(group_df)}). Saltando.", "WARN")
+                    continue
 
                 mean_predicted_prob_strat = group_df["predicted_event_prob"].mean()
 
@@ -4181,66 +4310,54 @@ class CoxModelingApp(ttk.Frame):
 
                 survival_at_t_strat_df = kmf_strat.survival_function_at_times([time_horizon_t])
                 self.log(f"Stratum '{strat_value}': survival_at_t_strat_df type: {type(survival_at_t_strat_df)}, shape: {survival_at_t_strat_df.shape if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}, empty: {survival_at_t_strat_df.empty if isinstance(survival_at_t_strat_df, pd.DataFrame) else 'N/A'}", "DEBUG")
-                self.log(f"Stratum '{strat_value}': survival_at_t_strat_df head:\n{survival_at_t_strat_df.head().to_string() if isinstance(survival_at_t_strat_df, pd.DataFrame) and not survival_at_t_strat_df.empty else 'N/A'}", "DEBUG")
 
                 if survival_at_t_strat_df is not None and not survival_at_t_strat_df.empty:
                     if isinstance(survival_at_t_strat_df, pd.DataFrame):
                         observed_s_at_t_strat = survival_at_t_strat_df.iloc[0,0]
-                        self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from DataFrame.", "DEBUG")
                     elif isinstance(survival_at_t_strat_df, pd.Series):
                         observed_s_at_t_strat = survival_at_t_strat_df.iloc[0]
-                        self.log(f"Stratum '{strat_value}': Accessed observed_s_at_t_strat from Series.", "DEBUG")
-                    else:
-                        observed_s_at_t_strat = 1.0 # Fallback
-                        self.log(f"Stratum '{strat_value}': survival_at_t_strat_df is not DataFrame or Series (Type: {type(survival_at_t_strat_df)}). Defaulting observed_s_at_t_strat to 1.0.", "WARN")
-                else:
-                    observed_s_at_t_strat = 1.0
-                    self.log(f"Stratum '{strat_value}': survival_at_t_strat_df was None or empty. Defaulting observed_s_at_t_strat to 1.0.", "WARN")
+                    else: observed_s_at_t_strat = 1.0
+                else: observed_s_at_t_strat = 1.0
 
                 observed_event_incidence_strat = 1.0 - observed_s_at_t_strat
 
-                y_err_lower_strat = 0.0  # Default
-                y_err_upper_strat = 0.0  # Default
+                y_err_lower_strat, y_err_upper_strat = 0.0, 0.0
                 try:
                     kmf_ci_sf_strat = kmf_strat.confidence_interval_survival_function_
                     self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat type: {type(kmf_ci_sf_strat)}, shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}, empty: {kmf_ci_sf_strat.empty if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "DEBUG")
-                    if kmf_ci_sf_strat is None or (isinstance(kmf_ci_sf_strat, pd.DataFrame) and kmf_ci_sf_strat.empty):
-                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat is None or empty. CI for this stratum will be zero.", "WARN")
+
+                    if kmf_ci_sf_strat is not None and not kmf_ci_sf_strat.empty and not kmf_ci_sf_strat.index.empty:
+                        ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
+                        s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
+                        s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
+                        ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
+                        ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
+                        y_err_lower_strat = abs(observed_event_incidence_strat - ci_observed_incidence_lower_strat)
+                        y_err_upper_strat = abs(ci_observed_incidence_upper_strat - observed_event_incidence_strat)
                     else:
-                        self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index: {kmf_ci_sf_strat.index}", "DEBUG")
-
-                        if kmf_ci_sf_strat.index.empty:
-                            self.log(f"Stratum '{strat_value}': kmf_ci_sf_strat.index is empty. Cannot get CI. CI for this stratum will be zero.", "WARN")
-                        else:
-                            ci_idx_time_strat = kmf_ci_sf_strat.index.get_indexer([time_horizon_t], method='nearest')[0]
-                            self.log(f"Stratum '{strat_value}': ci_idx_time_strat: {ci_idx_time_strat}", "DEBUG")
-                            s_lower_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 0]
-                            s_upper_at_t_strat = kmf_ci_sf_strat.iloc[ci_idx_time_strat, 1]
-
-                            ci_observed_incidence_lower_strat = 1.0 - s_upper_at_t_strat
-                            ci_observed_incidence_upper_strat = 1.0 - s_lower_at_t_strat
-
-                            # Ensure error magnitudes are positive for errorbar
-                            y_err_lower_strat = abs(observed_event_incidence_strat - ci_observed_incidence_lower_strat)
-                            y_err_upper_strat = abs(ci_observed_incidence_upper_strat - observed_event_incidence_strat)
-                except IndexError as e_idx_strat:
-                    self.log(f"Stratum '{strat_value}': IndexError calculating CI: {e_idx_strat}. CI for this stratum will be zero. kmf_ci_sf_strat shape: {kmf_ci_sf_strat.shape if isinstance(kmf_ci_sf_strat, pd.DataFrame) else 'N/A'}", "ERROR")
+                        self.log(f"Stratum '{strat_value}' (col: {group_by_column_name}): kmf_ci_sf_strat is None, empty, or has empty index. CI for this stratum will be zero.", "WARN")
                 except Exception as e_ci_strat:
-                    self.log(f"Stratum '{strat_value}': Generic error calculating CI: {e_ci_strat}. CI for this stratum will be zero.", "ERROR")
+                    self.log(f"Stratum '{strat_value}' (col: {group_by_column_name}): Error calculating CI: {e_ci_strat}. CI for this stratum will be zero.", "ERROR")
+
+                # Determine stratum name for legend
+                if perform_deciling: # If deciling was performed, strat_value is an integer group number
+                    current_stratum_name = f"{stratum_name_prefix}{int(strat_value)}"
+                else: # Categorical, or numeric not deciled: strat_value is the actual category/value
+                    current_stratum_name = str(strat_value)
 
                 calibration_points_strat.append({
-                    "stratum_name": str(strat_value),
+                    "stratum_name": current_stratum_name,
                     "x_pred": mean_predicted_prob_strat,
                     "y_obs": observed_event_incidence_strat,
                     "y_err": [[y_err_lower_strat], [y_err_upper_strat]]
                 })
         except KeyError as e_key_strat_group:
-            self.log(f"KeyError en groupby para '{stratification_variable_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
+            self.log(f"KeyError en groupby para '{group_by_column_name}' en oos_df. Columns: {list(oos_df.columns)}", "ERROR")
             self.log(f"Error: {e_key_strat_group}", "ERROR")
-            ax.text(0.5, 0.5, f"Error interno: Clave '{stratification_variable_name}' no encontrada para groupby.", ha='center', va='center')
+            ax.text(0.5, 0.5, f"Error interno: Clave '{group_by_column_name}' no encontrada para groupby.", ha='center', va='center')
             return
 
-        if not calibration_points_strat: # This block should be outside the try...except for groupby
+        if not calibration_points_strat:
             self.log("No se generaron puntos de calibración estratificados.", "ERROR")
             ax.text(0.5, 0.5, "No se pudieron generar puntos de calibración estratificados.", ha='center', va='center')
             return
@@ -4250,14 +4367,13 @@ class CoxModelingApp(ttk.Frame):
             ax.errorbar(point_data["x_pred"], point_data["y_obs"],
                         yerr=np.array(point_data["y_err"]).reshape(2,-1),
                         fmt='o', label=point_data["stratum_name"], capsize=3, elinewidth=1, markersize=6)
-            # ax.text(point_data["x_pred"] + 0.01, point_data["y_obs"], point_data["stratum_name"], fontsize=9) # Optional: text label next to point
 
         ax.plot([0, 1], [0, 1], linestyle='--', color='red', label="Calibración Perfecta")
 
         ax.set_xlabel("Probabilidad Predicha de Evento P(T <= t)")
         ax.set_ylabel("Probabilidad Observada de Evento (Kaplan-Meier)")
-        ax.set_title(f"Calibración OOS por '{stratification_variable_name}' (t={time_horizon_t:.2f})")
-        ax.legend(title=f"{stratification_variable_name}", fontsize='small')
+        ax.set_title(f"Calibración OOS {plot_title_detail} (t={time_horizon_t:.2f})")
+        ax.legend(title=f"{stratification_variable_name}{' (Grupos)' if perform_deciling else ''}", fontsize='small')
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.grid(True, linestyle=':', alpha=0.7)
