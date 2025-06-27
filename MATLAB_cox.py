@@ -780,7 +780,6 @@ class CoxGraphSelectionDialog(tk.Toplevel):
         for var in self.selected_graphs.values():
             var.set(False)
 
-
 class CalibrationPlotOptionsDialog(tk.Toplevel):
     def __init__(self, parent, available_strat_vars, log_func=print):
         super().__init__(parent)
