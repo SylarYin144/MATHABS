@@ -4190,41 +4190,40 @@ class CoxModelingApp(ttk.Frame):
             ax.text(0.5, 0.5, "Error: self.data es None.", ha='center', va='center')
             return
 
-        self.log(f"Stratified Plot: Checking 'subject_id' in self.data. Columns: {list(self.data.columns)}. Index name: {self.data.index.name}", "DEBUG")
+        self.log(f"Stratified Plot: oos_df 'subject_id' head:\n{oos_df['subject_id'].head().to_string()}", "DEBUG")
+        self.log(f"Stratified Plot: self.data.index head:\n{self.data.index.to_series().head().to_string()}", "DEBUG")
+        self.log(f"Stratified Plot: Attempting merge with stratification variable: '{stratification_variable_name}'", "DEBUG")
 
-        if 'subject_id' in self.data.columns:
-            self.log("Using 'subject_id' as a column from self.data for merge.", "DEBUG")
-            # Ensure no duplicate columns are selected if stratification_variable_name is 'subject_id'
-            columns_to_select_from_self_data = ['subject_id']
-            if stratification_variable_name != 'subject_id':
-                columns_to_select_from_self_data.append(stratification_variable_name)
-            else: # stratification_variable_name IS 'subject_id', avoid duplicate selection
-                self.log(f"Stratification variable is also 'subject_id'. Selecting only 'subject_id' once from self.data for merge key.", "DEBUG")
-
-            merge_data_df = self.data[list(set(columns_to_select_from_self_data))] # Use set to ensure unique columns
-            oos_df = oos_df.merge(merge_data_df, on='subject_id', how='left', suffixes=('_oos', '_originaldata'))
-        elif self.data.index.name == 'subject_id':
-            self.log("Using 'subject_id' as the index from self.data for merge.", "DEBUG")
-            # When merging on index, self.data should not have 'subject_id' also as a column if it's the index name.
-            # We only need stratification_variable_name from self.data's columns.
-            if stratification_variable_name == 'subject_id': # This case is tricky if strat_var is the index name
-                self.log(f"Stratification variable is 'subject_id', which is also the index name. This implies grouping by each subject ID from the index.", "DEBUG")
-                # Create the stratification column in oos_df from its own 'subject_id' (which are index values)
-                oos_df[stratification_variable_name] = oos_df['subject_id']
-            else:
-                merge_data_df = self.data[[stratification_variable_name]]
-                oos_df = oos_df.merge(merge_data_df, left_on='subject_id', right_index=True, how='left', suffixes=('_oos', '_originaldata'))
-        else:
-            self.log("'subject_id' not found as a column or as the index name in self.data. Cannot merge for stratification.", "ERROR")
-            messagebox.showerror("Error de Datos", "'subject_id' no encontrado en los datos para la estratificación.", parent=self.parent_for_dialogs if hasattr(self, 'parent_for_dialogs') else None)
-            if ax: ax.text(0.5, 0.5, "Error: 'subject_id' no encontrado en self.data.", ha='center', va='center')
+        if stratification_variable_name not in self.data.columns:
+            self.log(f"Critical Error: Stratification variable '{stratification_variable_name}' is not a column in self.data. Available columns: {self.data.columns.tolist()}", "ERROR")
+            messagebox.showerror("Error Interno", f"La variable de estratificación '{stratification_variable_name}' no se encontró en las columnas de los datos principales.", parent=self.parent_for_dialogs if hasattr(self, 'parent_for_dialogs') else None)
+            if ax: ax.text(0.5, 0.5, f"Error: Variable '{stratification_variable_name}' no en datos.", ha='center', va='center')
             return
 
-        self.log(f"Stratified Plot: oos_df columns after merge attempt: {list(oos_df.columns)}", "DEBUG")
-        if stratification_variable_name in oos_df.columns and not oos_df[stratification_variable_name].isnull().all(): # Check if merge actually brought new data and column exists
-            self.log(f"Stratified Plot: '{stratification_variable_name}' column head after merge:\n{oos_df[stratification_variable_name].head().to_string()}", "DEBUG")
-        else:
-            self.log(f"Stratified Plot: '{stratification_variable_name}' column is all NaN or missing after merge. Merge might have failed to find matches or column was already all NaN.", "WARN")
+        try:
+            # Merge oos_df (left) with the selected stratification variable from self.data (right).
+            # 'subject_id' in oos_df contains original index values that should align with self.data.index.
+            oos_df = oos_df.merge(
+                self.data[[stratification_variable_name]], # Select only the necessary column from self.data
+                left_on='subject_id',      # Use the 'subject_id' column from oos_df (which has original index values)
+                right_index=True,          # Match with the index of self.data
+                how='left',                # Keep all oos_df rows
+                suffixes=('_oos', '_originaldata') # Suffixes in case 'stratification_variable_name' was somehow 'subject_id' (though unlikely here)
+            )
+            self.log(f"Stratified Plot: Merge successful. oos_df columns after merge: {list(oos_df.columns)}", "DEBUG")
+            if stratification_variable_name in oos_df.columns and not oos_df[stratification_variable_name].isnull().all():
+                self.log(f"Stratified Plot: '{stratification_variable_name}' column head after merge:\n{oos_df[stratification_variable_name].head().to_string()}", "DEBUG")
+            elif stratification_variable_name not in oos_df.columns:
+                 self.log(f"Stratified Plot: WARNING - '{stratification_variable_name}' column NOT FOUND after merge. This is unexpected.", "WARN")
+            else:
+                self.log(f"Stratified Plot: '{stratification_variable_name}' column is all NaN after merge. Check if 'subject_id' values in OOS data match indices in main data or if column in main data is all NaN.", "WARN")
+
+        except Exception as e_merge:
+            self.log(f"Error durante el merge para la estratificación: {e_merge}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror("Error de Merge", f"No se pudo realizar el cruce de datos para la estratificación: {e_merge}", parent=self.parent_for_dialogs if hasattr(self, 'parent_for_dialogs') else None)
+            if ax: ax.text(0.5, 0.5, "Error en cruce de datos.", ha='center', va='center')
+            return
 
         # The existing logging and try-except blocks for isnull/dropna and groupby should follow this new merge logic.
         self.log(f"Stratified Plot: oos_df columns before isnull check: {list(oos_df.columns)}", "DEBUG")
