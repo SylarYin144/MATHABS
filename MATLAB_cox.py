@@ -785,27 +785,45 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
         super().__init__(parent)
         self.transient(parent)
         self.grab_set()
-        self.title("Opciones de Gráfico de Calibración (OOS)")
-        self.parent_app = parent # Assuming parent is the CoxModelingApp instance
+        self.title("Opciones de Gráficos OOS") # Title changed to be more generic
+        self.parent_app = parent
         self.log = log_func
-        self.available_strat_vars = available_strat_vars # List of potential stratification columns
-        self.result = None # Will store dict: {'time_horizon': t, 'plot_type': 'decile'/'stratified', 'strat_var': name_if_stratified}
+        self.available_strat_vars = available_strat_vars
+        self.result = None
 
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 1. Time Horizon Entry
+        # --- Overall OOS Plot Type Selection ---
+        oos_plot_choice_frame = ttk.LabelFrame(main_frame, text="Tipo de Gráfico OOS Principal", padding="5")
+        oos_plot_choice_frame.pack(fill=tk.X, pady=5)
+        self.oos_plot_choice_var = tk.StringVar(value="calibration") # Default
+
+        ttk.Radiobutton(oos_plot_choice_frame, text="Gráfico de Calibración OOS",
+                        variable=self.oos_plot_choice_var, value="calibration",
+                        command=self._toggle_oos_plot_sections).pack(anchor=tk.W, padx=5, pady=2)
+        ttk.Radiobutton(oos_plot_choice_frame, text="Gráfico de Correlación vs. Tiempo",
+                        variable=self.oos_plot_choice_var, value="correlation_time",
+                        command=self._toggle_oos_plot_sections).pack(anchor=tk.W, padx=5, pady=2)
+
+        # --- Time Horizon Entry (now more generic) ---
         time_frame = ttk.Frame(main_frame)
         time_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(time_frame, text="Horizonte de Tiempo (t) para P(T <= t):").pack(side=tk.LEFT, padx=(0,5))
+        # Label updated to be more generic
+        ttk.Label(time_frame, text="Horizontes de Tiempo (ej: 10, 20-25, 30):").pack(side=tk.LEFT, padx=(0,5))
         self.time_horizon_var = tk.StringVar()
-        self.time_horizon_entry = ttk.Entry(time_frame, textvariable=self.time_horizon_var, width=10)
+        self.time_horizon_entry = ttk.Entry(time_frame, textvariable=self.time_horizon_var, width=20) # Increased width
         self.time_horizon_entry.pack(side=tk.LEFT)
 
-        # 2. Plot Type Selection
-        plot_type_frame = ttk.LabelFrame(main_frame, text="Tipo de Gráfico de Calibración", padding="5")
+        # --- Frame for Calibration Plot Specific Settings ---
+        self.calibration_plot_settings_frame = ttk.Frame(main_frame)
+        # Packed/unpacked by _toggle_oos_plot_sections
+
+        # Encapsulated existing "Tipo de Gráfico de Calibración" into calibration_plot_settings_frame
+        plot_type_frame = ttk.LabelFrame(self.calibration_plot_settings_frame, text="Opciones Específicas de Calibración", padding="5")
         plot_type_frame.pack(fill=tk.X, pady=5)
-        self.plot_type_var = tk.StringVar(value="decile") # Default to decile
+
+        self.plot_type_var = tk.StringVar(value="decile") # For decile/stratified calibration
 
         rb_decile = ttk.Radiobutton(plot_type_frame, text="Por Deciles de Riesgo",
                                     variable=self.plot_type_var, value="decile", command=self._toggle_strat_var_combo)
@@ -815,98 +833,158 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
                                         variable=self.plot_type_var, value="stratified", command=self._toggle_strat_var_combo)
         rb_stratified.pack(anchor=tk.W)
 
-        # 3. Stratification Variable Selection (conditionally enabled)
         self.strat_var_frame = ttk.Frame(plot_type_frame)
         self.strat_var_frame.pack(fill=tk.X, padx=20, pady=(5,0))
-
-        # Label for stratification variable combobox
         strat_label = ttk.Label(self.strat_var_frame, text="Variable de Estratificación:")
         strat_label.grid(row=0, column=0, sticky=tk.W, padx=(0,5), pady=2)
-
-        # Combobox for selecting stratification variable
         self.strat_var_combo = ttk.Combobox(self.strat_var_frame, state="disabled", values=self.available_strat_vars, width=25)
         if self.available_strat_vars:
             self.strat_var_combo.set(self.available_strat_vars[0])
         self.strat_var_combo.grid(row=0, column=1, sticky=tk.EW, padx=(0,5), pady=2)
-
-        # Checkbox for grouping quantitative variables by deciles
         self.group_quantitative_by_deciles_var = tk.BooleanVar(value=True)
         self.cb_group_by_deciles = ttk.Checkbutton(self.strat_var_frame,
                                                    text="Agrupar var. cuantitativa por deciles/cuantiles",
                                                    variable=self.group_quantitative_by_deciles_var)
         self.cb_group_by_deciles.grid(row=0, column=2, sticky=tk.W, padx=(10,0), pady=2)
+        self.strat_var_frame.columnconfigure(1, weight=1)
 
-        # Configure column weights for proper expansion
-        self.strat_var_frame.columnconfigure(1, weight=1) # Allow combobox to expand
+        # --- Frame for Correlation over Time Plot Specific Settings ---
+        self.correlation_time_plot_settings_frame = ttk.Frame(main_frame)
+        # Packed/unpacked by _toggle_oos_plot_sections
 
-        # Initial state update for the combobox
-        self._toggle_strat_var_combo()
+        self.pearson_corr_var = tk.BooleanVar(value=True)
+        cb_pearson = ttk.Checkbutton(self.correlation_time_plot_settings_frame,
+                                     text="Correlación de Pearson",
+                                     variable=self.pearson_corr_var)
+        cb_pearson.pack(anchor=tk.W, padx=5, pady=2)
+
+        self.spearman_corr_var = tk.BooleanVar(value=True)
+        cb_spearman = ttk.Checkbutton(self.correlation_time_plot_settings_frame,
+                                      text="Correlación de Spearman",
+                                      variable=self.spearman_corr_var)
+        cb_spearman.pack(anchor=tk.W, padx=5, pady=2)
 
         # OK/Cancel Buttons
         buttons_frame = ttk.Frame(main_frame)
         buttons_frame.pack(fill=tk.X, pady=(10,0))
-        ttk.Button(buttons_frame, text="Generar Gráfico", command=self._on_ok).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="Generar Gráfico(s)", command=self._on_ok).pack(side=tk.RIGHT, padx=5) # Text updated
         ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT)
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.time_horizon_entry.focus_set()
+
+        # Initial call to set visibility and states
+        self._toggle_oos_plot_sections()
+        # self._toggle_strat_var_combo() # This will be called by _toggle_oos_plot_sections if needed
+
         self.wait_window(self)
 
+    def _toggle_oos_plot_sections(self):
+        chosen_oos_plot = self.oos_plot_choice_var.get()
+
+        if chosen_oos_plot == "calibration":
+            self.calibration_plot_settings_frame.pack(fill=tk.X, pady=5)
+            if hasattr(self, 'correlation_time_plot_settings_frame'): # Check if exists before trying to unpack
+                 self.correlation_time_plot_settings_frame.pack_forget()
+            self._toggle_strat_var_combo() # Update states within calibration section
+        elif chosen_oos_plot == "correlation_time":
+            self.correlation_time_plot_settings_frame.pack(fill=tk.X, pady=5)
+            self.calibration_plot_settings_frame.pack_forget()
+            # Ensure calibration-specific controls are disabled when this section is hidden
+            if hasattr(self, 'strat_var_combo'): self.strat_var_combo.config(state="disabled")
+            if hasattr(self, 'cb_group_by_deciles'): self.cb_group_by_deciles.config(state="disabled")
+        else: # Should not happen
+            if hasattr(self, 'calibration_plot_settings_frame'): self.calibration_plot_settings_frame.pack_forget()
+            if hasattr(self, 'correlation_time_plot_settings_frame'): self.correlation_time_plot_settings_frame.pack_forget()
+
     def _toggle_strat_var_combo(self):
+        # This method now only cares about controls within the calibration section.
+        # It should not error if its parent frame (calibration_plot_settings_frame) is hidden.
+        if not hasattr(self, 'plot_type_var') or not hasattr(self, 'strat_var_combo') or not hasattr(self, 'cb_group_by_deciles'):
+            return # Dialog not fully initialized or elements missing.
+
+        if self.oos_plot_choice_var.get() != "calibration": # Only relevant if calibration plot is chosen
+            self.strat_var_combo.config(state="disabled")
+            self.cb_group_by_deciles.config(state="disabled")
+            return
+
         if self.plot_type_var.get() == "stratified" and self.strat_var_combo.get():
             self.strat_var_combo.config(state="readonly" if self.available_strat_vars else "disabled")
             self.cb_group_by_deciles.config(state=tk.NORMAL)
-            # Optional: More sophisticated logic to enable checkbox only if selected strat_var is numeric
-            # selected_var_for_dtype_check = self.strat_var_combo.get()
-            # if self.parent_app and self.parent_app.data is not None and selected_var_for_dtype_check in self.parent_app.data:
-            #    if pd.api.types.is_numeric_dtype(self.parent_app.data[selected_var_for_dtype_check]):
-            #        self.cb_group_by_deciles.config(state=tk.NORMAL)
-            #    else:
-            #        self.cb_group_by_deciles.config(state=tk.DISABLED)
-            #        self.group_quantitative_by_deciles_var.set(False) # Uncheck if var is not numeric
-            # else: # No data or var not found, disable
-            #    self.cb_group_by_deciles.config(state=tk.DISABLED)
-            #    self.group_quantitative_by_deciles_var.set(False)
         else:
             self.strat_var_combo.config(state="disabled")
-            self.cb_group_by_deciles.config(state=tk.DISABLED)
-            # self.group_quantitative_by_deciles_var.set(True) # REMOVE THIS LINE
+            self.cb_group_by_deciles.config(state="disabled")
 
     def _on_ok(self):
-        try:
-            t_horizon = float(self.time_horizon_var.get())
-            if t_horizon <= 0:
-                raise ValueError("El horizonte de tiempo debe ser positivo.")
-        except ValueError:
-            messagebox.showerror("Valor Inválido",
-                               "Por favor, ingrese un valor numérico positivo para el horizonte de tiempo.",
+        # Time horizon validation (now generic, could be single float or comma-separated list/ranges)
+        time_horizon_str_val = self.time_horizon_var.get().strip()
+        if not time_horizon_str_val: # Required for both plot types
+            messagebox.showerror("Valor Requerido",
+                               "Por favor, ingrese al menos un horizonte de tiempo.",
                                parent=self)
             return
 
-        plot_type = self.plot_type_var.get()
-        strat_var_name = None
-        if plot_type == "stratified":
-            strat_var_name = self.strat_var_combo.get()
-            if not strat_var_name and self.available_strat_vars:
-                 messagebox.showwarning("Selección Requerida",
-                                   "Por favor, seleccione una variable de estratificación.",
+        # Basic validation for "calibration" plot needing a single float for t_horizon
+        current_oos_plot_choice = self.oos_plot_choice_var.get()
+        if current_oos_plot_choice == "calibration":
+            try:
+                t_horizon_calib = float(time_horizon_str_val)
+                if t_horizon_calib <= 0:
+                    raise ValueError("El horizonte de tiempo para calibración debe ser positivo.")
+            except ValueError:
+                messagebox.showerror("Valor Inválido para Calibración",
+                                   "El gráfico de calibración requiere un único valor numérico positivo para el horizonte de tiempo.",
                                    parent=self)
-                 return
-            elif not self.available_strat_vars and strat_var_name is None: # Check if strat_var_name is None when no variables available
-                 messagebox.showerror("Error",
-                                   "No hay variables disponibles para estratificación y ninguna seleccionada.",
-                                   parent=self)
-                 return
-
+                return
+        # For "correlation_time", time_horizon_str_val can be more complex, validation will be in the plotting function.
 
         self.result = {
-            'time_horizon': t_horizon,
-            'plot_type': plot_type,
-            'strat_var': strat_var_name,
-            'group_by_deciles': self.group_quantitative_by_deciles_var.get() if plot_type == "stratified" else False
+            'time_horizon_str': time_horizon_str_val,
+            'oos_plot_choice': current_oos_plot_choice
         }
-        self.log(f"Opciones de calibración seleccionadas: {self.result}", "DEBUG")
+
+        if current_oos_plot_choice == "calibration":
+            self.result['plot_type'] = self.plot_type_var.get() # decile/stratified
+            if self.plot_type_var.get() == "stratified":
+                strat_var_name = self.strat_var_combo.get()
+                if not strat_var_name and self.available_strat_vars:
+                    messagebox.showwarning("Selección Requerida",
+                                       "Por favor, seleccione una variable de estratificación para calibración.",
+                                       parent=self)
+                    self.result = None # Invalidate result
+                    return
+                elif not self.available_strat_vars and not strat_var_name :
+                     messagebox.showerror("Error",
+                                       "No hay variables disponibles para estratificación y ninguna seleccionada.",
+                                       parent=self)
+                     self.result = None # Invalidate result
+                     return
+                self.result['strat_var'] = strat_var_name
+                self.result['group_by_deciles'] = self.group_quantitative_by_deciles_var.get()
+            else: # decile plot
+                self.result['strat_var'] = None
+                self.result['group_by_deciles'] = False # Not applicable
+
+        elif current_oos_plot_choice == "correlation_time":
+            show_pearson = self.pearson_corr_var.get()
+            show_spearman = self.spearman_corr_var.get()
+
+            if not show_pearson and not show_spearman:
+                messagebox.showwarning("Selección Requerida",
+                                       "Debe seleccionar al menos un tipo de correlación (Pearson o Spearman) para este gráfico.",
+                                       parent=self)
+                return # Do not close dialog
+
+            self.result['show_pearson'] = show_pearson
+            self.result['show_spearman'] = show_spearman
+            self.result['plot_type'] = None # Not applicable
+            self.result['strat_var'] = None # Not applicable
+            self.result['group_by_deciles'] = False # Not applicable
+
+        self.log(f"Opciones de gráfico OOS seleccionadas: {self.result}", "DEBUG")
         self.destroy()
+
+# --- CLASE PRINCIPAL DE LA APLICACIÓN ---
 
 # --- CLASE PRINCIPAL DE LA APLICACIÓN ---
 class CoxModelingApp(ttk.Frame):
@@ -3921,33 +3999,54 @@ class CoxModelingApp(ttk.Frame):
             self.log("Opciones de calibración canceladas por el usuario.", "INFO")
             return
 
-        user_choices = dialog.result
-        time_h = user_choices['time_horizon']
-        plot_t = user_choices['plot_type']
-        strat_v = user_choices['strat_var']
-        group_by_deciles_choice = user_choices.get('group_by_deciles', False) # Default to False if not present
+        user_choices = dialog.result # This now contains 'time_horizon_str' and 'oos_plot_choice'
+        oos_plot_type_selected = user_choices['oos_plot_choice']
 
-        fig_cal_oos, ax_cal_oos = plt.subplots(figsize=(8, 8)) # Ensure plt is imported
+        fig_cal_oos, ax_cal_oos = plt.subplots(figsize=(8, 8)) # Create figure once
 
         try:
-            if plot_t == 'decile':
-                self._generate_decile_calibration_plot_oos(oos_predictions_data, time_h, ax_cal_oos)
-                plot_specific_title = f"Calibración OOS por Deciles (t={time_h:.2f})"
-            elif plot_t == 'stratified':
-                if not strat_v:
-                    messagebox.showerror("Error", "No se seleccionó variable de estratificación para el gráfico estratificado.", parent=self.parent_for_dialogs)
-                    self.log("Intento de gráfico de calibración estratificado sin variable de estratificación.", "ERROR")
-                    plt.close(fig_cal_oos) # Close the figure if error
-                    return
-                self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h, strat_v, ax_cal_oos, group_quantitative_by_deciles=group_by_deciles_choice)
-                plot_specific_title = f"Calibración OOS por '{strat_v}' (t={time_h:.2f})"
-            else:
-                self.log(f"Tipo de gráfico de calibración desconocido: {plot_t}", "ERROR")
-                messagebox.showerror("Error", f"Tipo de gráfico de calibración desconocido: {plot_t}", parent=self.parent_for_dialogs)
-                plt.close(fig_cal_oos) # Close the figure
-                return
+            if oos_plot_type_selected == 'calibration':
+                # Ensure 'time_horizon' (float) is available for calibration plot functions
+                # It was validated in _on_ok for calibration plot type
+                time_h_calib = float(user_choices['time_horizon_str'])
+                plot_t_calib = user_choices['plot_type'] # 'decile' or 'stratified'
+                strat_v_calib = user_choices['strat_var']
+                group_by_deciles_choice_calib = user_choices.get('group_by_deciles', False)
 
-            # Check if anything was plotted on ax_cal_oos by looking at its children or data limits
+                if plot_t_calib == 'decile':
+                    self._generate_decile_calibration_plot_oos(oos_predictions_data, time_h_calib, ax_cal_oos)
+                    plot_specific_title = f"Calibración OOS por Deciles (t={time_h_calib:.2f})"
+                elif plot_t_calib == 'stratified':
+                    if not strat_v_calib:
+                        messagebox.showerror("Error", "No se seleccionó variable de estratificación para el gráfico estratificado.", parent=self.parent_for_dialogs)
+                        self.log("Intento de gráfico de calibración estratificado sin variable de estratificación.", "ERROR")
+                        plt.close(fig_cal_oos); return
+                    self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h_calib, strat_v_calib, ax_cal_oos, group_quantitative_by_deciles=group_by_deciles_choice_calib)
+                    plot_specific_title = f"Calibración OOS por '{strat_v_calib}' (t={time_h_calib:.2f})"
+                else: # Should not happen if dialog logic is correct
+                    self.log(f"Tipo de gráfico de calibración desconocido: {plot_t_calib}", "ERROR")
+                    messagebox.showerror("Error", f"Tipo de gráfico de calibración desconocido: {plot_t_calib}", parent=self.parent_for_dialogs)
+                    plt.close(fig_cal_oos); return
+
+            elif oos_plot_type_selected == 'correlation_time':
+                time_horizon_str = user_choices['time_horizon_str']
+                show_pearson = user_choices.get('show_pearson', False)
+                show_spearman = user_choices.get('show_spearman', False)
+                self.log(f"Solicitado gráfico de correlación vs tiempo. Pearson: {show_pearson}, Spearman: {show_spearman}, Tiempos: '{time_horizon_str}'", "INFO")
+
+                # Placeholder for actual plotting function call
+                messagebox.showinfo("Próximamente",
+                                     f"Gráfico de Correlación vs. Tiempo solicitado.\nPearson: {show_pearson}, Spearman: {show_spearman}\nTiempos: {time_horizon_str}\n(Funcionalidad de graficado aún no implementada).",
+                                     parent=self.parent_for_dialogs)
+                if fig_cal_oos: plt.close(fig_cal_oos) # Close the empty figure
+                return # End here for now
+
+            else: # Should not happen
+                self.log(f"Tipo de gráfico OOS desconocido: {oos_plot_type_selected}", "ERROR")
+                messagebox.showerror("Error", f"Tipo de gráfico OOS desconocido: {oos_plot_type_selected}", parent=self.parent_for_dialogs)
+                plt.close(fig_cal_oos); return
+
+            # Check if anything was plotted on ax_cal_oos (relevant for calibration plots)
             if not ax_cal_oos.has_data():
                  self.log("El método de generación de gráfico de calibración no añadió datos al eje. No se mostrará la ventana.", "WARN")
                  plt.close(fig_cal_oos) # Close if no data was actually plotted
