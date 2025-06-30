@@ -4046,15 +4046,14 @@ class CoxModelingApp(ttk.Frame):
 
         user_choices = dialog.result # This now contains 'time_horizon_str' and 'oos_plot_choice'
         oos_plot_type_selected = user_choices['oos_plot_choice']
+        plot_specific_title = "" # Initialize
 
         fig_cal_oos, ax_cal_oos = plt.subplots(figsize=(8, 8)) # Create figure once
 
         try:
             if oos_plot_type_selected == 'calibration':
-                # Ensure 'time_horizon' (float) is available for calibration plot functions
-                # It was validated in _on_ok for calibration plot type
-                time_h_calib = float(user_choices['time_horizon_str'])
-                plot_t_calib = user_choices['plot_type'] # 'decile' or 'stratified'
+                time_h_calib = float(user_choices['time_horizon_str']) # Validated in dialog for this type
+                plot_t_calib = user_choices['plot_type']
                 strat_v_calib = user_choices['strat_var']
                 group_by_deciles_choice_calib = user_choices.get('group_by_deciles', False)
 
@@ -4063,12 +4062,12 @@ class CoxModelingApp(ttk.Frame):
                     plot_specific_title = f"Calibración OOS por Deciles (t={time_h_calib:.2f})"
                 elif plot_t_calib == 'stratified':
                     if not strat_v_calib:
-                        messagebox.showerror("Error", "No se seleccionó variable de estratificación para el gráfico estratificado.", parent=self.parent_for_dialogs)
-                        self.log("Intento de gráfico de calibración estratificado sin variable de estratificación.", "ERROR")
+                        messagebox.showerror("Error", "No se seleccionó variable de estratificación.", parent=self.parent_for_dialogs)
+                        self.log("Calibración estratificada sin variable de estratificación.", "ERROR")
                         plt.close(fig_cal_oos); return
                     self._generate_stratified_calibration_plot_oos(oos_predictions_data, time_h_calib, strat_v_calib, ax_cal_oos, group_quantitative_by_deciles=group_by_deciles_choice_calib)
                     plot_specific_title = f"Calibración OOS por '{strat_v_calib}' (t={time_h_calib:.2f})"
-                else: # Should not happen if dialog logic is correct
+                else:
                     self.log(f"Tipo de gráfico de calibración desconocido: {plot_t_calib}", "ERROR")
                     messagebox.showerror("Error", f"Tipo de gráfico de calibración desconocido: {plot_t_calib}", parent=self.parent_for_dialogs)
                     plt.close(fig_cal_oos); return
@@ -4079,30 +4078,53 @@ class CoxModelingApp(ttk.Frame):
                 show_spearman = user_choices.get('show_spearman', False)
                 self.log(f"Solicitado gráfico de correlación vs tiempo. Pearson: {show_pearson}, Spearman: {show_spearman}, Tiempos: '{time_horizon_str}'", "INFO")
 
-                # Placeholder for actual plotting function call
-                messagebox.showinfo("Próximamente",
-                                     f"Gráfico de Correlación vs. Tiempo solicitado.\nPearson: {show_pearson}, Spearman: {show_spearman}\nTiempos: {time_horizon_str}\n(Funcionalidad de graficado aún no implementada).",
-                                     parent=self.parent_for_dialogs)
-                if fig_cal_oos: plt.close(fig_cal_oos) # Close the empty figure
-                return # End here for now
+                model_time_col = model_dict.get('time_col_for_model', 'Tiempo')
 
-            else: # Should not happen
+                correlation_data = self._calculate_calibration_correlations_over_time(
+                    model_dict,
+                    time_horizon_str,
+                    show_pearson,
+                    show_spearman
+                )
+
+                if not correlation_data:
+                    self.log("No se generaron datos de correlación.", "WARN")
+                    messagebox.showwarning("Sin Datos",
+                                           "No se pudieron calcular datos de correlación para los tiempos especificados.",
+                                           parent=self.parent_for_dialogs)
+                    if fig_cal_oos: plt.close(fig_cal_oos)
+                    return
+
+                ax_cal_oos.clear()
+
+                self._generate_correlation_over_time_plot(
+                    correlation_data,
+                    model_time_col,
+                    show_pearson,
+                    show_spearman,
+                    model_name,
+                    ax_cal_oos
+                )
+                # Title for the window will be based on what _generate_correlation_over_time_plot sets on the axes
+                plot_specific_title = ax_cal_oos.get_title() if ax_cal_oos.get_title() else f"Correlación vs Tiempo: {model_name}"
+
+            else:
                 self.log(f"Tipo de gráfico OOS desconocido: {oos_plot_type_selected}", "ERROR")
                 messagebox.showerror("Error", f"Tipo de gráfico OOS desconocido: {oos_plot_type_selected}", parent=self.parent_for_dialogs)
                 plt.close(fig_cal_oos); return
 
-            # Check if anything was plotted on ax_cal_oos (relevant for calibration plots)
             if not ax_cal_oos.has_data():
-                 self.log("El método de generación de gráfico de calibración no añadió datos al eje. No se mostrará la ventana.", "WARN")
-                 plt.close(fig_cal_oos) # Close if no data was actually plotted
+                 self.log("El método de generación de gráfico no añadió datos al eje. No se mostrará la ventana.", "WARN")
+                 plt.close(fig_cal_oos)
                  # Optionally show a messagebox to the user
-                 messagebox.showwarning("Gráfico Vacío", "No se pudieron generar datos para el gráfico de calibración seleccionado.", parent=self.parent_for_dialogs)
+                 messagebox.showwarning("Gráfico Vacío", "No se generaron datos válidos para el gráfico seleccionado.", parent=self.parent_for_dialogs)
                  return
 
+            # Use plot_specific_title which is now correctly set for both calibration and correlation plots
             self._create_plot_window(fig_cal_oos, f"{plot_specific_title} - Modelo: {model_name}")
 
         except Exception as e_cal_main:
-            self.log(f"Error al generar o mostrar el gráfico de calibración OOS: {e_cal_main}", "ERROR")
+            self.log(f"Error al generar o mostrar el gráfico OOS: {e_cal_main}", "ERROR")
             if fig_cal_oos: plt.close(fig_cal_oos)
             traceback.print_exc(limit=3)
             messagebox.showerror("Error de Gráfico",
