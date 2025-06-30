@@ -87,6 +87,51 @@ def format_p_value(p_val, threshold=0.0001):
     else:
         return f"{p_val:.4f}"
 
+def parse_time_horizon_string(time_str: str, log_func=print) -> list[float]:
+    """
+    Parsea una cadena de horizontes de tiempo.
+    La cadena puede contener números individuales, rangos (ej. "10-15"),
+    o combinaciones separadas por comas.
+    Retorna una lista ordenada y única de puntos de tiempo como floats.
+    """
+    if not time_str or time_str.isspace():
+        return []
+
+    all_time_points = []
+    parts = time_str.split(',')
+
+    for part_raw in parts:
+        part = part_raw.strip()
+        if not part:
+            continue
+
+        if '-' in part:
+            range_components = part.split('-', 1) # Solo dividir en el primer guion
+            if len(range_components) == 2:
+                start_str, end_str = range_components
+                try:
+                    start_val = int(start_str.strip())
+                    end_val = int(end_str.strip())
+                    if start_val <= end_val:
+                        all_time_points.extend(float(i) for i in range(start_val, end_val + 1))
+                    else:
+                        log_func(f"Advertencia: Rango inválido '{part}': El inicio ({start_val}) es mayor que el fin ({end_val}). Saltando.", "WARN")
+                except ValueError:
+                    log_func(f"Advertencia: Rango inválido '{part}': No se pudieron convertir los límites a enteros. Saltando.", "WARN")
+            else: # Más de un guion o guion al inicio/final de forma incorrecta
+                log_func(f"Advertencia: Formato de rango inválido '{part}'. Use 'inicio-fin'. Saltando.", "WARN")
+        else:
+            try:
+                time_point = float(part)
+                all_time_points.append(time_point)
+            except ValueError:
+                log_func(f"Advertencia: Parte inválida en la cadena de tiempo '{part}': No se pudo convertir a número. Saltando.", "WARN")
+
+    if not all_time_points:
+        return []
+
+    return sorted(list(set(all_time_points)))
+
 
 def compute_model_metrics(model, X_design, y_data, time_col, event_col,
                           c_index_cv_mean=None, c_index_cv_std=None,
@@ -4476,6 +4521,149 @@ class CoxModelingApp(ttk.Frame):
         ax.set_ylim(0, 1)
         ax.grid(True, linestyle=':', alpha=0.7)
         self.log(f"Gráfico de calibración OOS estratificado por '{stratification_variable_name}' generado.", "SUCCESS")
+
+    def _calculate_calibration_correlations_over_time(self,
+                                                     model_dict: dict,
+                                                     time_horizon_str: str,
+                                                     calculate_pearson: bool,
+                                                     calculate_spearman: bool) -> list:
+        self.log(f"Calculando correlaciones de calibración OOS. Tiempos: '{time_horizon_str}', Pearson: {calculate_pearson}, Spearman: {calculate_spearman}", "INFO")
+
+        time_points = parse_time_horizon_string(time_horizon_str, self.log)
+        if not time_points:
+            self.log("No se especificaron puntos de tiempo válidos para el cálculo de correlación. Retornando lista vacía.", "WARN")
+            return []
+
+        oos_predictions = model_dict.get("oos_predictions")
+        if not oos_predictions:
+            self.log("No se encontraron datos de 'oos_predictions' en el modelo. No se pueden calcular correlaciones.", "ERROR")
+            messagebox.showerror("Error de Datos", "Predicciones Out-of-Sample no encontradas en el modelo.", parent=self.parent_for_dialogs)
+            return []
+
+        correlation_results = []
+
+        for t_horizon in time_points:
+            self.log(f"Procesando correlaciones para t_horizon = {t_horizon}", "DEBUG")
+            predicted_probs_at_t = []
+            observed_status_at_t = []
+
+            for pred_item in oos_predictions:
+                true_time = pred_item["true_time"]
+                true_event = pred_item["true_event"]
+                pred_sf_series = pred_item["predicted_survival_function"]
+
+                # Interpolar S(t) y calcular P_pred(evento) = 1 - S(t)
+                s_at_t = 1.0 # Default si t_horizon está antes del inicio de la curva SF
+                if not pred_sf_series.empty:
+                    min_time_pred = pred_sf_series.index.min()
+                    max_time_pred = pred_sf_series.index.max()
+                    if t_horizon < min_time_pred:
+                        s_at_t = 1.0
+                    elif t_horizon > max_time_pred:
+                        s_at_t = pred_sf_series.iloc[-1]
+                    else:
+                        s_at_t = np.interp(t_horizon, pred_sf_series.index, pred_sf_series.values)
+                p_pred_at_t = 1.0 - s_at_t
+
+                # Determinar estado observado en t_horizon
+                # Excluir sujetos censurados en o antes de t_horizon sin haber experimentado el evento
+                if true_time <= t_horizon and true_event == 0:
+                    continue # Excluir para este t_horizon
+
+                obs_at_t = 1 if (true_time <= t_horizon and true_event == 1) else 0
+
+                predicted_probs_at_t.append(p_pred_at_t)
+                observed_status_at_t.append(obs_at_t)
+
+            if len(predicted_probs_at_t) < 2:
+                self.log(f"No hay suficientes datos ({len(predicted_probs_at_t)}) para calcular correlación en t={t_horizon}. Saltando.", "WARN")
+                correlation_results.append({'time': t_horizon, 'pearson': np.nan, 'spearman': np.nan, 'n_obs': len(predicted_probs_at_t)})
+                continue
+
+            pearson_r, spearman_rho = np.nan, np.nan # Usar np.nan como default
+
+            if calculate_pearson:
+                try:
+                    # Verificar si hay varianza en los datos antes de llamar a pearsonr
+                    if np.std(predicted_probs_at_t) == 0 or np.std(observed_status_at_t) == 0:
+                        self.log(f"Varianza cero en datos para Pearson en t={t_horizon}. Pearson será NaN.", "WARN")
+                        pearson_r = np.nan # O podría ser 0.0 si se considera apropiado
+                    else:
+                        pearson_r, _ = scipy.stats.pearsonr(predicted_probs_at_t, observed_status_at_t)
+                except ValueError as e_pearson:
+                    self.log(f"Error calculando Pearson en t={t_horizon}: {e_pearson}. Pearson será NaN.", "ERROR")
+                    pearson_r = np.nan
+                except Exception as e_gen_pearson: # Captura más general
+                    self.log(f"Error general calculando Pearson en t={t_horizon}: {e_gen_pearson}. Pearson será NaN.", "ERROR")
+                    pearson_r = np.nan
+
+
+            if calculate_spearman:
+                try:
+                    # Spearman también puede fallar con varianza cero, aunque es más robusto a distribuciones.
+                    if np.std(predicted_probs_at_t) == 0 or np.std(observed_status_at_t) == 0:
+                         self.log(f"Varianza cero en datos para Spearman en t={t_horizon}. Spearman será NaN.", "WARN")
+                         spearman_rho = np.nan
+                    else:
+                        spearman_rho, _ = scipy.stats.spearmanr(predicted_probs_at_t, observed_status_at_t)
+                except ValueError as e_spearman:
+                    self.log(f"Error calculando Spearman en t={t_horizon}: {e_spearman}. Spearman será NaN.", "ERROR")
+                    spearman_rho = np.nan
+                except Exception as e_gen_spearman:
+                    self.log(f"Error general calculando Spearman en t={t_horizon}: {e_gen_spearman}. Spearman será NaN.", "ERROR")
+                    spearman_rho = np.nan
+
+            correlation_results.append({
+                'time': t_horizon,
+                'pearson': pearson_r,
+                'spearman': spearman_rho,
+                'n_obs': len(predicted_probs_at_t) # Guardar N para este tiempo
+            })
+            self.log(f"Resultados correlación t={t_horizon}: Pearson={pearson_r:.3f if pd.notna(pearson_r) else 'N/A'}, Spearman={spearman_rho:.3f if pd.notna(spearman_rho) else 'N/A'}, N={len(predicted_probs_at_t)}", "DEBUG")
+
+        return correlation_results
+
+    def _generate_correlation_over_time_plot(self,
+                                             correlation_results: list,
+                                             time_col_name_for_axis_label: str,
+                                             plot_pearson: bool,
+                                             plot_spearman: bool,
+                                             model_name_for_title: str,
+                                             ax: plt.Axes):
+        if not correlation_results:
+            self.log("No hay datos de correlación para graficar.", "WARN")
+            ax.text(0.5, 0.5, "No hay datos de correlación para graficar.",
+                    ha='center', va='center', fontsize=12, color='grey')
+            return
+
+        df_corr = pd.DataFrame(correlation_results)
+        df_corr.sort_values(by='time', inplace=True)
+
+        lines_plotted = 0
+        if plot_pearson and 'pearson' in df_corr.columns and df_corr['pearson'].notna().any():
+            ax.plot(df_corr['time'], df_corr['pearson'], marker='o', linestyle='-', label="Pearson")
+            lines_plotted += 1
+
+        if plot_spearman and 'spearman' in df_corr.columns and df_corr['spearman'].notna().any():
+            ax.plot(df_corr['time'], df_corr['spearman'], marker='x', linestyle='--', label="Spearman")
+            lines_plotted +=1
+
+        ax.set_xlabel(f"Horizonte de Tiempo ({time_col_name_for_axis_label})")
+        ax.set_ylabel("Coeficiente de Correlación")
+        ax.set_title(f"Evolución de Correlación (Predicha vs. Observada) vs. Tiempo\nModelo: {model_name_for_title}")
+        ax.set_ylim(-1.05, 1.05)
+        ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
+
+        if lines_plotted > 0:
+            ax.legend()
+        else:
+            self.log("No se graficaron líneas de correlación (Pearson/Spearman no seleccionados o sin datos válidos).", "INFO")
+            ax.text(0.5, 0.5, "No hay datos válidos de correlación para los tipos seleccionados.",
+                    ha='center', va='center', fontsize=10, color='grey')
+
+        ax.grid(True, linestyle=':', alpha=0.7)
+        self.log(f"Gráfico de correlación vs tiempo generado para modelo '{model_name_for_title}'.", "INFO")
+
 
 # --- Fin de la clase CoxModelingApp ---
 
