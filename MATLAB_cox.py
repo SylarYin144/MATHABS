@@ -4641,7 +4641,9 @@ class CoxModelingApp(ttk.Frame):
                 'spearman': spearman_rho,
                 'n_obs': len(predicted_probs_at_t) # Guardar N para este tiempo
             })
-            self.log(f"Resultados correlación t={t_horizon}: Pearson={pearson_r:.3f if pd.notna(pearson_r) else 'N/A'}, Spearman={spearman_rho:.3f if pd.notna(spearman_rho) else 'N/A'}, N={len(predicted_probs_at_t)}", "DEBUG")
+            pearson_str = f'{pearson_r:.3f}' if pd.notna(pearson_r) else 'N/A'
+            spearman_str = f'{spearman_rho:.3f}' if pd.notna(spearman_rho) else 'N/A'
+            self.log(f"Resultados correlación t={t_horizon}: Pearson={pearson_str}, Spearman={spearman_str}, N={len(predicted_probs_at_t)}", "DEBUG")
 
         return correlation_results
 
