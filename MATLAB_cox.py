@@ -4289,6 +4289,60 @@ class CoxModelingApp(ttk.Frame):
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.grid(True, linestyle=':', alpha=0.7)
+
+        # --- Calcular y loguear Correlaciones para el gráfico de deciles ---
+        pearson_r_cal = np.nan
+        spearman_rho_cal = np.nan
+
+        if cal_df is not None and len(cal_df) >= 2:
+            x_pred_cal = cal_df['x_pred']
+            y_obs_cal = cal_df['y_obs']
+
+            # Pearson
+            if np.std(x_pred_cal) < 1e-6 or np.std(y_obs_cal) < 1e-6:
+                self.log("Advertencia: Varianza cero o muy baja en datos para Pearson en gráfico de deciles. Correlación será NaN.", "WARN")
+            else:
+                try:
+                    pearson_r_cal, _ = scipy.stats.pearsonr(x_pred_cal, y_obs_cal)
+                except ValueError as e_pearson:
+                    self.log(f"Error calculando Pearson en gráfico de deciles: {e_pearson}. Correlación será NaN.", "ERROR")
+                except Exception as e_gen_pearson:
+                    self.log(f"Error general calculando Pearson en gráfico de deciles: {e_gen_pearson}. Correlación será NaN.", "ERROR")
+
+            # Spearman
+            # Spearman es más robusto a la varianza, pero puede dar NaN si los datos son perfectamente constantes o hay muy pocos puntos.
+            if np.std(x_pred_cal) < 1e-6 or np.std(y_obs_cal) < 1e-6: # Similar check for consistency
+                 self.log("Advertencia: Varianza cero o muy baja en datos para Spearman en gráfico de deciles. Correlación será NaN.", "WARN")
+            else:
+                try:
+                    spearman_rho_cal, _ = scipy.stats.spearmanr(x_pred_cal, y_obs_cal)
+                except ValueError as e_spearman:
+                    self.log(f"Error calculando Spearman en gráfico de deciles: {e_spearman}. Correlación será NaN.", "ERROR")
+                except Exception as e_gen_spearman:
+                    self.log(f"Error general calculando Spearman en gráfico de deciles: {e_gen_spearman}. Correlación será NaN.", "ERROR")
+
+            pearson_str_cal = f"{pearson_r_cal:.3f}" if pd.notna(pearson_r_cal) else "N/A"
+            spearman_str_cal = f"{spearman_rho_cal:.3f}" if pd.notna(spearman_rho_cal) else "N/A"
+            self.log(f"Correlaciones para gráfico de calibración por deciles (t={time_horizon_t}): Pearson={pearson_str_cal}, Spearman={spearman_str_cal}, N Puntos={len(cal_df)}", "INFO")
+
+            # Display correlations on the plot
+            corr_text_parts = []
+            if pd.notna(pearson_r_cal):
+                corr_text_parts.append(f"Pearson r: {pearson_r_cal:.2f}")
+            if pd.notna(spearman_rho_cal):
+                corr_text_parts.append(f"Spearman ρ: {spearman_rho_cal:.2f}")
+
+            if corr_text_parts:
+                corr_display_text = "\n".join(corr_text_parts)
+                ax.text(0.95, 0.05, corr_display_text,
+                        transform=ax.transAxes,
+                        fontsize=9,
+                        verticalalignment='bottom',
+                        horizontalalignment='right',
+                        bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.5))
+        else:
+            self.log(f"No se pueden calcular correlaciones para gráfico de deciles (t={time_horizon_t}): Menos de 2 puntos de datos en cal_df (N={len(cal_df) if cal_df is not None else 0}).", "WARN")
+
         self.log("Gráfico de calibración por deciles OOS generado.", "SUCCESS")
 
 
@@ -4527,8 +4581,46 @@ class CoxModelingApp(ttk.Frame):
             ax.text(0.5, 0.5, "No se pudieron generar puntos de calibración estratificados.", ha='center', va='center')
             return
 
+        # --- Calcular Correlaciones para el gráfico estratificado (basado en los puntos de los estratos) ---
+        pearson_r_strat = np.nan
+        spearman_rho_strat = np.nan
+        cal_df_strat = pd.DataFrame(calibration_points_strat)
+
+        if not cal_df_strat.empty and len(cal_df_strat) >= 2:
+            x_pred_strat = cal_df_strat['x_pred']
+            y_obs_strat = cal_df_strat['y_obs']
+
+            # Pearson
+            if np.std(x_pred_strat) < 1e-6 or np.std(y_obs_strat) < 1e-6:
+                self.log("Advertencia: Varianza cero o muy baja en datos para Pearson en gráfico estratificado. Correlación será NaN.", "WARN")
+            else:
+                try:
+                    pearson_r_strat, _ = scipy.stats.pearsonr(x_pred_strat, y_obs_strat)
+                except ValueError as e_pearson:
+                    self.log(f"Error calculando Pearson en gráfico estratificado: {e_pearson}. Correlación será NaN.", "ERROR")
+                except Exception as e_gen_pearson:
+                    self.log(f"Error general calculando Pearson en gráfico estratificado: {e_gen_pearson}. Correlación será NaN.", "ERROR")
+
+            # Spearman
+            if np.std(x_pred_strat) < 1e-6 or np.std(y_obs_strat) < 1e-6:
+                self.log("Advertencia: Varianza cero o muy baja en datos para Spearman en gráfico estratificado. Correlación será NaN.", "WARN")
+            else:
+                try:
+                    spearman_rho_strat, _ = scipy.stats.spearmanr(x_pred_strat, y_obs_strat)
+                except ValueError as e_spearman:
+                    self.log(f"Error calculando Spearman en gráfico estratificado: {e_spearman}. Correlación será NaN.", "ERROR")
+                except Exception as e_gen_spearman:
+                    self.log(f"Error general calculando Spearman en gráfico estratificado: {e_gen_spearman}. Correlación será NaN.", "ERROR")
+
+            pearson_str_display = f"{pearson_r_strat:.2f}" if pd.notna(pearson_r_strat) else "N/A"
+            spearman_str_display = f"{spearman_rho_strat:.2f}" if pd.notna(spearman_rho_strat) else "N/A"
+            self.log(f"Correlaciones para gráfico estratificado (basadas en {len(cal_df_strat)} puntos de estratos): Pearson={pearson_str_display}, Spearman={spearman_str_display}", "INFO")
+
+        elif not cal_df_strat.empty and len(cal_df_strat) < 2 :
+             self.log(f"No se pueden calcular correlaciones para gráfico estratificado: Menos de 2 puntos de estratos (N Puntos={len(cal_df_strat)}).", "WARN")
+
         # 3. Plotting
-        for point_data in calibration_points_strat:
+        for point_data in calibration_points_strat: # calibration_points_strat is the original list of dicts
             ax.errorbar(point_data["x_pred"], point_data["y_obs"],
                         yerr=np.array(point_data["y_err"]).reshape(2,-1),
                         fmt='o', label=point_data["stratum_name"], capsize=3, elinewidth=1, markersize=6)
@@ -4542,6 +4634,25 @@ class CoxModelingApp(ttk.Frame):
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.grid(True, linestyle=':', alpha=0.7)
+
+        # --- Display Correlations on Stratified Plot ---
+        # pearson_r_strat and spearman_rho_strat are calculated earlier in this method
+        if 'cal_df_strat' in locals() and isinstance(cal_df_strat, pd.DataFrame) and len(cal_df_strat) >=2: # Check if cal_df_strat was created and had enough points
+            corr_text_parts_strat = []
+            if pd.notna(pearson_r_strat):
+                corr_text_parts_strat.append(f"Pearson r (estratos): {pearson_r_strat:.2f}")
+            if pd.notna(spearman_rho_strat):
+                corr_text_parts_strat.append(f"Spearman ρ (estratos): {spearman_rho_strat:.2f}")
+
+            if corr_text_parts_strat:
+                corr_display_text_strat = "\n".join(corr_text_parts_strat)
+                ax.text(0.95, 0.05, corr_display_text_strat,
+                        transform=ax.transAxes,
+                        fontsize=9,
+                        verticalalignment='bottom',
+                        horizontalalignment='right',
+                        bbox=dict(boxstyle='round,pad=0.3', fc='lightskyblue', alpha=0.5))
+
         self.log(f"Gráfico de calibración OOS estratificado por '{stratification_variable_name}' generado.", "SUCCESS")
 
     def _calculate_calibration_correlations_over_time(self,
