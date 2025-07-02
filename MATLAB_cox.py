@@ -23,6 +23,7 @@ import sys # Añadido para manipulación de sys.path
 # --- Importaciones de Tkinter ---
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, StringVar, BooleanVar, DoubleVar, IntVar, Listbox, MULTIPLE, SINGLE, BROWSE, Toplevel, Frame, Label, Entry, Button, Checkbutton, Radiobutton
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from tkinter import scrolledtext
 
 # --- Importaciones de Librerías de Terceros (Data Science y Plotting) ---
@@ -1073,6 +1074,7 @@ class CoxModelingApp(ttk.Frame):
         self.calculate_cv_cindex_var = BooleanVar(value=True)  # Calcular C-Index por CV
         self.cv_num_kfolds_var = IntVar(value=5)  # Número de folds para CV
         self.cv_random_seed_var = IntVar(value=42)  # Semilla aleatoria para CV
+        self.covariate_scaling_method_var = StringVar(value="Ninguna")
 
         # Crear Notebook (pestañas)
         self.notebook = ttk.Notebook(self)
@@ -1865,6 +1867,23 @@ class CoxModelingApp(ttk.Frame):
         self.combo_metodo_empates.grid(row=0, column=1, padx=5, pady=3, sticky=tk.EW)
         self.tie_handling_method_var.set("efron") # Default
         grid_ties.columnconfigure(1, weight=1)
+
+        # Escalado de Covariables Numéricas
+        frame_scaling = ttk.LabelFrame(right_col_frame, text="Preprocesamiento de Covariables Numéricas")
+        frame_scaling.pack(fill=tk.X, expand=True, pady=(10,0))
+        grid_scaling = ttk.Frame(frame_scaling, padding=5)
+        grid_scaling.pack(fill=tk.X)
+
+        ttk.Label(grid_scaling, text="Método de Escalado:").grid(row=0, column=0, padx=5, pady=3, sticky=tk.W)
+        scaling_options = ["Ninguna", "Estandarización (Z-score)", "Normalización (Min-Max)"]
+        self.combo_scaling_method = ttk.Combobox(grid_scaling,
+                                                    textvariable=self.covariate_scaling_method_var,
+                                                    values=scaling_options,
+                                                    state="readonly",
+                                                    width=25)
+        self.combo_scaling_method.grid(row=0, column=1, padx=5, pady=3, sticky=tk.EW)
+        # self.covariate_scaling_method_var is already set to "Ninguna" in __init__
+        grid_scaling.columnconfigure(1, weight=1)
         
         # Validación Cruzada C-Index
         frame_cv = ttk.LabelFrame(g_content, text="C-Index por Validación Cruzada (Opcional)")
@@ -1965,7 +1984,7 @@ class CoxModelingApp(ttk.Frame):
 
     def _preparar_datos_para_modelado(self):
         if self.data is None or self.data.empty:
-            self.log("No hay datos cargados.", "WARN"); messagebox.showwarning("Sin Datos", "Cargue datos primero.", parent=self.parent_for_dialogs); return None
+            self.log("No hay datos cargados.", "WARN"); messagebox.showwarning("Sin Datos", "Cargue datos primero.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
         
         time_col_ui = self.combo_col_tiempo.get().strip()
         event_col_ui = self.combo_col_evento.get().strip()
@@ -1973,9 +1992,9 @@ class CoxModelingApp(ttk.Frame):
         rename_event_to = self.entry_renombrar_col_evento.get().strip()
 
         if not time_col_ui or not event_col_ui:
-            self.log("Columnas T/E no seleccionadas.", "WARN"); messagebox.showwarning("Variables Faltantes", "Seleccione Tiempo y Evento.", parent=self.parent_for_dialogs); return None
+            self.log("Columnas T/E no seleccionadas.", "WARN"); messagebox.showwarning("Variables Faltantes", "Seleccione Tiempo y Evento.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
         if time_col_ui not in self.data.columns or event_col_ui not in self.data.columns:
-            self.log(f"Columnas T/E ('{time_col_ui}', '{event_col_ui}') no en datos.", "ERROR"); messagebox.showerror("Columnas Inválidas", "Columnas T/E no existen.", parent=self.parent_for_dialogs); return None
+            self.log(f"Columnas T/E ('{time_col_ui}', '{event_col_ui}') no en datos.", "ERROR"); messagebox.showerror("Columnas Inválidas", "Columnas T/E no existen.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
 
         sel_cov_indices = self.listbox_covariables_disponibles.curselection()
         selected_covs_orig_names = [self.listbox_covariables_disponibles.get(i) for i in sel_cov_indices if self.listbox_covariables_disponibles.get(i) not in [time_col_ui, event_col_ui]]
@@ -1983,7 +2002,7 @@ class CoxModelingApp(ttk.Frame):
         if self.cox_model_type_var.get() == "Multivariado" and not selected_covs_orig_names:
              self.log("Multivariado sin covariables -> modelo nulo.", "INFO")
         elif self.cox_model_type_var.get() == "Univariado" and not selected_covs_orig_names:
-             self.log("Univariado sin covariables. Abortando.", "WARN"); messagebox.showwarning("Sin Covariables", "Seleccione covariables para univariado.", parent=self.parent_for_dialogs); return None
+             self.log("Univariado sin covariables. Abortando.", "WARN"); messagebox.showwarning("Sin Covariables", "Seleccione covariables para univariado.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
 
         df_model_prep = self.data[[time_col_ui, event_col_ui] + selected_covs_orig_names].copy()
 
@@ -2013,39 +2032,73 @@ class CoxModelingApp(ttk.Frame):
         except ValueError as e_t:
             self.log(f"Error convirtiendo columna Tiempo '{final_t_col}' a numérico: {e_t}", "ERROR")
             messagebox.showerror("Error de Tipo", f"Columna Tiempo '{final_t_col}' no puede ser convertida a numérica.", parent=self.parent_for_dialogs)
-            return None
+            return None, None, None, None, None, None, None, "Ninguna", None, []
         
         try:
             df_model_prep[final_e_col] = pd.to_numeric(df_model_prep[final_e_col])
-            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True)
+            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True) # Drop NaNs in T/E cols *before* astype(int)
             if df_model_prep.empty:
                  self.log(f"Dataset vacío después de convertir T/E a numérico y eliminar NaNs en T/E.", "ERROR")
                  messagebox.showerror("Datos Insuficientes", "No quedan datos válidos para T/E después de la conversión a numérico y eliminación de NaNs.", parent=self.parent_for_dialogs)
-                 return None
+                 return None, None, None, None, None, None, None, "Ninguna", None, []
  
             if not df_model_prep[final_e_col].isin([0, 1]).all():
                  num_invalid_events = df_model_prep[~df_model_prep[final_e_col].isin([0, 1])].shape[0]
                  self.log(f"Columna Evento '{final_e_col}' tiene {num_invalid_events} valor(es) que no son 0 o 1 después de conversión y dropna.", "ERROR")
                  messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' debe contener solo valores 0 o 1.", parent=self.parent_for_dialogs)
-                 return None
+                 return None, None, None, None, None, None, None, "Ninguna", None, []
             df_model_prep[final_e_col] = df_model_prep[final_e_col].astype(int)
         except ValueError as e_e: # Si to_numeric falla completamente
             self.log(f"Error convirtiendo columna Evento '{final_e_col}' a numérico 0/1: {e_e}", "ERROR")
             messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' no puede ser convertida a numérica (0/1).", parent=self.parent_for_dialogs)
-            return None
+            return None, None, None, None, None, None, None, "Ninguna", None, []
  
         initial_rows_prep = len(df_model_prep)
+        # Note: NaNs in T/E already handled above. This second dropna might be redundant for T/E but kept for safety.
         df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True)
         if len(df_model_prep) < initial_rows_prep: self.log(f"Eliminadas {initial_rows_prep - len(df_model_prep)} filas con NaN en T/E (posiblemente de conversión).", "WARN")
-        if df_model_prep.empty: self.log("DF vacío post-NaN en T/E.", "ERROR"); messagebox.showerror("Datos Insuficientes", "No quedan datos post-NaN en T/E.", parent=self.parent_for_dialogs); return None
- 
+        if df_model_prep.empty: self.log("DF vacío post-NaN en T/E.", "ERROR"); messagebox.showerror("Datos Insuficientes", "No quedan datos post-NaN en T/E.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
+
+        # --- Aplicar Escalado de Covariables ---
+        scaling_method = self.covariate_scaling_method_var.get()
+        fitted_scaler = None
+        scaled_column_names = []
+
+        numeric_cols_to_scale = [
+            col for col in selected_covs_orig_names
+            if col in df_model_prep.columns and pd.api.types.is_numeric_dtype(df_model_prep[col])
+        ]
+
+        if not numeric_cols_to_scale and scaling_method != "Ninguna":
+            self.log(f"Método de escalado '{scaling_method}' seleccionado, pero no hay covariables numéricas seleccionadas/disponibles para escalar. No se aplicará escalado.", "WARN")
+            scaling_method = "Ninguna"
+        elif not numeric_cols_to_scale and scaling_method == "Ninguna":
+             self.log("No hay covariables numéricas seleccionadas para escalar, y el método es 'Ninguna'.", "INFO")
+
+
+        if scaling_method == "Estandarización (Z-score)" and numeric_cols_to_scale:
+            scaler = StandardScaler()
+            df_model_prep[numeric_cols_to_scale] = scaler.fit_transform(df_model_prep[numeric_cols_to_scale])
+            fitted_scaler = scaler
+            scaled_column_names = numeric_cols_to_scale.copy()
+            self.log(f"Covariables estandarizadas (Z-score): {scaled_column_names}", "INFO")
+        elif scaling_method == "Normalización (Min-Max)" and numeric_cols_to_scale:
+            scaler = MinMaxScaler()
+            df_model_prep[numeric_cols_to_scale] = scaler.fit_transform(df_model_prep[numeric_cols_to_scale])
+            fitted_scaler = scaler
+            scaled_column_names = numeric_cols_to_scale.copy()
+            self.log(f"Covariables normalizadas (Min-Max): {scaled_column_names}", "INFO")
+        elif scaling_method == "Ninguna":
+            self.log("No se aplicó escalado de covariables.", "INFO")
+        # --- Fin Escalado ---
+
         df_filtered_patsy, X_design_patsy, formula_patsy_gen, terms_patsy_display = self.build_design_matrix(
             df_model_prep, selected_covs_orig_names, final_t_col, final_e_col
         )
         self.log(f"DEBUG: df_filtered_patsy columns after build_design_matrix: {df_filtered_patsy.columns.tolist() if df_filtered_patsy is not None else 'N/A'}", "DEBUG")
 
         if X_design_patsy is None or df_filtered_patsy is None: 
-             self.log("Falló build_design_matrix.", "ERROR"); return None
+             self.log("Falló build_design_matrix.", "ERROR"); return None, None, None, None, None, None, None, "Ninguna", None, []
         
         y_survival_patsy = df_filtered_patsy[[final_t_col, final_e_col]]
 
@@ -2053,7 +2106,10 @@ class CoxModelingApp(ttk.Frame):
         self.log(f"Fórmula Patsy: {formula_patsy_gen}", "DEBUG")
         self.log(f"Términos Patsy: {terms_patsy_display}", "DEBUG")
         
-        return (df_filtered_patsy, X_design_patsy, y_survival_patsy, formula_patsy_gen, terms_patsy_display, final_t_col, final_e_col)
+        return (df_filtered_patsy, X_design_patsy, y_survival_patsy,
+                formula_patsy_gen, terms_patsy_display,
+                final_t_col, final_e_col,
+                scaling_method, fitted_scaler, scaled_column_names)
 
 
     def _get_patsy_safe_var_name(self, var_name): # No se usa actualmente, Patsy Q() maneja nombres.
@@ -2186,11 +2242,16 @@ class CoxModelingApp(ttk.Frame):
         self.log(f"Covariables originales seleccionadas/pasadas para reconstrucción: {selected_covs_orig_names}", "DEBUG")
         return selected_covs_orig_names
 
-    def _run_model_and_get_metrics(self, df_lifelines_rm, X_design_rm, y_survival_rm, time_col_rm, event_col_rm, 
-                                   formula_patsy_rm, model_name_rm, covariates_display_terms_rm, 
+    def _run_model_and_get_metrics(self, df_lifelines_rm, X_design_rm, y_survival_rm,
+                                   time_col_rm, event_col_rm,
+                                   formula_patsy_rm, model_name_rm,
+                                   covariates_display_terms_rm,
                                    full_patsy_formula_for_new_data_transform_arg, 
                                    penalizer_val_rm=0.0, l1_ratio_val_rm=0.0, 
-                                   model_type_for_fit_logic="Multivariado"): 
+                                   model_type_for_fit_logic="Multivariado",
+                                   scaling_method_applied="Ninguna",
+                                   fitted_scaler_obj=None,
+                                   scaled_columns_info=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
@@ -2207,9 +2268,12 @@ class CoxModelingApp(ttk.Frame):
             "tie_method_used": ui_selected_tie_method,
             "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
-            "schoenfeld_status_message": None, # Initialize status message
-            "proportional_hazard_test_summary": None, # Initialize new key
-            "oos_predictions": None # ADDED KEY FOR OOS PREDICTIONS
+            "schoenfeld_status_message": None,
+            "proportional_hazard_test_summary": None,
+            "oos_predictions": None,
+            "scaling_method_applied": scaling_method_applied,
+            "fitted_scaler_object": fitted_scaler_obj,
+            "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else []
         }
  
         try:
@@ -2512,10 +2576,13 @@ class CoxModelingApp(ttk.Frame):
             self.log("Falló preparación de datos. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
             return
         
-        (df_init_full, X_init_full, y_init_data, formula_init_patsy_full, terms_init_display, t_col_final, e_col_final) = prep_res
+        (df_init_full, X_init_full, y_init_data,
+         formula_init_patsy_full, terms_init_display,
+         t_col_final, e_col_final,
+         scaling_method_used, scaler_object, scaled_cols_list) = prep_res
 
-        if df_init_full is None or df_init_full.empty:
-            self.log("DF inicial vacío post-preparación. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
+        if df_init_full is None or df_init_full.empty: # df_init_full is now df_filtered_patsy
+            self.log("DF inicial (post-patsy) vacío post-preparación. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
             return
 
         pen_meth = self.penalization_method_var.get(); pen_val = 0.0; l1_r = 0.0
@@ -2551,7 +2618,10 @@ class CoxModelingApp(ttk.Frame):
                     name_uni = f"Univariado: {orig_cov_uni}" + (f" (Términos: {', '.join(terms_uni)})" if terms_uni != [orig_cov_uni] and terms_uni else "")
                     md_uni = self._run_model_and_get_metrics(df_uni_f, X_uni_d, y_uni_s, t_col_final, e_col_final, 
                                                              formula_uni_patsy, name_uni, terms_uni, formula_uni_patsy,
-                                                             pen_val, l1_r, model_type_for_fit_logic="Univariado")
+                                                             pen_val, l1_r, model_type_for_fit_logic="Univariado",
+                                                             scaling_method_applied=scaling_method_used,
+                                                             fitted_scaler_obj=scaler_object,
+                                                             scaled_columns_info=scaled_cols_list)
                     if md_uni: temp_models_list_orch.append(md_uni)
         
         elif model_type_ui == "Multivariado":
@@ -2609,8 +2679,11 @@ class CoxModelingApp(ttk.Frame):
             
             md_multi = self._run_model_and_get_metrics(df_multi_current, X_multi_current, y_multi,
                                                        t_col_final, e_col_final, formula_multi_current,
-                                                       name_multi, terms_multi_current, formula_init_patsy_full,
-                                                       pen_val, l1_r, model_type_for_fit_logic="Multivariado")
+                                                       name_multi, terms_multi_current, formula_init_patsy_full, # formula_init_patsy_full is for new data transform
+                                                       pen_val, l1_r, model_type_for_fit_logic="Multivariado",
+                                                       scaling_method_applied=scaling_method_used,
+                                                       fitted_scaler_obj=scaler_object,
+                                                       scaled_columns_info=scaled_cols_list)
             if md_multi: temp_models_list_orch.append(md_multi)
  
         # Añadir los modelos generados a la lista existente, no sobrescribir
@@ -3776,8 +3849,19 @@ class CoxModelingApp(ttk.Frame):
         s_txt_gst += f"  Fórmula Patsy (usada en fit): {model_dict_gst.get('formula_patsy','N/A')}\n"
         s_txt_gst += f"  Fórmula Patsy (original completa para transformar nuevos datos): {model_dict_gst.get('full_patsy_formula_for_new_data_transform','N/A')}\n"
         s_txt_gst += f"  Términos Modelo (columnas en X_design): {', '.join(model_dict_gst.get('covariates_processed',[]))}\n"
-        s_txt_gst += f"  Penalización: {model_dict_gst.get('penalizer_value',0.0):.4g} (L1 Ratio: {model_dict_gst.get('l1_ratio_value',0.0):.2f})\n  Manejo Empates (UI): {model_dict_gst.get('tie_method_used','N/A')} (Lifelines usará su default: efron)\n\n" 
+        s_txt_gst += f"  Penalización: {model_dict_gst.get('penalizer_value',0.0):.4g} (L1 Ratio: {model_dict_gst.get('l1_ratio_value',0.0):.2f})\n  Manejo Empates (UI): {model_dict_gst.get('tie_method_used','N/A')} (Lifelines usará su default: efron)\n"
         
+        # Información de Escalado
+        scaling_method = model_dict_gst.get('scaling_method_applied', 'Ninguna')
+        scaled_cols = model_dict_gst.get('scaled_columns_info', [])
+        s_txt_gst += "\nPreprocesamiento de Covariables Numéricas:\n"
+        s_txt_gst += f"  Método de Escalado Aplicado: {scaling_method}\n"
+        if scaling_method != "Ninguna" and scaled_cols:
+            s_txt_gst += f"  Columnas Escaladas: {', '.join(scaled_cols)}\n"
+        elif scaling_method != "Ninguna" and not scaled_cols:
+            s_txt_gst += "  (Método de escalado seleccionado, pero no se escalaron columnas numéricas.)\n"
+        s_txt_gst += "\n" # Add a newline for separation
+
         s_txt_gst += "Coeficientes (Resumen Lifelines):\n"
         sum_df_gst = model_dict_gst.get('metrics',{}).get('summary_df')
         s_txt_gst += (sum_df_gst.to_string() + "\n\n") if sum_df_gst is not None and not sum_df_gst.empty else "  (No disponibles o modelo nulo)\n\n"
