@@ -2287,48 +2287,48 @@ class CoxModelingApp(ttk.Frame):
  
             # Modelo Principal
             cph_main_rm = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
-            
-            # Siempre usar el DataFrame original (df_lifelines_rm) y la fórmula de Patsy (formula_patsy_rm)
-            # lifelines.fit() se encargará de construir la matriz de diseño internamente.
-            df_for_fit_main = df_lifelines_rm.copy()
-            model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape
-            actual_formula_for_fit = formula_patsy_rm
-            
-            self.log(f"DEBUG: df_for_fit_main columns before fit: {df_for_fit_main.columns.tolist()}", "DEBUG")
-            self.log(f"DEBUG: actual_formula_for_fit before fit: {actual_formula_for_fit}", "DEBUG")
-            
-            cph_main_rm.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
-            
-            model_data_rm["model"] = cph_main_rm # Store model only on successful fit
-            self.log(f"Modelo '{model_name_rm}' ajustado.", "SUCCESS")
+            df_for_fit_main = df_lifelines_rm.copy() # df_lifelines_rm is the correctly prepared DataFrame for this model
+            model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape # Store shape before fit
+            actual_formula_for_fit = formula_patsy_rm # This is the formula for the current model
 
-    except ConvergenceError as e_conv:
-        num_obs_fail = df_for_fit_main.shape[0]
-        num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
-        self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
-        self.log(f"  Error específico: {e_conv}", "ERROR")
-        self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
-        traceback.print_exc(limit=2)
-        model_data_rm["model"] = None # Ensure model is None
-    except np.linalg.LinAlgError as e_linalg:
-        num_obs_fail = df_for_fit_main.shape[0]
-        num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
-        self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
-        self.log(f"  Error específico: {e_linalg}", "ERROR")
-        self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
-        traceback.print_exc(limit=2)
-        model_data_rm["model"] = None # Ensure model is None
-    except Exception as e_fit_main: # General catch-all
-        # Attempt to get N and E, but be careful as df_for_fit_main might not be fully defined if error was early
-        num_obs_fail = df_for_fit_main.shape[0] if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
-        num_events_fail = (df_for_fit_main[event_col_rm].sum() if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
-        self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
-        self.log(f"  Error específico: {e_fit_main}", "ERROR")
-        if num_obs_fail != 'N/A':
-            self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
-        traceback.print_exc(limit=3)
-        model_data_rm["model"] = None # Ensure model is None
-
+            self.log(f"DEBUG: Attempting to fit main model '{model_name_rm}'. DF shape: {df_for_fit_main.shape}, Formula: '{actual_formula_for_fit}'", "DEBUG")
+            if df_for_fit_main.empty:
+                self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. El DataFrame para el ajuste está vacío.", "ERROR")
+                model_data_rm["model"] = None
+            elif X_design_rm.empty and actual_formula_for_fit != "0": # If X_design is empty but formula expects covariates
+                self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. X_design está vacío pero la fórmula no es nula ('{actual_formula_for_fit}').", "ERROR")
+                model_data_rm["model"] = None
+            else:
+                try:
+                    cph_main_rm.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                    model_data_rm["model"] = cph_main_rm
+                    self.log(f"Modelo '{model_name_rm}' ajustado exitosamente.", "SUCCESS")
+                except ConvergenceError as e_conv:
+                    num_obs_fail = df_for_fit_main.shape[0]
+                    num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                    self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
+                    self.log(f"  Error específico: {e_conv}", "ERROR")
+                    self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                    traceback.print_exc(limit=2)
+                    model_data_rm["model"] = None
+                except np.linalg.LinAlgError as e_linalg:
+                    num_obs_fail = df_for_fit_main.shape[0]
+                    num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                    self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
+                    self.log(f"  Error específico: {e_linalg}", "ERROR")
+                    self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                    traceback.print_exc(limit=2)
+                    model_data_rm["model"] = None
+                except Exception as e_fit_main:
+                    num_obs_fail = df_for_fit_main.shape[0] if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
+                    num_events_fail = (df_for_fit_main[event_col_rm].sum() if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
+                    self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
+                    self.log(f"  Error específico: {e_fit_main}", "ERROR")
+                    if num_obs_fail != 'N/A':
+                        self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
+                    traceback.print_exc(limit=3)
+                    model_data_rm["model"] = None
+            
             # Test de Schoenfeld
             if not X_design_rm.empty:
                 if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
