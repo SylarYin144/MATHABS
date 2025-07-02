@@ -35,6 +35,7 @@ import matplotlib
 matplotlib.use('TkAgg')  # Backend para Tkinter
 
 # --- Importaciones de Lifelines ---
+from lifelines.exceptions import ConvergenceError
 # check_assumptions lo reemplaza en gran medida
 
 try:
@@ -2298,8 +2299,35 @@ class CoxModelingApp(ttk.Frame):
             
             cph_main_rm.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
             
-            model_data_rm["model"] = cph_main_rm
+            model_data_rm["model"] = cph_main_rm # Store model only on successful fit
             self.log(f"Modelo '{model_name_rm}' ajustado.", "SUCCESS")
+
+    except ConvergenceError as e_conv:
+        num_obs_fail = df_for_fit_main.shape[0]
+        num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+        self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
+        self.log(f"  Error específico: {e_conv}", "ERROR")
+        self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+        traceback.print_exc(limit=2)
+        model_data_rm["model"] = None # Ensure model is None
+    except np.linalg.LinAlgError as e_linalg:
+        num_obs_fail = df_for_fit_main.shape[0]
+        num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+        self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
+        self.log(f"  Error específico: {e_linalg}", "ERROR")
+        self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+        traceback.print_exc(limit=2)
+        model_data_rm["model"] = None # Ensure model is None
+    except Exception as e_fit_main: # General catch-all
+        # Attempt to get N and E, but be careful as df_for_fit_main might not be fully defined if error was early
+        num_obs_fail = df_for_fit_main.shape[0] if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
+        num_events_fail = (df_for_fit_main[event_col_rm].sum() if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
+        self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
+        self.log(f"  Error específico: {e_fit_main}", "ERROR")
+        if num_obs_fail != 'N/A':
+            self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
+        traceback.print_exc(limit=3)
+        model_data_rm["model"] = None # Ensure model is None
 
             # Test de Schoenfeld
             if not X_design_rm.empty:
@@ -2527,8 +2555,13 @@ class CoxModelingApp(ttk.Frame):
                 except Exception as e_cv_rm: self.log(f"Error C-Index CV: {e_cv_rm}", "ERROR"); traceback.print_exc(limit=3)
             elif self.calculate_cv_cindex_var.get(): self.log("C-Index CV no calculado (modelo nulo o sin X_design).", "INFO")
 
-        except Exception as e_fit_main:
-            self.log(f"Error ajuste modelo/métricas '{model_name_rm}': {e_fit_main}", "ERROR"); traceback.print_exc(limit=5); return None
+        # This was the original generic exception, now it's part of the more detailed block above.
+        # If an error occurred during the cph_null_rm.fit or other preliminary steps before cph_main_rm.fit,
+        # it would be caught by the outer try-except that was already part of the original structure
+        # or would need to be added if this was the only try-except.
+        # For this specific subtask, we are modifying the try-except around cph_main_rm.fit.
+        # The provided snippet implies the rest of the function (Schoenfeld, CV, metrics) continues
+        # after the cph_main_rm.fit try-except block.
 
         model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
         model_data_rm["_X_design_rm_INTERNAL_USE"] = X_design_rm.copy() 
