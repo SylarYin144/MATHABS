@@ -4955,9 +4955,16 @@ class CoxModelingApp(ttk.Frame):
             xerr_low = np.maximum(0, xerr_low)
             xerr_upp = np.maximum(0, xerr_upp)
 
+            # Usar fmt='o' para el marcador central (HR)
+            # El errorbar en sí mismo (las líneas) será negro por 'ecolor'
+            # El capsize define las pequeñas líneas verticales en los extremos del IC
             ax_fp_uni.errorbar(hrs_fp_uni, y_pos_fp_uni, xerr=[xerr_low, xerr_upp],
-                               fmt='o', capsize=5, color='darkblue', ms=6, elinewidth=1.5,
-                               markeredgecolor='black', markerfacecolor='cornflowerblue', zorder=10)
+                               fmt='o', # Marcador de punto para el HR
+                               markersize=5, markerfacecolor='black', markeredgecolor='black',
+                               ecolor='black', # Color de las líneas de error (IC)
+                               capsize=3, # Tamaño de los "caps" en los extremos del IC
+                               elinewidth=1, # Grosor de la línea del IC
+                               zorder=10)
 
             ax_fp_uni.set_yticks(y_pos_fp_uni)
             ax_fp_uni.set_yticklabels(df_plot_uni['variable'], fontsize=9)
@@ -4967,24 +4974,27 @@ class CoxModelingApp(ttk.Frame):
 
             valid_hr_for_log = hrs_fp_uni[hrs_fp_uni > 0]
             if not valid_hr_for_log.empty:
-                 # Verificar si todos los valores son positivos antes de aplicar escala log
-                 if (low_ci_fp_uni > 0).all() and (upp_ci_fp_uni > 0).all():
+                 if (low_ci_fp_uni > 0).all() and (upp_ci_fp_uni > 0).all() and (hrs_fp_uni > 0).all():
                     ax_fp_uni.set_xscale('log')
                     formatter = ScalarFormatter()
-                    formatter.set_scientific(False) # Desactiva notación científica
+                    formatter.set_scientific(False)
                     ax_fp_uni.xaxis.set_major_formatter(formatter)
+                    # Podríamos considerar poner ticks específicos si la escala log es muy amplia
+                    # Ejemplo: ax_fp_uni.set_xticks([0.1, 0.5, 1, 2, 5])
                  else:
-                    self.log("Algunos HRs o ICs son <= 0. No se aplicará escala logarítmica al Forest Plot univariado.", "WARN")
-                    # Para escala lineal, también asegurar que no haya notación científica
-                    formatter_linear = ScalarFormatter(useOffset=False, useMathText=False)
+                    self.log("Algunos HRs o ICs son <= 0. No se aplicará escala logarítmica. Usando escala lineal.", "WARN")
+                    formatter_linear = ScalarFormatter(useOffset=False)
                     formatter_linear.set_scientific(False)
                     ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
             else:
-                 self.log("No hay HRs válidos (>0) para aplicar escala logarítmica al Forest Plot univariado.", "WARN")
-                 # Asegurar formato sin notación científica para escala lineal si la log no se aplica
-                 formatter_linear = ScalarFormatter(useOffset=False, useMathText=False)
+                 self.log("No hay HRs válidos (>0) o datos vacíos para determinar escala. Usando escala lineal.", "WARN")
+                 formatter_linear = ScalarFormatter(useOffset=False)
                  formatter_linear.set_scientific(False)
                  ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
+
+            # Forzar que los ticks se muestren como números flotantes normales
+            # Esto es un intento adicional para asegurar el formato deseado.
+            ax_fp_uni.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, pos: f'{x:.2f}'.rstrip('0').rstrip('.')))
 
 
             opts_fp_uni = self.current_plot_options.copy()
