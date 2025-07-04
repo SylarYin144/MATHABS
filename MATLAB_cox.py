@@ -1058,6 +1058,7 @@ class CoxModelingApp(ttk.Frame):
         # Diccionario del modelo seleccionado en la Treeview
         self.selected_model_in_treeview = None
         self.btn_oos_calibration = None
+        self.univariate_results = [] # Nueva variable para almacenar resultados univariados
 
         # Variables de control para la UI (Pestaña 2: Modelado)
         self.cox_model_type_var = StringVar(value="Multivariado")  # "Univariado" | "Multivariado"
@@ -1959,6 +1960,11 @@ class CoxModelingApp(ttk.Frame):
         clear_models_frame.pack(fill=tk.X, pady=5)
         ttk.Button(clear_models_frame, text="Limpiar Todos los Modelos", command=self._clear_all_generated_models).pack(side=tk.RIGHT, padx=5)
 
+        # Botón para Forest Plot de Univariados
+        self.btn_forest_plot_univariados = ttk.Button(frame_acciones, text="Forest Plot Univariados", command=self.generar_forest_plot_univariados, state=tk.DISABLED)
+        self.btn_forest_plot_univariados.pack(side=tk.LEFT, padx=3, pady=2, fill=tk.X, expand=True)
+
+
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
 
@@ -2496,7 +2502,8 @@ class CoxModelingApp(ttk.Frame):
         self.log("*"*35 + " INICIO MODELADO COX " + "*"*35, "HEADER")
         successful_fits = 0
         failed_fits = 0
-        temp_models_list_orch = [] 
+        temp_models_list_orch = []
+        self.univariate_results = [] # Limpiar resultados univariados anteriores
 
         prep_res = self._preparar_datos_para_modelado()
         if prep_res is None:
@@ -2553,6 +2560,41 @@ class CoxModelingApp(ttk.Frame):
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
                             successful_fits += 1
+                            # Almacenar resultados clave para el forest plot univariado
+                            metrics_uni = md_uni.get("metrics", {})
+                            hr_ci_uni = metrics_uni.get("HR_CI (individual)", {})
+
+                            # El modelo univariado tendrá solo una covariable (o varios términos si es spline/categórica)
+                            # Necesitamos el HR, CI y p-valor para la variable original.
+                            # El nombre de la variable original es `orig_cov_uni`.
+                            # Los `terms_uni` son los nombres de las columnas en X_design.
+                            # `summary_df` dentro de metrics_uni tiene la info por término.
+                            summary_df_uni = metrics_uni.get("summary_df")
+                            if summary_df_uni is not None and not summary_df_uni.empty:
+                                # Para variables simples (no categóricas con múltiples niveles, no splines complejos),
+                                # el summary_df podría tener un solo row o el término principal.
+                                # Si es categórica, `orig_cov_uni` se transforma en `C(Q('orig_cov_uni'))[T.level]`
+                                # Si es spline, `cr(Q('orig_cov_uni'), df=4)[0]`, etc.
+                                # Intentamos encontrar la entrada más relevante.
+                                # Para simplicidad inicial, si hay una sola fila en summary_df, la usamos.
+                                # O si el nombre original está directamente como índice.
+
+                                first_term_name = summary_df_uni.index[0] if not summary_df_uni.empty else None
+                                hr_val = summary_df_uni.loc[first_term_name, 'exp(coef)'] if first_term_name and 'exp(coef)' in summary_df_uni.columns else np.nan
+                                hr_lower = summary_df_uni.loc[first_term_name, 'exp(coef) lower 95%'] if first_term_name and 'exp(coef) lower 95%' in summary_df_uni.columns else np.nan
+                                hr_upper = summary_df_uni.loc[first_term_name, 'exp(coef) upper 95%'] if first_term_name and 'exp(coef) upper 95%' in summary_df_uni.columns else np.nan
+                                p_val_uni = summary_df_uni.loc[first_term_name, 'p'] if first_term_name and 'p' in summary_df_uni.columns else np.nan
+
+                                self.univariate_results.append({
+                                    "variable": orig_cov_uni, # Usar el nombre original de la variable
+                                    "hr": hr_val,
+                                    "hr_lower": hr_lower,
+                                    "hr_upper": hr_upper,
+                                    "p_value": p_val_uni
+                                })
+                                self.log(f"Resultado univariado para '{orig_cov_uni}' almacenado: HR={hr_val:.2f} (p={p_val_uni:.3f})", "DEBUG")
+                            else:
+                                self.log(f"No se pudo extraer HR/CI/p-valor del summary_df para univariado de '{orig_cov_uni}'.", "WARN")
                         else:
                             failed_fits += 1
         
@@ -2636,6 +2678,13 @@ class CoxModelingApp(ttk.Frame):
         self.log(f"  Ajustes Exitosos: {successful_fits}", "SUCCESS" if successful_fits > 0 else "INFO")
         self.log(f"  Ajustes Fallidos: {failed_fits}", "ERROR" if failed_fits > 0 else "INFO")
 
+        # Habilitar botón de Forest Plot Univariados si hay resultados
+        if self.univariate_results:
+            self.btn_forest_plot_univariados.config(state=tk.NORMAL)
+            self.log("Resultados univariados disponibles. Botón Forest Plot Univariados habilitado.", "INFO")
+        else:
+            self.btn_forest_plot_univariados.config(state=tk.DISABLED)
+
         self.log("*"*35 + " FIN PROCESO DE MODELADO COX " + "*"*35, "HEADER")
 
 
@@ -2656,6 +2705,10 @@ class CoxModelingApp(ttk.Frame):
                 self.btn_oos_calibration.config(state=tk.NORMAL)
             else:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
+
+        # El estado del botón de forest plot univariado no depende de la selección del treeview,
+        # sino de la existencia de self.univariate_results, que se maneja en _execute_cox_modeling_orchestrator
+        # y _clear_all_generated_models.
 
         self._update_results_buttons_state()
 
@@ -3912,6 +3965,9 @@ class CoxModelingApp(ttk.Frame):
             self.selected_model_in_treeview = None
             if self.btn_oos_calibration:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
+            if hasattr(self, 'btn_forest_plot_univariados'): # Asegurarse que el botón existe
+                self.btn_forest_plot_univariados.config(state=tk.DISABLED)
+            self.univariate_results = [] # Limpiar también los resultados univariados
             self._update_results_buttons_state() # Deshabilitar botones de resultados
             self.log("Todos los modelos generados han sido eliminados.", "INFO")
 
@@ -4845,6 +4901,82 @@ class CoxModelingApp(ttk.Frame):
         ax.grid(True, linestyle=':', alpha=0.7)
         self.log(f"Gráfico de correlación vs tiempo generado para modelo '{model_name_for_title}'.", "INFO")
 
+    def generar_forest_plot_univariados(self):
+        self.log("Iniciando generación de Forest Plot para resultados univariados.", "INFO")
+        if not self.univariate_results:
+            messagebox.showinfo("Sin Datos", "No hay resultados univariados disponibles para generar el Forest Plot. Ejecute primero el modelado univariado.", parent=self.parent_for_dialogs)
+            self.log("No hay resultados univariados para Forest Plot.", "INFO")
+            return
+
+        fig_fp_uni = None
+        try:
+            df_plot_uni = pd.DataFrame(self.univariate_results)
+            df_plot_uni.dropna(subset=['hr', 'hr_lower', 'hr_upper', 'p_value'], inplace=True)
+
+            if df_plot_uni.empty:
+                messagebox.showinfo("Datos Insuficientes", "No hay suficientes datos válidos en los resultados univariados para graficar.", parent=self.parent_for_dialogs)
+                self.log("DataFrame para Forest Plot univariado vacío después de limpiar NaNs.", "WARN")
+                return
+
+            df_plot_uni.sort_values(by='hr', ascending=True, inplace=True)
+
+            fig_fp_uni, ax_fp_uni = plt.subplots(figsize=(10, max(4, len(df_plot_uni) * 0.45)))
+
+            y_pos_fp_uni = np.arange(len(df_plot_uni))
+            hrs_fp_uni = df_plot_uni['hr'].astype(float)
+            low_ci_fp_uni = df_plot_uni['hr_lower'].astype(float)
+            upp_ci_fp_uni = df_plot_uni['hr_upper'].astype(float)
+
+            xerr_low = hrs_fp_uni - low_ci_fp_uni
+            xerr_upp = upp_ci_fp_uni - hrs_fp_uni
+
+            xerr_low = np.maximum(0, xerr_low)
+            xerr_upp = np.maximum(0, xerr_upp)
+
+            ax_fp_uni.errorbar(hrs_fp_uni, y_pos_fp_uni, xerr=[xerr_low, xerr_upp],
+                               fmt='o', capsize=5, color='darkblue', ms=6, elinewidth=1.5,
+                               markeredgecolor='black', markerfacecolor='cornflowerblue', zorder=10)
+
+            ax_fp_uni.set_yticks(y_pos_fp_uni)
+            ax_fp_uni.set_yticklabels(df_plot_uni['variable'], fontsize=9)
+            ax_fp_uni.invert_yaxis()
+
+            ax_fp_uni.axvline(1.0, color='red', ls='--', lw=1.0, zorder=5)
+
+            valid_hr_for_log = hrs_fp_uni[hrs_fp_uni > 0]
+            if not valid_hr_for_log.empty:
+                 # Verificar si todos los valores son positivos antes de aplicar escala log
+                 if (low_ci_fp_uni > 0).all() and (upp_ci_fp_uni > 0).all():
+                    ax_fp_uni.set_xscale('log')
+                    ax_fp_uni.xaxis.set_major_formatter(ScalarFormatter())
+                 else:
+                    self.log("Algunos HRs o ICs son <= 0. No se aplicará escala logarítmica al Forest Plot univariado.", "WARN")
+            else:
+                 self.log("No hay HRs válidos (>0) para aplicar escala logarítmica al Forest Plot univariado.", "WARN")
+
+
+            opts_fp_uni = self.current_plot_options.copy()
+            opts_fp_uni['title'] = opts_fp_uni.get('title') or "Forest Plot de Resultados Univariados Cox"
+            opts_fp_uni['xlabel'] = opts_fp_uni.get('xlabel') or "Hazard Ratio (HR) con IC 95%"
+            opts_fp_uni['ylabel'] = opts_fp_uni.get('ylabel') or "Variable"
+
+            if 'log' in ax_fp_uni.get_xscale():
+                if 'xlim_min' in opts_fp_uni: del opts_fp_uni['xlim_min']
+                if 'xlim_max' in opts_fp_uni: del opts_fp_uni['xlim_max']
+
+            apply_plot_options(ax_fp_uni, opts_fp_uni, self.log)
+
+            plt.tight_layout(pad=1.5)
+
+            self._create_plot_window(fig_fp_uni, "Forest Plot - Análisis Univariados")
+            self.log("Forest Plot de resultados univariados generado exitosamente.", "SUCCESS")
+
+        except Exception as e_fp_uni:
+            self.log(f"Error al generar Forest Plot univariado: {e_fp_uni}", "ERROR")
+            traceback.print_exc(limit=3)
+            messagebox.showerror("Error de Gráfico", f"No se pudo generar el Forest Plot univariado:\n{e_fp_uni}", parent=self.parent_for_dialogs)
+            if fig_fp_uni is not None:
+                plt.close(fig_fp_uni)
 
 # --- Fin de la clase CoxModelingApp ---
 

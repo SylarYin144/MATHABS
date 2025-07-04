@@ -152,3 +152,19 @@ A continuación, se detallan las funciones más importantes de la clase principa
     *   **Proceso**: Reutiliza `_generate_text_summary_for_model` para obtener el resumen técnico y añade secciones introductorias y de contexto metodológico.
     *   **Salidas**: Una nueva ventana (`ModelSummaryWindow`) que muestra el reporte completo.
     *   **Interacciones**: Depende de `_check_model_selected_and_valid` y `_generate_text_summary_for_model`.
+
+4.  **`generar_forest_plot_univariados()`**
+    *   **Propósito**: Genera un Forest Plot que visualiza los Hazard Ratios (HRs) y sus intervalos de confianza del 95% para cada variable analizada en los modelos de Cox univariados.
+    *   **Entradas**: Utiliza los datos almacenados en `self.univariate_results` (poblados durante la ejecución de `_execute_cox_modeling_orchestrator` en modo univariado).
+    *   **Proceso**:
+        1.  Verifica si existen resultados univariados.
+        2.  Crea un DataFrame con los resultados (variable, HR, HR_lower, HR_upper, p_value).
+        3.  Elimina filas con datos faltantes críticos y ordena las variables (por ejemplo, por HR).
+        4.  Crea una figura y ejes de Matplotlib.
+        5.  Plotea los HRs como puntos y los intervalos de confianza como barras de error.
+        6.  Añade una línea vertical en HR=1 (no efecto).
+        7.  Configura las etiquetas de los ejes, el título y, opcionalmente, la escala logarítmica para el eje X.
+        8.  Aplica las opciones de gráfico globales (`self.current_plot_options`).
+        9.  Muestra el gráfico en una nueva ventana usando `_create_plot_window`.
+    *   **Salidas**: Una ventana emergente con el Forest Plot de los resultados univariados.
+    *   **Interacciones**: Se llama desde un botón en la GUI ("Forest Plot Univariados"). Depende de `_create_plot_window` y de la variable de instancia `self.univariate_results`.
