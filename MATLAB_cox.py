@@ -2262,316 +2262,208 @@ class CoxModelingApp(ttk.Frame):
             "formula_patsy": formula_patsy_rm, 
             "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg, 
             "covariates_processed": covariates_display_terms_rm,
-            "df_used_for_fit": self.data.copy(), # Almacenar el DataFrame completo original (después de filtros iniciales)
+            "df_used_for_fit": self.data.copy(),
             "X_design_used_for_fit": X_design_rm.copy(),
             "y_survival_used_for_fit": y_survival_rm.copy(),
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
-            "metrics": {}, "schoenfeld_results": None, "model": None, "loglik_null": None,
+            "metrics": {}, "schoenfeld_results": pd.DataFrame(), "model": None, "loglik_null": None,
             "c_index_cv_mean": None, "c_index_cv_std": None,
-            "schoenfeld_status_message": None,
+            "schoenfeld_status_message": "Test de Schoenfeld no ejecutado o no aplicable inicialmente.",
             "proportional_hazard_test_summary": None,
             "oos_predictions": None,
             "scaling_method_applied": scaling_method_applied,
             "fitted_scaler_object": fitted_scaler_obj,
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else []
         }
- 
+
+        # 1. Fit Null Model
         try:
-            # Modelo Nulo (para LogLik nulo)
             cph_null_rm = CoxPHFitter(penalizer=0.0)
-            # Para el modelo nulo, solo necesitamos las columnas de tiempo y evento del df_lifelines_rm
             df_for_null_fit_rm = df_lifelines_rm[[time_col_rm, event_col_rm]].copy()
             cph_null_rm.fit(df_for_null_fit_rm, duration_col=time_col_rm, event_col=event_col_rm, formula="0")
             model_data_rm["loglik_null"] = cph_null_rm.log_likelihood_
- 
-            # Modelo Principal
-            cph_main_rm = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
-            df_for_fit_main = df_lifelines_rm.copy() # df_lifelines_rm is the correctly prepared DataFrame for this model
-            model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape # Store shape before fit
-            actual_formula_for_fit = formula_patsy_rm # This is the formula for the current model
+        except Exception as e_null_fit:
+            self.log(f"Error ajustando modelo nulo para '{model_name_rm}': {e_null_fit}", "WARN")
+            model_data_rm["loglik_null"] = None
 
-            self.log(f"DEBUG: Attempting to fit main model '{model_name_rm}'. DF shape: {df_for_fit_main.shape}, Formula: '{actual_formula_for_fit}'", "DEBUG")
-            if df_for_fit_main.empty:
-                self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. El DataFrame para el ajuste está vacío.", "ERROR")
-                model_data_rm["model"] = None
-            elif X_design_rm.empty and actual_formula_for_fit != "0": # If X_design is empty but formula expects covariates
-                self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. X_design está vacío pero la fórmula no es nula ('{actual_formula_for_fit}').", "ERROR")
-                model_data_rm["model"] = None
-            else:
-                try:
-                    cph_main_rm.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
-                    model_data_rm["model"] = cph_main_rm
-                    self.log(f"Modelo '{model_name_rm}' ajustado exitosamente.", "SUCCESS")
-                except ConvergenceError as e_conv:
-                    num_obs_fail = df_for_fit_main.shape[0]
-                    num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
-                    self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
-                    self.log(f"  Error específico: {e_conv}", "ERROR")
-                    self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
-                    traceback.print_exc(limit=2)
-                    model_data_rm["model"] = None
-                except np.linalg.LinAlgError as e_linalg:
-                    num_obs_fail = df_for_fit_main.shape[0]
-                    num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
-                    self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
-                    self.log(f"  Error específico: {e_linalg}", "ERROR")
-                    self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
-                    traceback.print_exc(limit=2)
-                    model_data_rm["model"] = None
-                except Exception as e_fit_main:
-                    num_obs_fail = df_for_fit_main.shape[0] if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
-                    num_events_fail = (df_for_fit_main[event_col_rm].sum() if 'df_for_fit_main' in locals() and isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
-                    self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
-                    self.log(f"  Error específico: {e_fit_main}", "ERROR")
-                    if num_obs_fail != 'N/A':
-                        self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
-                    traceback.print_exc(limit=3)
-                    model_data_rm["model"] = None
-            
+        # 2. Prepare for Main Model Fit
+        cph_main_rm_instance = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
+        df_for_fit_main = df_lifelines_rm.copy()
+        model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape
+        actual_formula_for_fit = formula_patsy_rm
+
+        self.log(f"DEBUG: Attempting to fit main model '{model_name_rm}'. DF shape: {df_for_fit_main.shape}, Formula: '{actual_formula_for_fit}'", "DEBUG")
+
+        # 3. Main Model Fit with Detailed Error Handling
+        if df_for_fit_main.empty:
+            self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. El DataFrame para el ajuste está vacío.", "ERROR")
+            # model_data_rm["model"] is already None
+        elif X_design_rm.empty and actual_formula_for_fit != "0":
+            self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. X_design está vacío pero la fórmula no es nula ('{actual_formula_for_fit}').", "ERROR")
+            # model_data_rm["model"] is already None
+        else:
+            try:
+                cph_main_rm_instance.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                model_data_rm["model"] = cph_main_rm_instance
+                self.log(f"Modelo '{model_name_rm}' ajustado exitosamente.", "SUCCESS")
+            except ConvergenceError as e_conv:
+                num_obs_fail = df_for_fit_main.shape[0]
+                num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_conv}", "ERROR")
+                self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                traceback.print_exc(limit=2)
+                # model_data_rm["model"] remains None
+            except np.linalg.LinAlgError as e_linalg:
+                num_obs_fail = df_for_fit_main.shape[0]
+                num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_linalg}", "ERROR")
+                self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                traceback.print_exc(limit=2)
+                # model_data_rm["model"] remains None
+            except Exception as e_fit_main:
+                num_obs_fail = df_for_fit_main.shape[0] if isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
+                num_events_fail = (df_for_fit_main[event_col_rm].sum() if isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
+                self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_fit_main}", "ERROR")
+                if num_obs_fail != 'N/A':
+                    self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
+                traceback.print_exc(limit=3)
+                # model_data_rm["model"] remains None
+
+        # 4. Post-Fit Operations
+        fitted_cph_model = model_data_rm.get("model")
+
+        if fitted_cph_model:
             # Test de Schoenfeld
             if not X_design_rm.empty:
-                if hasattr(cph_main_rm, 'params_') and not cph_main_rm.params_.empty:
+                if hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
                     self.log(f"--- Iniciando Test de Schoenfeld para Modelo: '{model_name_rm}' ---", "INFO")
-                    self.log(f"Pre-check_assumptions: df_for_fit_main shape: {df_for_fit_main.shape}", "DEBUG")
-                    self.log(f"Pre-check_assumptions: df_for_fit_main dtypes:\n{df_for_fit_main.dtypes.to_string()}", "DEBUG")
-                    self.log(f"Pre-check_assumptions: df_for_fit_main columns: {df_for_fit_main.columns.tolist()}", "DEBUG")
-                    self.log(f"Pre-check_assumptions: duration_col: {time_col_rm}, event_col: {event_col_rm}", "DEBUG")
-                    self.log(f"Pre-check_assumptions: formula for cph_main_rm.fit: {actual_formula_for_fit}", "DEBUG")
-                    self.log(f"Pre-check_assumptions: X_design_rm is empty: {X_design_rm.empty}", "DEBUG")
-                    params_empty = not hasattr(cph_main_rm, 'params_') or cph_main_rm.params_ is None or cph_main_rm.params_.empty
-                    self.log(f"Pre-check_assumptions: cph_main_rm.params_ is empty: {params_empty}", "DEBUG")
-
-                    results_check_assumptions = None # Initialize
-                    model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure initialized as DataFrame
-                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no se ejecutó o no aplicó inicialmente." # Default status
-
                     try:
-                        self.log("Calling cph_main_rm.check_assumptions(df_for_fit_main)...", "DEBUG")
-                        results_check_assumptions = cph_main_rm.check_assumptions(df_for_fit_main)
-                        model_data_rm["check_assumptions_results_raw"] = results_check_assumptions # Store raw results
-                        self.log("Post-check_assumptions: Call completed.", "DEBUG")
-                        self.log(f"DEBUG: Post-check_assumptions: Type of results_check_assumptions: {type(results_check_assumptions)}", "DEBUG")
-
+                        results_check_assumptions = fitted_cph_model.check_assumptions(df_for_fit_main)
+                        model_data_rm["check_assumptions_results_raw"] = results_check_assumptions
                         schoenfeld_df_candidate = None
-                        found_schoenfeld_results = False # Renamed for clarity from the previous version's logic
+                        found_schoenfeld_results = False
+                        if isinstance(results_check_assumptions, list) and results_check_assumptions:
+                            for i, item in enumerate(results_check_assumptions):
+                                if isinstance(item, pd.DataFrame) and not item.empty and all(col in item.columns for col in ['test_statistic', 'p']):
+                                    schoenfeld_df_candidate = item
+                                    found_schoenfeld_results = True
+                                    break
+                                elif hasattr(item, 'summary') and isinstance(item.summary, pd.DataFrame) and not item.summary.empty and all(col in item.summary.columns for col in ['test_statistic', 'p']):
+                                    schoenfeld_df_candidate = item.summary
+                                    found_schoenfeld_results = True
+                                    break
+                            if not found_schoenfeld_results and len(results_check_assumptions) >= 2 and isinstance(results_check_assumptions[1], pd.DataFrame) and all(col in results_check_assumptions[1].columns for col in ['test_statistic', 'p']):
+                                 schoenfeld_df_candidate = results_check_assumptions[1]
+                                 found_schoenfeld_results = True
 
-                        if isinstance(results_check_assumptions, list):
-                            self.log(f"DEBUG: `check_assumptions` returned a list with {len(results_check_assumptions)} elements.", "DEBUG")
-                            if not results_check_assumptions: # Empty list
-                                self.log("INFO: `check_assumptions` devolvió una lista vacía.", "INFO")
-                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (lista vacía de check_assumptions)."
-                            else: # Iterate through the list
-                                for i, result_candidate_item in enumerate(results_check_assumptions): # Renamed item to result_candidate_item
-                                    self.log(f"DEBUG: Checking element {i} in results_check_assumptions (type: {type(result_candidate_item)}).", "DEBUG")
-                                    # Primary way: check if the item itself is the DataFrame we want
-                                    if isinstance(result_candidate_item, pd.DataFrame) and not result_candidate_item.empty:
-                                        # Check for columns that indicate it's the Schoenfeld summary
-                                        # Using 'test_statistic' and 'p' as generally reliable indicators.
-                                        if all(col in result_candidate_item.columns for col in ['test_statistic', 'p']):
-                                            self.log(f"DEBUG: Found candidate Schoenfeld DataFrame in results_check_assumptions list (direct DataFrame check at index {i}). Shape: {result_candidate_item.shape}", "DEBUG")
-                                            schoenfeld_df_candidate = result_candidate_item
-                                            found_schoenfeld_results = True
-                                            break
-                                    # Secondary way: check if it's an object with a .summary DataFrame
-                                    elif hasattr(result_candidate_item, 'summary') and isinstance(result_candidate_item.summary, pd.DataFrame) and not result_candidate_item.summary.empty:
-                                        # Also check if this summary DataFrame has the expected columns
-                                        summary_df_check = result_candidate_item.summary
-                                        if all(col in summary_df_check.columns for col in ['test_statistic', 'p']):
-                                            self.log(f"DEBUG: Found candidate Schoenfeld DataFrame in results_check_assumptions list (via .summary attribute at index {i}). Shape: {summary_df_check.shape}", "DEBUG")
-                                            schoenfeld_df_candidate = summary_df_check
-                                            found_schoenfeld_results = True
-                                            break
-                                # Fallback if no suitable DataFrame found by iterating, but the list had a known structure (e.g., result at index 1)
-                                # This part retains a bit of the original logic if the list structure is [bool, DataFrame, ...]
-                                if not found_schoenfeld_results and len(results_check_assumptions) >= 2 and isinstance(results_check_assumptions[1], pd.DataFrame):
-                                    self.log("WARN: No specific Schoenfeld DataFrame found by primary checks. Falling back to checking results_check_assumptions[1] if it's a DataFrame.", "WARN")
-                                    potential_fallback_df = results_check_assumptions[1]
-                                    if not potential_fallback_df.empty and all(col in potential_fallback_df.columns for col in ['test_statistic', 'p']):
-                                        schoenfeld_df_candidate = potential_fallback_df
-                                        found_schoenfeld_results = True
-                                        self.log(f"DEBUG: Using fallback: results_check_assumptions[1] as Schoenfeld DataFrame. Shape: {schoenfeld_df_candidate.shape}", "DEBUG")
-
-
-                        else: # Not a list
-                            self.log("WARN: `check_assumptions` no devolvió una lista.", "WARN")
-                            model_data_rm["schoenfeld_status_message"] = "Resultados del Test de Schoenfeld no tuvieron el formato esperado (check_assumptions no devolvió lista)."
-
-                        # Process the candidate DataFrame
-                        if found_schoenfeld_results and schoenfeld_df_candidate is not None: # schoenfeld_df_candidate should be a DataFrame here
-                            if schoenfeld_df_candidate.empty: # This check is now redundant if loops check for non-empty, but safe
-                                model_data_rm["schoenfeld_results"] = pd.DataFrame() # Ensure it's an empty DF, not the empty one found
-                                self.log("INFO: Test de Schoenfeld devolvió un DataFrame vacío (o candidate was empty).", "INFO")
-                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no arrojó datos detallados (DataFrame vacío de check_assumptions)."
-                            else:
-                                model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy() # Use .copy()
-                                self.log("INFO: Test de Schoenfeld calculado exitosamente y DataFrame (schoenfeld_results) no está vacío.", "INFO")
-                                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
-                                self.log(f"DEBUG: Schoenfeld DataFrame shape: {model_data_rm['schoenfeld_results'].shape}", "DEBUG")
-                                self.log(f"DEBUG: Schoenfeld DataFrame columns: {model_data_rm['schoenfeld_results'].columns.tolist()}", "DEBUG")
-                                self.log(f"DEBUG: Schoenfeld DataFrame head:\n{model_data_rm['schoenfeld_results'].head().to_string()}", "DEBUG")
-                        # If not found_schoenfeld_results but it was a list and not empty (e.g. list of bools, or DFs not matching criteria)
-                        elif not found_schoenfeld_results and isinstance(results_check_assumptions, list) and results_check_assumptions:
-                             self.log("WARN: No se encontró un DataFrame de Schoenfeld adecuado en la lista de `check_assumptions` (elementos no eran DF esperados o eran vacíos).", "WARN")
-                             model_data_rm["schoenfeld_status_message"] = "Schoenfeld: resultados detallados no encontrados o en formato inesperado en la lista de check_assumptions."
-                        # If results_check_assumptions was not a list, or was an empty list, status messages are already set.
-                        # model_data_rm["schoenfeld_results"] remains an empty DataFrame if no candidate was found or processed.
-
+                        if found_schoenfeld_results and schoenfeld_df_candidate is not None:
+                            model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy()
+                            model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
+                        else:
+                            model_data_rm["schoenfeld_status_message"] = "Schoenfeld: resultados detallados no encontrados o en formato inesperado."
                     except Exception as e_sch_detailed:
-                        model_data_rm["schoenfeld_status_message"] = "Error durante procesamiento de resultados del Test de Schoenfeld (check_assumptions)."
-                        detailed_tb = traceback.format_exc()
-                        self.log(f"CRITICAL ERROR during Test Schoenfeld (cph_main_rm.check_assumptions call): {e_sch_detailed}\nTraceback:\n{detailed_tb}", "ERROR")
-                        # model_data_rm["schoenfeld_results"] remains an empty DataFrame (initialized before try block)
-
-                    self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado ---", "INFO")
-                else: # No model parameters
-                    self.log("INFO: Modelo sin parámetros (covariables). Test de Schoenfeld no aplicable.", "INFO")
+                        model_data_rm["schoenfeld_status_message"] = "Error durante Test de Schoenfeld (check_assumptions)."
+                        self.log(f"ERROR en Test Schoenfeld para '{model_name_rm}': {e_sch_detailed}\n{traceback.format_exc()}", "ERROR")
+                    self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado. Status: {model_data_rm['schoenfeld_status_message']} ---", "INFO")
+                else:
+                    self.log(f"INFO: Modelo '{model_name_rm}' sin parámetros. Test de Schoenfeld no aplicable.", "INFO")
                     model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo sin covariables)."
-                    # model_data_rm["schoenfeld_results"] is already an empty DataFrame
-            else: # No X_design (null model)
-                self.log("INFO: Modelo nulo (X_design_rm está vacío). Test de Schoenfeld no aplicable.", "INFO")
+            else: # X_design_rm is empty (null model)
+                self.log(f"INFO: Modelo nulo '{model_name_rm}' (X_design_rm vacío). Test de Schoenfeld no aplicable.", "INFO")
                 model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
-                # model_data_rm["schoenfeld_results"] is already an empty DataFrame
 
-            # Fallback or alternative: proportional_hazard_test
-            # Decide whether to try proportional_hazard_test based on the status and content of schoenfeld_results
-            current_schoenfeld_df = model_data_rm.get("schoenfeld_results")
-            current_schoenfeld_status = model_data_rm.get("schoenfeld_status_message", "")
-            
-            # Try proportional_hazard_test if check_assumptions didn't yield a non-empty DataFrame of residuals,
-            # or if check_assumptions itself had issues that didn't prevent trying an alternative.
-            should_try_ph_test = False
-            if isinstance(current_schoenfeld_df, pd.DataFrame) and current_schoenfeld_df.empty:
-                if "calculado exitosamente" not in current_schoenfeld_status: # e.g. if it was "DataFrame vacío de check_assumptions"
-                    should_try_ph_test = True
-            elif "Error durante cálculo" in current_schoenfeld_status or \
-                 "no tuvieron el formato esperado" in current_schoenfeld_status or \
-                 "no arrojó datos detallados" in current_schoenfeld_status or \
-                 "Schoenfeld: resultados detallados no encontrados" in current_schoenfeld_status :
-                should_try_ph_test = True
-            
-            # Ensure model has params for ph_test if we are to try it
-            if should_try_ph_test and not (hasattr(cph_main_rm, 'params_') and cph_main_rm.params_ is not None and not cph_main_rm.params_.empty):
-                self.log("INFO: `proportional_hazard_test` no se intentará porque el modelo no tiene parámetros (similar a check_assumptions).", "INFO")
-                should_try_ph_test = False
-            
-            if should_try_ph_test:
-                self.log("INFO: `check_assumptions` no proporcionó resultados detallados de Schoenfeld. Intentando `proportional_hazard_test` por separado.", "INFO")
+            # Fallback proportional_hazard_test (if schoenfeld_results is still empty or had issues)
+            schoenfeld_df_current = model_data_rm.get("schoenfeld_results")
+            status_msg_current = model_data_rm.get("schoenfeld_status_message", "")
+            should_try_ph_test_fallback = (schoenfeld_df_current is None or schoenfeld_df_current.empty) and \
+                                          ("calculado exitosamente" not in status_msg_current)
+
+            if should_try_ph_test_fallback and hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+                self.log(f"INFO: Intentando `proportional_hazard_test` para '{model_name_rm}'.", "INFO")
                 try:
                     from lifelines.statistics import proportional_hazard_test
-
-                    # df_for_fit_main is the DataFrame used for cph_main_rm.fit()
-                    # cph_main_rm is the fitted model object
-                    ph_test_results_obj = proportional_hazard_test(cph_main_rm, df_for_fit_main, time_transform='log')
-
-                    if ph_test_results_obj is not None and hasattr(ph_test_results_obj, 'summary') and isinstance(ph_test_results_obj.summary, pd.DataFrame) and not ph_test_results_obj.summary.empty:
-                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results_obj.summary
-                        self.log("INFO: `proportional_hazard_test` ejecutado exitosamente y su resumen ha sido almacenado.", "INFO")
-                        self.log(f"DEBUG: Resumen de proportional_hazard_test (shape: {ph_test_results_obj.summary.shape}):\n{ph_test_results_obj.summary.head().to_string()}", "DEBUG")
-
-                        # Update status message to reflect this new information
-                        # Update status message to reflect this new information, building on previous status
-                        prev_status = model_data_rm["schoenfeld_status_message"]
-                        if "no arrojó datos detallados" in prev_status or "DataFrame vacío" in prev_status or "formato inesperado" in prev_status or "no encontrados" in prev_status:
-                             model_data_rm["schoenfeld_status_message"] = f"{prev_status.replace('.', '')}, pero se obtuvieron resultados de proportional_hazard_test."
-                        elif "Error durante cálculo" in prev_status: # If check_assumptions had an error
-                             model_data_rm["schoenfeld_status_message"] = f"{prev_status.replace('.', '')}; adicionalmente, proportional_hazard_test también fue ejecutado y proporcionó un resumen."
-                        else: # Generic addition
-                             model_data_rm["schoenfeld_status_message"] = f"{prev_status.replace('.', '')}. Adicionalmente, se obtuvieron resultados de proportional_hazard_test."
-                    else: # proportional_hazard_test did not return a valid summary
-                        self.log("WARN: `proportional_hazard_test` no devolvió un resumen válido (DataFrame no vacío).", "WARN")
-                        prev_status = model_data_rm["schoenfeld_status_message"]
-                        ph_test_fail_suffix = " Adicionalmente, el intento con proportional_hazard_test tampoco arrojó un resumen."
-                        # Append suffix if the original status was about missing data or format issues from check_assumptions
-                        if any(phrase in prev_status for phrase in ["no arrojó datos detallados", "DataFrame vacío", "formato inesperado", "no encontrados", "Error durante cálculo"]):
-                            model_data_rm["schoenfeld_status_message"] = prev_status.replace(".","") + ph_test_fail_suffix
-                        # else, if it was "calculado exitosamente" from check_assumptions, that message is probably fine.
-
-                except ImportError:
-                    self.log("ERROR: No se pudo importar `proportional_hazard_test` desde `lifelines.statistics`.", "ERROR")
-                    model_data_rm["schoenfeld_status_message"] = model_data_rm["schoenfeld_status_message"].replace(".","") + " (Error al importar proportional_hazard_test)."
-                except Exception as e_ph_test:
-                    self.log(f"ERROR: Excepción durante la llamada a `proportional_hazard_test`: {e_ph_test}", "ERROR")
-                    # self.log(traceback.format_exc(), "DEBUG")
-                    model_data_rm["schoenfeld_status_message"] = model_data_rm["schoenfeld_status_message"].replace(".","") + f" (Error al ejecutar proportional_hazard_test: {str(e_ph_test)[:50]}...)."
+                    ph_test_results = proportional_hazard_test(fitted_cph_model, df_for_fit_main, time_transform='log')
+                    if ph_test_results is not None and hasattr(ph_test_results, 'summary') and isinstance(ph_test_results.summary, pd.DataFrame) and not ph_test_results.summary.empty:
+                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results.summary
+                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test proporcionó un resumen."
+                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' exitoso.", "INFO")
+                    else:
+                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test no arrojó resumen."
+                except Exception as e_ph_test_fallback:
+                    self.log(f"ERROR en `proportional_hazard_test` para '{model_name_rm}': {e_ph_test_fallback}", "ERROR")
+                    model_data_rm["schoenfeld_status_message"] += f" (Error en proportional_hazard_test: {str(e_ph_test_fallback)[:30]}...)."
 
             # C-Index CV
             if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
+                self.log(f"Iniciando cálculo de C-Index CV para '{model_name_rm}'.", "INFO")
                 try:
                     kf_cv = KFold(n_splits=self.cv_num_kfolds_var.get(), shuffle=True, random_state=self.cv_random_seed_var.get())
                     c_indices_cv_list = []
-                    all_oos_predictions_data = [] # Initialize list to store OOS prediction data
-                    for train_idx, test_idx in kf_cv.split(df_lifelines_rm): # Usar df_lifelines_rm para split
-                        
-                        df_fold_for_fit_cv = df_lifelines_rm.iloc[train_idx].copy() # Siempre usar el DF original
-                        
-                        # y_te_cv se usa para concordance_index y para obtener true_time/event_subject
+                    all_oos_predictions_data = []
+                    for train_idx, test_idx in kf_cv.split(df_lifelines_rm):
+                        df_fold_for_fit_cv = df_lifelines_rm.iloc[train_idx].copy()
                         y_te_cv = y_survival_rm.iloc[test_idx]
-
                         if df_fold_for_fit_cv.empty or y_te_cv.empty: continue
                         
-                        cph_fold = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
-                        # Usar la misma fórmula que el modelo principal
-                        cph_fold.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                        cph_fold_cv = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
+                        cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
                         
-                        # Para predict_partial_hazard, lifelines también espera el DataFrame original
-                        preds_te_fold = cph_fold.predict_partial_hazard(df_lifelines_rm.iloc[test_idx])
-                        c_idx_fold = concordance_index(y_te_cv[time_col_rm], -preds_te_fold, y_te_cv[event_col_rm])
-                        c_indices_cv_list.append(c_idx_fold)
+                        preds_te_fold_cv = cph_fold_cv.predict_partial_hazard(df_lifelines_rm.iloc[test_idx])
+                        c_idx_fold_cv = concordance_index(y_te_cv[time_col_rm], -preds_te_fold_cv, y_te_cv[event_col_rm])
+                        c_indices_cv_list.append(c_idx_fold_cv)
 
-                        # Predict OOS survival functions for the current test fold
                         try:
-                            # df_test_fold_original_cols contiene los valores de las covariables originales para los sujetos del test fold
-                            df_test_fold_original_cols = df_lifelines_rm.iloc[test_idx]
-                            oos_survival_functions_fold = cph_fold.predict_survival_function(df_test_fold_original_cols)
-                            # oos_survival_functions_fold es un DataFrame: filas son timepoints, columnas son subject indices del test_idx
-
-                            for subject_original_idx in df_test_fold_original_cols.index: # Iterar sobre los índices originales de los sujetos en el test fold
-                                true_time_subject = y_te_cv.loc[subject_original_idx, time_col_rm]
-                                true_event_subject = y_te_cv.loc[subject_original_idx, event_col_rm]
-                                # Acceder a la serie de supervivencia para el sujeto actual usando su índice original
-                                predicted_sf_subject = oos_survival_functions_fold[subject_original_idx]
-
+                            df_test_fold_original_cols_cv = df_lifelines_rm.iloc[test_idx]
+                            oos_sf_fold_cv = cph_fold_cv.predict_survival_function(df_test_fold_original_cols_cv)
+                            for subj_orig_idx_cv in df_test_fold_original_cols_cv.index:
                                 all_oos_predictions_data.append({
-                                    "subject_id": subject_original_idx,
-                                    "true_time": true_time_subject,
-                                    "true_event": true_event_subject,
-                                    "predicted_survival_function": predicted_sf_subject # pd.Series
+                                    "subject_id": subj_orig_idx_cv,
+                                    "true_time": y_te_cv.loc[subj_orig_idx_cv, time_col_rm],
+                                    "true_event": y_te_cv.loc[subj_orig_idx_cv, event_col_rm],
+                                    "predicted_survival_function": oos_sf_fold_cv[subj_orig_idx_cv]
                                 })
-                        except Exception as e_pred_sf_cv:
-                            self.log(f"Error predicting OOS survival function in CV fold: {e_pred_sf_cv}", "WARN")
-                            # traceback.print_exc(limit=1) # Descomentar para más detalle si es necesario
+                        except Exception as e_pred_sf_cv_loop:
+                            self.log(f"Error prediciendo OOS SF en CV para '{model_name_rm}': {e_pred_sf_cv_loop}", "WARN")
 
-                    if c_indices_cv_list: model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list); model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
-                    self.log(f"C-Index CV: Media={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
-
+                    if c_indices_cv_list:
+                        model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list)
+                        model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
+                        self.log(f"C-Index CV para '{model_name_rm}': Media={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
                     if all_oos_predictions_data:
-                        model_data_rm["oos_predictions"] = all_oos_predictions_data # Store list of dicts
-                        self.log(f"Stored {len(all_oos_predictions_data)} out-of-sample predictions from CV.", "INFO")
-                    else:
-                        # model_data_rm["oos_predictions"] remains None (set at initialization) if list is empty
-                        self.log("No out-of-sample predictions were stored from CV.", "WARN")
+                        model_data_rm["oos_predictions"] = all_oos_predictions_data
+                        self.log(f"Almacenadas {len(all_oos_predictions_data)} predicciones OOS de CV para '{model_name_rm}'.", "INFO")
+                except Exception as e_cv_rm_main:
+                    self.log(f"Error general en C-Index CV para '{model_name_rm}': {e_cv_rm_main}", "ERROR")
+                    traceback.print_exc(limit=3)
+            elif self.calculate_cv_cindex_var.get():
+                 self.log(f"C-Index CV no calculado para '{model_name_rm}' (modelo nulo o X_design vacío).", "INFO")
+        else: # model_data_rm["model"] is None (fit failed)
+            self.log(f"Ajuste del modelo '{model_name_rm}' falló. Omitiendo tests de Schoenfeld y C-Index CV.", "WARN")
+            model_data_rm["schoenfeld_status_message"] = "No aplicable (fallo en ajuste de modelo)."
+            model_data_rm["c_index_cv_mean"] = None
+            model_data_rm["c_index_cv_std"] = None
+            model_data_rm["oos_predictions"] = None
 
-                except Exception as e_cv_rm: self.log(f"Error C-Index CV: {e_cv_rm}", "ERROR"); traceback.print_exc(limit=3)
-            elif self.calculate_cv_cindex_var.get(): self.log("C-Index CV no calculado (modelo nulo o sin X_design).", "INFO")
-
-        # This was the original generic exception, now it's part of the more detailed block above.
-        # If an error occurred during the cph_null_rm.fit or other preliminary steps before cph_main_rm.fit,
-        # it would be caught by the outer try-except that was already part of the original structure
-        # or would need to be added if this was the only try-except.
-        # For this specific subtask, we are modifying the try-except around cph_main_rm.fit.
-        # The provided snippet implies the rest of the function (Schoenfeld, CV, metrics) continues
-        # after the cph_main_rm.fit try-except block.
-
+        # 5. Store internal data copies
         model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
         model_data_rm["_X_design_rm_INTERNAL_USE"] = X_design_rm.copy() 
         model_data_rm["_y_survival_rm_INTERNAL_USE"] = y_survival_rm.copy() 
 
+        # 6. Calculate and Store Final Metrics
         model_data_rm["metrics"] = compute_model_metrics(
-            cph_main_rm, X_design_rm, y_survival_rm, time_col_rm, event_col_rm,
-            model_data_rm["c_index_cv_mean"], model_data_rm["c_index_cv_std"],
-            model_data_rm["schoenfeld_results"], model_data_rm["loglik_null"], self.log
+            fitted_cph_model,
+            X_design_rm, y_survival_rm, time_col_rm, event_col_rm,
+            model_data_rm.get("c_index_cv_mean"),
+            model_data_rm.get("c_index_cv_std"),
+            model_data_rm.get("schoenfeld_results"),
+            model_data_rm.get("loglik_null"),
+            self.log
         )
+
         return model_data_rm
 
     def _update_models_treeview(self):
