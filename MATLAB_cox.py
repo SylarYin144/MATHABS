@@ -2494,6 +2494,8 @@ class CoxModelingApp(ttk.Frame):
 
     def _execute_cox_modeling_orchestrator(self):
         self.log("*"*35 + " INICIO MODELADO COX " + "*"*35, "HEADER")
+        successful_fits = 0
+        failed_fits = 0
         temp_models_list_orch = [] 
 
         prep_res = self._preparar_datos_para_modelado()
@@ -2547,7 +2549,12 @@ class CoxModelingApp(ttk.Frame):
                                                              scaling_method_applied=scaling_method_used,
                                                              fitted_scaler_obj=scaler_object,
                                                              scaled_columns_info=scaled_cols_list)
-                    if md_uni: temp_models_list_orch.append(md_uni)
+                    if md_uni:
+                        temp_models_list_orch.append(md_uni)
+                        if md_uni.get("model") is not None:
+                            successful_fits += 1
+                        else:
+                            failed_fits += 1
         
         elif model_type_ui == "Multivariado":
             self.log("Iniciando modelado Multivariado...", "INFO")
@@ -2609,7 +2616,12 @@ class CoxModelingApp(ttk.Frame):
                                                        scaling_method_applied=scaling_method_used,
                                                        fitted_scaler_obj=scaler_object,
                                                        scaled_columns_info=scaled_cols_list)
-            if md_multi: temp_models_list_orch.append(md_multi)
+            if md_multi:
+                temp_models_list_orch.append(md_multi)
+                if md_multi.get("model") is not None:
+                    successful_fits += 1
+                else:
+                    failed_fits += 1
  
         # Añadir los modelos generados a la lista existente, no sobrescribir
         self.generated_models_data.extend(temp_models_list_orch)
@@ -2617,6 +2629,13 @@ class CoxModelingApp(ttk.Frame):
         msg_fin = f"Modelado completado. {len(temp_models_list_orch)} modelo(s) generado(s) y añadido(s)." if temp_models_list_orch else "No se generó ningún modelo nuevo."
         self.log(msg_fin, "SUCCESS" if temp_models_list_orch else "WARN")
         messagebox.showinfo("Modelado Terminado", msg_fin, parent=self.parent_for_dialogs)
+
+        total_models_attempted = successful_fits + failed_fits
+        self.log(f"Resumen de Convergencia de Modelos:", "SUBHEADER")
+        self.log(f"  Modelos Totales Intentados: {total_models_attempted}", "INFO")
+        self.log(f"  Ajustes Exitosos: {successful_fits}", "SUCCESS" if successful_fits > 0 else "INFO")
+        self.log(f"  Ajustes Fallidos: {failed_fits}", "ERROR" if failed_fits > 0 else "INFO")
+
         self.log("*"*35 + " FIN PROCESO DE MODELADO COX " + "*"*35, "HEADER")
 
 
@@ -2754,7 +2773,25 @@ class CoxModelingApp(ttk.Frame):
                     ax_s_curr.plot(scaled_residuals.index, scaled_residuals[cov_name_s], 
                                    linestyle='none', marker='o', markersize=3, alpha=0.6)
                     ax_s_curr.axhline(0, color='grey', linestyle='--', lw=0.8)
-                    ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}", fontsize=10)
+
+                    # Retrieve and format p-value for the current covariate
+                    p_val_str = "N/A"
+                    sch_results_df = md_sch.get("schoenfeld_results")
+                    ph_test_summary_df = md_sch.get("proportional_hazard_test_summary")
+
+                    # Try schoenfeld_results first
+                    if sch_results_df is not None and isinstance(sch_results_df, pd.DataFrame) and not sch_results_df.empty and 'p' in sch_results_df.columns:
+                        if cov_name_s in sch_results_df.index:
+                            p_val = sch_results_df.loc[cov_name_s, 'p']
+                            p_val_str = format_p_value(p_val)
+
+                    # If p-value still "N/A", try ph_test_summary_df
+                    if p_val_str == "N/A" and ph_test_summary_df is not None and isinstance(ph_test_summary_df, pd.DataFrame) and not ph_test_summary_df.empty and 'p' in ph_test_summary_df.columns:
+                        if cov_name_s in ph_test_summary_df.index:
+                            p_val = ph_test_summary_df.loc[cov_name_s, 'p']
+                            p_val_str = format_p_value(p_val)
+
+                    ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}\nPH Test p: {p_val_str}", fontsize=9)
                     ax_s_curr.set_ylabel("Scaled Residual", fontsize=8)
                     
                     # Determine if the current subplot is in the bottom row of visible plots
