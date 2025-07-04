@@ -1077,6 +1077,7 @@ class CoxModelingApp(ttk.Frame):
         self.cv_num_kfolds_var = IntVar(value=5)  # Número de folds para CV
         self.cv_random_seed_var = IntVar(value=42)  # Semilla aleatoria para CV
         self.covariate_scaling_method_var = StringVar(value="Ninguna")
+        self.generar_fp_univariado_auto_var = BooleanVar(value=False) # Para el nuevo checkbox
 
         # Crear Notebook (pestañas)
         self.notebook = ttk.Notebook(self)
@@ -1812,9 +1813,14 @@ class CoxModelingApp(ttk.Frame):
         # Tipo de Modelado
         frame_tipo_modelado = ttk.Frame(left_col_frame)
         frame_tipo_modelado.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").pack(side=tk.LEFT, padx=(0,5))
-        ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado").pack(side=tk.LEFT, padx=3)
-        ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado").pack(side=tk.LEFT, padx=3)
+        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").grid(row=0, column=0, padx=(0,5), pady=3, sticky=tk.W)
+        ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado", command=self._toggle_univariado_fp_checkbox_state).grid(row=0, column=1, padx=3, pady=3, sticky=tk.W)
+        ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado", command=self._toggle_univariado_fp_checkbox_state).grid(row=0, column=2, padx=3, pady=3, sticky=tk.W)
+
+        # Checkbox para Forest Plot Univariado Automático
+        self.cb_auto_forest_plot_univariado = ttk.Checkbutton(frame_tipo_modelado, text="Generar Forest Plot Univariado Automáticamente", variable=self.generar_fp_univariado_auto_var, state=tk.DISABLED)
+        self.cb_auto_forest_plot_univariado.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
 
         # Selección de Variables
         frame_sel_vars = ttk.LabelFrame(left_col_frame, text="Selección de Variables (para Multivariado)")
@@ -1967,6 +1973,16 @@ class CoxModelingApp(ttk.Frame):
 
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
+        self._toggle_univariado_fp_checkbox_state() # Estado inicial del checkbox de FP univariado
+
+    def _toggle_univariado_fp_checkbox_state(self):
+        """Habilita o deshabilita el checkbox de Forest Plot univariado automático."""
+        if hasattr(self, 'cb_auto_forest_plot_univariado'):
+            if self.cox_model_type_var.get() == "Univariado":
+                self.cb_auto_forest_plot_univariado.config(state=tk.NORMAL)
+            else:
+                self.cb_auto_forest_plot_univariado.config(state=tk.DISABLED)
+                self.generar_fp_univariado_auto_var.set(False) # Desmarcar si se cambia a multivariado
 
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
@@ -2680,10 +2696,16 @@ class CoxModelingApp(ttk.Frame):
 
         # Habilitar botón de Forest Plot Univariados si hay resultados
         if self.univariate_results:
-            self.btn_forest_plot_univariados.config(state=tk.NORMAL)
+            if hasattr(self, 'btn_forest_plot_univariados'): # Comprobar si el botón existe
+                self.btn_forest_plot_univariados.config(state=tk.NORMAL)
             self.log("Resultados univariados disponibles. Botón Forest Plot Univariados habilitado.", "INFO")
+            # Generar automáticamente el Forest Plot si el checkbox está activado
+            if self.generar_fp_univariado_auto_var.get():
+                self.log("Checkbox de Forest Plot univariado automático activado. Generando gráfico...", "INFO")
+                self.generar_forest_plot_univariados()
         else:
-            self.btn_forest_plot_univariados.config(state=tk.DISABLED)
+            if hasattr(self, 'btn_forest_plot_univariados'): # Comprobar si el botón existe
+                self.btn_forest_plot_univariados.config(state=tk.DISABLED)
 
         self.log("*"*35 + " FIN PROCESO DE MODELADO COX " + "*"*35, "HEADER")
 
@@ -4948,11 +4970,21 @@ class CoxModelingApp(ttk.Frame):
                  # Verificar si todos los valores son positivos antes de aplicar escala log
                  if (low_ci_fp_uni > 0).all() and (upp_ci_fp_uni > 0).all():
                     ax_fp_uni.set_xscale('log')
-                    ax_fp_uni.xaxis.set_major_formatter(ScalarFormatter())
+                    formatter = ScalarFormatter()
+                    formatter.set_scientific(False) # Desactiva notación científica
+                    ax_fp_uni.xaxis.set_major_formatter(formatter)
                  else:
                     self.log("Algunos HRs o ICs son <= 0. No se aplicará escala logarítmica al Forest Plot univariado.", "WARN")
+                    # Para escala lineal, también asegurar que no haya notación científica
+                    formatter_linear = ScalarFormatter(useOffset=False, useMathText=False)
+                    formatter_linear.set_scientific(False)
+                    ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
             else:
                  self.log("No hay HRs válidos (>0) para aplicar escala logarítmica al Forest Plot univariado.", "WARN")
+                 # Asegurar formato sin notación científica para escala lineal si la log no se aplica
+                 formatter_linear = ScalarFormatter(useOffset=False, useMathText=False)
+                 formatter_linear.set_scientific(False)
+                 ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
 
 
             opts_fp_uni = self.current_plot_options.copy()

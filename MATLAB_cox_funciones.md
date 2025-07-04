@@ -167,4 +167,4 @@ A continuación, se detallan las funciones más importantes de la clase principa
         8.  Aplica las opciones de gráfico globales (`self.current_plot_options`).
         9.  Muestra el gráfico en una nueva ventana usando `_create_plot_window`.
     *   **Salidas**: Una ventana emergente con el Forest Plot de los resultados univariados.
-    *   **Interacciones**: Se llama desde un botón en la GUI ("Forest Plot Univariados"). Depende de `_create_plot_window` y de la variable de instancia `self.univariate_results`.
+    *   **Interacciones**: Se llama desde un botón en la GUI ("Forest Plot Univariados") o automáticamente si el checkbox "Generar Forest Plot Univariado Automáticamente" (introducido en la Pestaña 2, sección "Tipo de Modelado") está activado al finalizar los análisis univariados. Depende de `_create_plot_window` y de la variable de instancia `self.univariate_results`. El formato del eje X se ajusta para evitar la notación científica.
