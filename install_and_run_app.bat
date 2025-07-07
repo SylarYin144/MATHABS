@@ -121,6 +121,9 @@ pushd "%SCRIPT_DIR%"
 
 REM Ejecutar la aplicación Python. La consola esperará a que la app termine.
 call python "%MAIN_APP_PYTHON_SCRIPT%"
+echo.
+echo Script de Python ha terminado o fallado. Presione una tecla para continuar...
+pause
 
 popd
 echo.
