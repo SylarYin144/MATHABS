@@ -11,11 +11,10 @@ set MAIN_APP_PYTHON_SCRIPT=MATLAB_main_app.py
 REM --- FIN CONFIGURACION ---
 
 REM Directorio donde se encuentra este script (asumido como raíz del proyecto)
-set SCRIPT_DIR=%~dp0
-REM Limpiar la barra invertida final si existe para consistencia
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "TEMP_SCRIPT_PATH=%~dp0"
+set "SCRIPT_DIR=%TEMP_SCRIPT_PATH:~0,-1%"
 
-echo Directorio del Script (Raiz del Proyecto): %SCRIPT_DIR%
+echo Directorio del Script (Raiz del Proyecto): "%SCRIPT_DIR%"
 echo.
 
 REM --- 1. VERIFICAR PYTHON (general, no necesariamente el del venv aun) ---
@@ -32,7 +31,7 @@ echo Python base encontrado.
 echo.
 
 REM --- 2. VERIFICAR ENTORNO VIRTUAL Y ARCHIVO PRINCIPAL ---
-set VENV_DIR=%SCRIPT_DIR%\%VENV_NAME%
+set "VENV_DIR=%SCRIPT_DIR%\%VENV_NAME%"
 echo Verificando entorno virtual en: "%VENV_DIR%"
 
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
@@ -78,6 +77,9 @@ pushd "%SCRIPT_DIR%"
 
 REM Ejecutar la aplicación Python. La consola esperará a que la app termine.
 call python "%MAIN_APP_PYTHON_SCRIPT%"
+echo.
+echo Script de Python ha terminado o fallado. Presione una tecla para continuar...
+pause
 
 popd
 echo.

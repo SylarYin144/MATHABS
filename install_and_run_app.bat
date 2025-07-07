@@ -12,11 +12,10 @@ set MAIN_APP_PYTHON_SCRIPT=MATLAB_main_app.py
 REM --- FIN CONFIGURACION ---
 
 REM Directorio donde se encuentra este script (asumido como raíz del proyecto)
-set SCRIPT_DIR=%~dp0
-REM Limpiar la barra invertida final si existe para consistencia
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "TEMP_SCRIPT_PATH=%~dp0"
+set "SCRIPT_DIR=%TEMP_SCRIPT_PATH:~0,-1%"
 
-echo Directorio del Script (Raiz del Proyecto): %SCRIPT_DIR%
+echo Directorio del Script (Raiz del Proyecto): "%SCRIPT_DIR%"
 echo.
 
 REM --- 1. VERIFICAR PYTHON ---
@@ -52,7 +51,7 @@ echo Archivos necesarios encontrados.
 echo.
 
 REM --- 3. CONFIGURAR Y CREAR ENTORNO VIRTUAL (si no existe) ---
-set VENV_DIR=%SCRIPT_DIR%\%VENV_NAME%
+set "VENV_DIR=%SCRIPT_DIR%\%VENV_NAME%"
 echo Directorio del entorno virtual: "%VENV_DIR%"
 
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
