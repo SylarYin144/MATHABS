@@ -20,7 +20,7 @@ echo.
 REM --- 1. VERIFICAR PYTHON (general, no necesariamente el del venv aun) ---
 echo Verificando instalacion de Python base...
 python --version >nul 2>&1
-if errorlevel 1 (
+if %errorlevel% NEQ 0 (
     echo ERROR: Python no esta instalado o no se encuentra en el PATH.
     echo        Este script requiere Python para activar el entorno virtual.
     echo.

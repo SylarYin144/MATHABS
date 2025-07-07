@@ -1,45 +1,27 @@
 @echo off
 setlocal
-echo DEBUG: INICIO SCRIPT
-pause
-
 echo ==============================================================
 echo  Script de Instalacion y Ejecucion para MATABS
 echo ==============================================================
 echo.
-pause
 
 REM --- CONFIGURACION ---
 set VENV_NAME=matabs_env
-echo DEBUG: VENV_NAME seteado
-pause
 set REQUIREMENTS_FILE=requirements_matabs.txt
-echo DEBUG: REQUIREMENTS_FILE seteado
-pause
 set MAIN_APP_PYTHON_SCRIPT=MATLAB_main_app.py
-echo DEBUG: MAIN_APP_PYTHON_SCRIPT seteado
-pause
 REM --- FIN CONFIGURACION ---
 
 REM Directorio donde se encuentra este script (asumido como raíz del proyecto)
 set "TEMP_SCRIPT_PATH=%~dp0"
-echo DEBUG: TEMP_SCRIPT_PATH es "%TEMP_SCRIPT_PATH%"
-pause
 set "SCRIPT_DIR=%TEMP_SCRIPT_PATH:~0,-1%"
-echo DEBUG: SCRIPT_DIR es "%SCRIPT_DIR%"
-pause
 
 echo Directorio del Script (Raiz del Proyecto): "%SCRIPT_DIR%"
 echo.
-pause
 
 REM --- 1. VERIFICAR PYTHON ---
 echo Verificando instalacion de Python...
-pause
 python --version >nul 2>&1
-echo DEBUG: Comando python --version ejecutado, Errorlevel es %errorlevel%
-pause
-if errorlevel 1 (
+if %errorlevel% NEQ 0 (
     echo ERROR: Python no esta instalado o no se encuentra en el PATH.
     echo        Por favor, instale Python (version 3.x recomendada) y asegurese
     echo        de que este anadido al PATH del sistema.
@@ -50,12 +32,8 @@ if errorlevel 1 (
 python --version
 echo Python encontrado.
 echo.
-pause
 
-echo DEBUG: Llegamos al final de la seccion de verificacion de Python sin error aparente en el BAT.
-pause
-
-REM (Resto del script original)
+REM --- 2. VERIFICAR ARCHIVOS NECESARIOS ---
 echo Verificando archivos necesarios en "%SCRIPT_DIR%"...
 if not exist "%SCRIPT_DIR%\%REQUIREMENTS_FILE%" (
     echo ERROR: El archivo de requerimientos "%REQUIREMENTS_FILE%" no se encuentra en "%SCRIPT_DIR%".
@@ -72,6 +50,7 @@ if not exist "%SCRIPT_DIR%\%MAIN_APP_PYTHON_SCRIPT%" (
 echo Archivos necesarios encontrados.
 echo.
 
+REM --- 3. CONFIGURAR Y CREAR ENTORNO VIRTUAL (si no existe) ---
 set "VENV_DIR=%SCRIPT_DIR%\%VENV_NAME%"
 echo Directorio del entorno virtual: "%VENV_DIR%"
 
@@ -92,6 +71,7 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
 )
 echo.
 
+REM --- 4. ACTIVAR ENTORNO VIRTUAL ---
 echo Activando entorno virtual...
 call "%VENV_DIR%\Scripts\activate.bat"
 if errorlevel 1 (
@@ -104,6 +84,7 @@ if errorlevel 1 (
 echo Entorno virtual activado. (Puede ver el prefijo (%VENV_NAME%) en la linea de comandos)
 echo.
 
+REM --- 5. ACTUALIZAR PIP (opcional pero recomendado) ---
 echo Actualizando pip en el entorno virtual...
 python -m pip install --upgrade pip
 if errorlevel 1 (
@@ -113,6 +94,7 @@ if errorlevel 1 (
 )
 echo.
 
+REM --- 6. INSTALAR DEPENDENCIAS ---
 echo Instalando/verificando dependencias desde "%SCRIPT_DIR%\%REQUIREMENTS_FILE%"...
 python -m pip install -r "%SCRIPT_DIR%\%REQUIREMENTS_FILE%"
 if errorlevel 1 (
@@ -128,15 +110,20 @@ if errorlevel 1 (
 echo Dependencias instaladas/verificadas correctamente.
 echo.
 
+REM --- 7. EJECUTAR APLICACION ---
 echo Ejecutando la aplicacion: "%SCRIPT_DIR%\%MAIN_APP_PYTHON_SCRIPT%"
 echo (La aplicacion se iniciara. Cierre la ventana de la aplicacion para finalizar este script.)
 echo.
 
+REM Cambiar al directorio del script para que la app encuentre archivos relativos si los usa
 pushd "%SCRIPT_DIR%"
+
+REM Ejecutar la aplicación Python. La consola esperará a que la app termine.
 call python "%MAIN_APP_PYTHON_SCRIPT%"
 echo.
 echo Script de Python ha terminado o fallado. Presione una tecla para continuar...
 pause
+
 popd
 echo.
 echo ==============================================================
