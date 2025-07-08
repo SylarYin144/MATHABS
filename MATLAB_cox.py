@@ -1580,27 +1580,38 @@ class CoxModelingApp(ttk.Frame):
                 self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
             
             # Configuración de Spline
-            if current_var_type == "Cuantitativa" and var_name_cfg in self.spline_config_details:
-                self.var_usar_spline_seleccionada.set(True)
-                spl_conf = self.spline_config_details[var_name_cfg]
-                self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
-                self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
-            elif current_var_type == "Cuantitativa": # Es cuantitativa pero sin config de spline
-                 self.var_usar_spline_seleccionada.set(False) # Asegurar que esté desactivado
-                 self.combo_tipo_spline_seleccionada.set('Natural') # Default
-                 self.var_df_spline_seleccionada.set(4) # Default
-            else: # Cualitativa, spline no aplica
-                self.var_usar_spline_seleccionada.set(False)
+            if current_var_type == "Cuantitativa":
+                self.checkbutton_usar_spline.config(state=tk.NORMAL)
+                if var_name_cfg in self.spline_config_details:
+                    self.var_usar_spline_seleccionada.set(True)
+                    spl_conf = self.spline_config_details[var_name_cfg]
+                    self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
+                    self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
+                else:
+                    self.var_usar_spline_seleccionada.set(False)
+                    self.combo_tipo_spline_seleccionada.set('Natural')
+                    self.var_df_spline_seleccionada.set(4)
+            else: # Cualitativa o no hay datos para determinar tipo
+                self.var_usar_spline_seleccionada.set(False) # Desmarcar
+                self.checkbutton_usar_spline.config(state=tk.DISABLED) # Deshabilitar
+                # Resetear valores de detalle de spline a default, ya que no aplican
+                self.combo_tipo_spline_seleccionada.set('Natural')
+                self.var_df_spline_seleccionada.set(4)
 
-        else: # Ninguna seleccionada o error
-            self.label_cov_seleccionada_nombre.config(text="Ninguna Seleccionada")
-            self.radio_cuantitativa.config(state=tk.DISABLED)
-            self.radio_cualitativa.config(state=tk.DISABLED)
-            self.var_tipo_covariable_seleccionada.set("Cuantitativa") # Reset a default
-            self.combo_ref_categoria_seleccionada.set("")
-            self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
-            self.var_usar_spline_seleccionada.set(False)
-            # Los demás (checkbutton_usar_spline, etc.) se manejan en _toggle
+        else: # Ninguna seleccionada o múltiples seleccionadas
+            self.label_cov_seleccionada_nombre.config(text=f"{len(sel_idx)} Variables Seleccionadas" if multiple_selected else "Ninguna Seleccionada")
+
+            # Si no es selección múltiple (es decir, ninguna seleccionada), resetear todos los controles de config del panel simple
+            if not multiple_selected:
+                self.var_tipo_covariable_seleccionada.set("Cuantitativa")
+                self.combo_ref_categoria_seleccionada.set("")
+                self.combo_ref_categoria_seleccionada.config(values=[])
+                self.var_usar_spline_seleccionada.set(False)
+                self.checkbutton_usar_spline.config(state=tk.DISABLED) # Explicitly disable
+                self.combo_tipo_spline_seleccionada.set('Natural')
+                self.var_df_spline_seleccionada.set(4)
+            # Para selección múltiple, no cambiamos los valores aquí, solo el estado general en _toggle.
+            # El usuario cambiaría el tipo masivamente, y luego si es Cuantitativa, podría marcar Usar Spline.
 
         self._toggle_spline_and_refcat_controls()
 
@@ -1627,20 +1638,31 @@ class CoxModelingApp(ttk.Frame):
                  self.combo_ref_categoria_seleccionada['values'] = []
 
 
-        # Spline: solo para cuantitativas (1 o más)
-        can_use_spline = (num_selected > 0 and current_type_choice == "Cuantitativa")
-        self.checkbutton_usar_spline.config(state=tk.NORMAL if can_use_spline else tk.DISABLED)
-        if not can_use_spline: # Si no se puede usar spline, desactivar el check
-            self.var_usar_spline_seleccionada.set(False)
+        # Spline Checkbutton (principal)
+        # Habilitado si se selecciona al menos una variable y el tipo elegido en el panel es "Cuantitativa",
+        # O si son múltiples variables (permitiendo cambio masivo de tipo y luego de spline).
+        # Si el tipo es Cualitativo, siempre deshabilitado.
+        if num_selected > 0 and current_type_choice_panel == "Cuantitativa":
+            self.checkbutton_usar_spline.config(state=tk.NORMAL)
+        else: # Cualitativa, o ninguna seleccionada, o múltiples donde el tipo podría no ser aún cuantitativo
+            self.checkbutton_usar_spline.config(state=tk.DISABLED)
+            self.var_usar_spline_seleccionada.set(False) # Si el check se deshabilita, desmarcarlo
+
+        # Detalles de Spline (tipo y df):
+        # Habilitados solo si el check "Usar Spline" está marcado Y su checkbutton está habilitado (es decir, es cuantitativa).
+        spline_details_should_be_active = self.var_usar_spline_seleccionada.get() and \
+                                          (self.checkbutton_usar_spline.cget('state') == tk.NORMAL)
+
+        spline_details_combo_state = "readonly" if spline_details_should_be_active else tk.DISABLED
+        spline_details_spin_state = tk.NORMAL if spline_details_should_be_active else tk.DISABLED
+
+        self.combo_tipo_spline_seleccionada.config(state=spline_details_combo_state)
+        self.spinbox_df_spline.config(state=spline_details_spin_state)
         
-        # Detalles de Spline: si se marca "Usar Spline" y es aplicable
-        spline_details_state = "readonly" if self.var_usar_spline_seleccionada.get() and can_use_spline else "disabled"
-        self.combo_tipo_spline_seleccionada.config(state=spline_details_state)
-        self.spinbox_df_spline.config(state=spline_details_state)
-        # Asegurar que los valores de spline no se mantengan si se cambia de tipo o se desmarca
-        if spline_details_state == "disabled":
-            self.combo_tipo_spline_seleccionada.set("Natural") # Reset
-            self.var_df_spline_seleccionada.set(4) # Reset
+        # Si los detalles de spline se deshabilitan, resetear sus valores a default.
+        if not spline_details_should_be_active:
+            self.combo_tipo_spline_seleccionada.set("Natural")
+            self.var_df_spline_seleccionada.set(4)
 
 
     def apply_covariate_config_to_selected(self):
@@ -1710,13 +1732,16 @@ class CoxModelingApp(ttk.Frame):
                     log_msgs_for_var.append("Config. Ref.Cat. eliminada (tipo cambiado a Cuantitativa).")
                 
                 # Apply or remove spline config based on main panel's "Usar Spline"
-                if use_spline_bulk:
+                # Esto se aplica si el tipo de variable actual (new_var_type_bulk) es Cuantitativa
+                if use_spline_bulk: # use_spline_bulk es self.var_usar_spline_seleccionada.get()
+                    # spline_type_bulk es self.combo_tipo_spline_seleccionada.get()
+                    # spline_df_bulk es self.var_df_spline_seleccionada.get()
                     self.spline_config_details[var_name_apply] = {'type': spline_type_bulk, 'df': spline_df_bulk}
-                    log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
-                else: # Not using spline via main panel
+                    log_msgs_for_var.append(f"Spline aplicado: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
+                else: # Not using spline via main panel, or type is not quantitative for this var
                     if var_name_apply in self.spline_config_details:
                         del self.spline_config_details[var_name_apply]
-                        log_msgs_for_var.append("Config. spline eliminada (desmarcado en panel simple).")
+                        log_msgs_for_var.append("Config. spline eliminada (desmarcado en panel simple o no aplicable).")
             
             self.log(" ".join(log_msgs_for_var), "CONFIG")
             num_applied += 1
