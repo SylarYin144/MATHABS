@@ -813,8 +813,14 @@ class RegresionesTab(ttk.Frame):
         btn_save = ttk.Button(frm_buttons_bottom, text="Guardar Gráfica", command=self.save_graph_directly)
         btn_save.pack(side="left", padx=5, expand=True, fill="x")
 
-    def log_message(self, msg, level=None):
-        self.msg_label.config(text=msg)
+    def log_message(self, msg, level="INFO"): # Añadido nivel por defecto
+        # Actualizar la etiqueta en la GUI
+        if hasattr(self, 'msg_label') and self.msg_label:
+            self.msg_label.config(text=str(msg))
+
+        # Imprimir también en la consola para depuración más persistente
+        print(f"[RegresionesTab - {level.upper()}] {msg}")
+        sys.stdout.flush() # Asegurar que se imprima inmediatamente
 
     def load_data(self):
         file_path = filedialog.askopenfilename(title="Selecciona archivo Excel",
@@ -994,57 +1000,71 @@ class RegresionesTab(ttk.Frame):
         return parsed_vars
 
     def plot_regression(self):
+        self.log_message("Iniciando plot_regression...", "DEBUG")
         if self.data is None:
-            self.log_message("No hay datos cargados")
+            self.log_message("plot_regression: No hay datos cargados. Retornando.", "WARN")
             return
 
         df_f = self._get_filtered_data_for_regression()
-        if df_f is None or df_f.empty:
-            self.log_message("No hay datos después de aplicar filtros o error en filtros para graficar.")
+        if df_f is None: # _get_filtered_data_for_regression ya loguea el error
+            self.log_message("plot_regression: _get_filtered_data_for_regression devolvió None. Retornando.", "ERROR")
             return
+        if df_f.empty:
+            self.log_message("plot_regression: No hay datos después de aplicar filtros. Retornando.", "WARN")
+            return
+
+        self.log_message(f"plot_regression: Datos filtrados obtenidos con {df_f.shape[0]} filas.", "DEBUG")
 
         dep_var_selected = self.combo_dep_var_spec.get()
         if not dep_var_selected:
-            self.log_message("Variable dependiente no seleccionada para graficar.")
+            self.log_message("plot_regression: Variable dependiente no seleccionada. Retornando.", "WARN")
             return
         dep_original, dep_display = dep_var_selected, dep_var_selected
+        self.log_message(f"plot_regression: Variable dependiente: '{dep_original}' (mostrada como '{dep_display}')", "DEBUG")
 
         if dep_original not in df_f.columns:
-            self.log_message(f"Error: Variable dependiente '{dep_original}' no encontrada en los datos filtrados.")
+            self.log_message(f"plot_regression: Variable dependiente '{dep_original}' no encontrada en datos filtrados. Retornando.", "ERROR")
             return
         if not pd.api.types.is_numeric_dtype(df_f[dep_original]):
-            self.log_message(f"Error: Variable dependiente '{dep_original}' no es numérica en los datos filtrados.")
+            self.log_message(f"plot_regression: Variable dependiente '{dep_original}' no es numérica. Retornando.", "ERROR")
             return
 
         selected_indices = self.listbox_indep_vars_spec.curselection()
         selected_indep_vars_names = [self.listbox_indep_vars_spec.get(i) for i in selected_indices]
+        self.log_message(f"plot_regression: Variables independientes seleccionadas de Listbox: {selected_indep_vars_names}", "DEBUG")
 
         # The _parse_variable_specifications was also checking for numeric types and existence.
         # We need to replicate that an d build parsed_indep_specs structure.
         parsed_indep_specs = []
         if not selected_indep_vars_names:
-            self.log_message("No se seleccionaron variables independientes.")
+            self.log_message("plot_regression: No se seleccionaron variables independientes. Retornando.", "WARN")
             # Depending on desired behavior, either return or allow plotting with no indep vars (just scatter of dep var if that makes sense)
             # For now, let's assume at least one independent variable is desired for regression lines.
             # If only a scatter plot of dependent vs independent is desired, this logic might change.
+            return # Retornar si no hay VIs seleccionadas
         else:
             for var_name in selected_indep_vars_names:
                 if var_name not in df_f.columns:
-                    self.log_message(f"Advertencia: Variable independiente '{var_name}' no encontrada en datos filtrados. Omitida.")
+                    self.log_message(f"plot_regression: Variable independiente '{var_name}' no encontrada en datos filtrados. Omitida.", "WARN")
                     continue
                 if not pd.api.types.is_numeric_dtype(df_f[var_name]):
-                    self.log_message(f"Advertencia: Variable independiente '{var_name}' no es numérica. Omitida para regresión.")
+                    self.log_message(f"plot_regression: Variable independiente '{var_name}' no es numérica. Omitida para regresión.", "WARN")
                     continue
                 parsed_indep_specs.append((var_name, var_name)) # Using var_name for both original and display name
+            self.log_message(f"plot_regression: Variables independientes parseadas y válidas: {parsed_indep_specs}", "DEBUG")
 
         if not parsed_indep_specs:
-            self.log_message("Variables independientes no válidas o no especificadas para graficar.")
+            self.log_message("plot_regression: No hay variables independientes válidas después del parseo. Retornando.", "WARN")
             return
         
         try:
             dpi = int(self.entry_dpi.get()); w_px = int(self.entry_width.get()); h_px = int(self.entry_height.get())
             w_in, h_in = w_px/dpi, h_px/dpi; pt_size = float(self.entry_pt_size.get()); txt_size = int(self.entry_text_size.get())
-        except ValueError: self.log_message("Error en parámetros DPI/tamaño."); return
+            self.log_message(f"plot_regression: Parámetros gráficos leídos: DPI={dpi}, W={w_px}, H={h_px}, PtSize={pt_size}, TxtSize={txt_size}", "DEBUG")
+        except ValueError as e_params:
+            self.log_message(f"plot_regression: Error en parámetros DPI/tamaño: {e_params}. Retornando.", "ERROR")
+            messagebox.showerror("Error de Parámetros", f"Error en los valores de DPI o tamaño de gráfico:\n{e_params}", parent=self)
+            return
 
         title_text = self.entry_title.get().strip() or f"Regresión de {dep_display} sobre Variables Seleccionadas"
         xlabel_text_base = self.entry_xlabel.get().strip() 
@@ -1225,19 +1245,24 @@ class RegresionesTab(ttk.Frame):
                         f"  R² = {r_item.get('r2', np.nan):.3f}\n" + ("-"*70) + "\n")
         self.results_text_content = summary
         self.show_results_tab()
-        self.log_message("Gráfica y resumen generados.")
+        self.log_message("plot_regression: Gráfica y resumen generados.", "INFO")
 
 
     def show_results_tab(self):
+        self.log_message("show_results_tab: Actualizando widget de texto con resultados.", "DEBUG")
         self.txt_results.config(state="normal")
         self.txt_results.delete("1.0", tk.END)
         self.txt_results.insert("1.0", self.results_text_content)
         self.txt_results.config(state="disabled")
 
     def view_graph_popup(self):
+        self.log_message("Iniciando view_graph_popup...", "DEBUG")
         if not os.path.exists(self.graph_path):
-            self.log_message("No hay gráfica generada")
+            self.log_message("view_graph_popup: No hay gráfica generada (archivo no existe). Retornando.", "WARN")
+            messagebox.showwarning("Sin Gráfica", "Primero genere una gráfica usando el botón 'Generar Dispersión y Regresión'.", parent=self)
             return
+
+        self.log_message(f"view_graph_popup: Mostrando gráfica desde {self.graph_path}", "INFO")
         popup = tk.Toplevel(self)
         popup.title("Vista Ampliada de la Gráfica")
         try:
@@ -1252,9 +1277,13 @@ class RegresionesTab(ttk.Frame):
 
 
     def save_graph_directly(self):
+        self.log_message("Iniciando save_graph_directly...", "DEBUG")
         if not os.path.exists(self.graph_path):
-            self.log_message("No hay gráfica para guardar")
+            self.log_message("save_graph_directly: No hay gráfica para guardar (archivo no existe). Retornando.", "WARN")
+            messagebox.showwarning("Sin Gráfica", "No hay gráfica generada para guardar. Genere una primero.", parent=self)
             return
+
+        self.log_message(f"save_graph_directly: Solicitando ruta para guardar {self.graph_path}", "INFO")
         dest = filedialog.asksaveasfilename(initialfile="regresion_plot.png",
                                             defaultextension=".png",
                                             filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg;*.jpeg"), ("All files", "*.*")])
