@@ -385,13 +385,29 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             # Ref. Cat. (if Cualitativa)
             if current_type == "Cualitativa":
                 if self.app_instance.data is not None and cov_name in self.app_instance.data:
-                    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
-                    ref_combo['values'] = unique_vals
-                    stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
-                    if stored_ref_cat in unique_vals:
-                        ref_combo.set(stored_ref_cat)
-                    elif unique_vals:
-                        ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
+                    try:
+                        # Manejo de NaNs similar al panel simple
+                        unique_cats_series_dialog = self.app_instance.data[cov_name].fillna("NA_explicit_string").astype(str).unique()
+                        unique_vals = sorted([str(cat) for cat in unique_cats_series_dialog])
+                        ref_combo['values'] = unique_vals
+                        self.app_instance.log(f"Dialog Config: Categorías para '{cov_name}': {unique_vals}", "DEBUG")
+
+                        stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+                        # La categoría de referencia guardada debe ser string para la comparación
+                        if stored_ref_cat is not None and str(stored_ref_cat) in unique_vals:
+                            ref_combo.set(str(stored_ref_cat))
+                            self.app_instance.log(f"Dialog Config: Ref. cat. para '{cov_name}' cargada: '{stored_ref_cat}'", "DEBUG")
+                        elif unique_vals:
+                            ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
+                            self.app_instance.log(f"Dialog Config: Ref. cat. para '{cov_name}' default: '{unique_vals[0]}'", "DEBUG")
+                        else:
+                            ref_combo.set("")
+                            self.app_instance.log(f"Dialog Config: No hay categorías únicas para '{cov_name}'", "WARN")
+                    except Exception as e_populate_ref_dialog:
+                        self.app_instance.log(f"Dialog Config: Error poblando refcat para '{cov_name}': {e_populate_ref_dialog}", "ERROR")
+                        ref_combo.set("")
+                        ref_combo['values'] = []
+
 
             # Spline (if Cuantitativa)
             if current_type == "Cuantitativa":
@@ -426,15 +442,38 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
         # Ref Cat Combo
         if var_type == "Cualitativa":
             config['ref_combo'].config(state="readonly")
-            # TODO: Populate ref_combo with unique values from self.app_instance.data[cov_name]
-            # For now, keeping it simple as per subtask instructions.
-            # Example: if self.app_instance.data is not None and cov_name in self.app_instance.data:
-            #    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
-            #    config['ref_combo']['values'] = unique_vals
-            #    if unique_vals: config['ref_combo'].set(unique_vals[0])
+            # Poblar el combobox si aún no tiene valores o si la variable es la correcta
+            # Esto es importante si el tipo se cambia dinámicamente dentro del diálogo
+            if self.app_instance.data is not None and cov_name in self.app_instance.data:
+                try:
+                    unique_cats_series_dialog = self.app_instance.data[cov_name].fillna("NA_explicit_string").astype(str).unique()
+                    unique_vals = sorted([str(cat) for cat in unique_cats_series_dialog])
+
+                    current_combo_values = []
+                    try: # El combobox podría no tener 'values' si es la primera vez o error previo
+                        current_combo_values = list(config['ref_combo']['values'])
+                    except tk.TclError: # Atrapa error si 'values' no está configurado
+                        pass
+
+                    if not current_combo_values or set(current_combo_values) != set(unique_vals):
+                        config['ref_combo']['values'] = unique_vals
+                        # Si se actualizan los valores, intentar preseccionar la config guardada o el primero
+                        stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+                        if stored_ref_cat is not None and str(stored_ref_cat) in unique_vals:
+                            config['ref_combo'].set(str(stored_ref_cat))
+                        elif unique_vals:
+                            config['ref_combo'].set(unique_vals[0])
+                        else:
+                            config['ref_combo'].set("")
+                except Exception as e_toggle_populate:
+                    self.app_instance.log(f"Dialog Config (toggle): Error poblando refcat para '{cov_name}': {e_toggle_populate}", "ERROR")
+                    config['ref_combo']['values'] = []
+                    config['ref_combo'].set("")
         else:
             config['ref_combo'].config(state="disabled")
             config['ref_combo'].set("")
+            config['ref_combo']['values'] = [] # Limpiar valores si no es cualitativa
+
 
         # Spline Checkbutton (itself)
         config['cb_spline'].config(state=tk.NORMAL if var_type == "Cuantitativa" else tk.DISABLED)
@@ -1509,15 +1548,33 @@ class CoxModelingApp(ttk.Frame):
             self.var_tipo_covariable_seleccionada.set(current_var_type)
 
             if current_var_type == "Cualitativa":
-                unique_cats = sorted(list(self.data[var_name_cfg].astype(str).unique()))
-                self.combo_ref_categoria_seleccionada['values'] = unique_cats
-                current_ref_cat = self.ref_categories_config.get(var_name_cfg)
-                if current_ref_cat in unique_cats:
-                    self.combo_ref_categoria_seleccionada.set(current_ref_cat)
-                elif unique_cats: # Default a la primera si no hay config o la config no es válida
-                    self.combo_ref_categoria_seleccionada.set(unique_cats[0])
-                else: # Sin categorías
+                # Poblar el combobox de categoría de referencia
+                try:
+                    # Obtener valores únicos, incluyendo NaNs como strings si existen
+                    # astype(str) convierte NaN de numpy a la cadena "nan"
+                    unique_cats_series = self.data[var_name_cfg].fillna("NA_explicit_string").astype(str).unique()
+                    unique_cats = sorted([str(cat) for cat in unique_cats_series])
+
+                    self.combo_ref_categoria_seleccionada['values'] = unique_cats
+                    self.log_message(f"UI Config: Categorías para '{var_name_cfg}': {unique_cats}", "DEBUG")
+
+                    current_ref_cat_config = self.ref_categories_config.get(var_name_cfg)
+
+                    # Si hay una configuración guardada y existe en las categorías actuales (después de conversión a str), la usamos.
+                    # self.ref_categories_config debería guardar la categoría tal como se espera que Patsy la vea (como string).
+                    if current_ref_cat_config is not None and str(current_ref_cat_config) in unique_cats:
+                        self.combo_ref_categoria_seleccionada.set(str(current_ref_cat_config))
+                        self.log_message(f"UI Config: Ref. cat. para '{var_name_cfg}' cargada: '{current_ref_cat_config}'", "DEBUG")
+                    elif unique_cats: # Si no hay config o la config no es válida, default a la primera
+                        self.combo_ref_categoria_seleccionada.set(unique_cats[0])
+                        self.log_message(f"UI Config: Ref. cat. para '{var_name_cfg}' default: '{unique_cats[0]}'", "DEBUG")
+                    else: # Sin categorías únicas (raro si la variable existe)
+                        self.combo_ref_categoria_seleccionada.set("")
+                        self.log_message(f"UI Config: No hay categorías únicas para '{var_name_cfg}'", "WARN")
+                except Exception as e_populate_ref:
+                    self.log_message(f"UI Config: Error poblando refcat para '{var_name_cfg}': {e_populate_ref}", "ERROR")
                     self.combo_ref_categoria_seleccionada.set("")
+                    self.combo_ref_categoria_seleccionada['values'] = []
             else: # Cuantitativa
                 self.combo_ref_categoria_seleccionada.set("")
                 self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
@@ -2173,29 +2230,41 @@ class CoxModelingApp(ttk.Frame):
                     spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
                     patsy_func_bd = 'cr' if spl_cfg_bd.get('type', 'Natural') == 'Natural' else 'bs'
                     term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)})"
-            else: 
-                if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
-                   not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
-                   not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype): 
-                     df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
+            else: # Cualitativa
+                # Asegurar consistencia de NaNs: convertir NaNs en la columna de datos a "NA_explicit_string"
+                # antes de verificar la categoría de referencia y construir la fórmula.
+                # Esto debe hacerse en una copia si df_for_patsy_bd se reutiliza o es el original.
+                # Como df_for_patsy_bd es una copia de df_input_bd, y df_input_bd es una copia de self.data (o filtrado),
+                # esta modificación es local a esta función para esta variable.
+                if df_for_patsy_bd[orig_cov_name_bd].isnull().any():
+                    df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].fillna("NA_explicit_string")
 
-                ref_cat_bd = self.ref_categories_config.get(orig_cov_name_bd)
-                if ref_cat_bd and str(ref_cat_bd).strip():
-                    ref_cat_str_bd = str(ref_cat_bd)
-                    if ref_cat_str_bd in df_for_patsy_bd[orig_cov_name_bd].astype(str).unique():
-                        # For string literals like 'F', Patsy expects Treatment('F')
-                        # If ref_cat_str_bd could be numeric, further type checking might be needed,
-                        # but for now, assuming string reference categories are common.
-                        # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
-                        if re.match(r"^-?\d+(\.\d+)?$", ref_cat_str_bd): # Check if it looks like a number
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
-                        else: # Assume string, enclose in quotes for Patsy
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
-                    else:
-                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
-                        term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
+                # Convertir toda la columna a string para asegurar que Patsy la trate como categórica
+                # y para que la comparación de la categoría de referencia sea consistente.
+                df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
+
+                ref_cat_config_val = self.ref_categories_config.get(orig_cov_name_bd)
+
+                # La categoría de referencia también debe ser un string para la comparación y para Patsy.
+                # Si se seleccionó "NA_explicit_string" en la UI, ref_cat_config_val ya será ese string.
+                ref_cat_bd_str = str(ref_cat_config_val).strip() if ref_cat_config_val is not None else None
+
+                unique_values_in_data = df_for_patsy_bd[orig_cov_name_bd].unique()
+
+                if ref_cat_bd_str and ref_cat_bd_str in unique_values_in_data:
+                    self.log(f"Build Matrix: Usando Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}'.", "DEBUG")
+                    # Patsy necesita que los strings en Treatment estén entre comillas simples DENTRO de la fórmula.
+                    # Ej: Treatment('Mi Valor con Espacios')
+                    # Si ref_cat_bd_str ya es un string, solo necesitamos escaparle las comillas simples si las tuviera.
+                    # Por simplicidad, asumimos que las categorías no tienen comillas simples.
+                    # Si la categoría es puramente numérica pero se trata como string (ej. '1', '2'), Patsy igual necesita comillas.
+                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_bd_str.replace(\"'\", \"''\")}'))"
                 else:
-                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))" 
+                    if ref_cat_bd_str: # Se configuró una referencia, pero no se encontró en los datos actuales
+                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}' no encontrada en los datos procesados (valores únicos: {unique_values_in_data}). Patsy usará su default.", "WARN")
+                    else: # No se configuró referencia
+                        self.log(f"Advertencia: No se configuró Ref.Cat. para '{orig_cov_name_bd}'. Patsy usará su default.", "WARN")
+                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
             formula_parts_bd.append(term_syntax_bd)
 
         formula_patsy_bd = "0 + " + " + ".join(formula_parts_bd) if formula_parts_bd else "0"
