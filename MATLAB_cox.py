@@ -2253,12 +2253,10 @@ class CoxModelingApp(ttk.Frame):
 
                 if ref_cat_bd_str and ref_cat_bd_str in unique_values_in_data:
                     self.log(f"Build Matrix: Usando Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}'.", "DEBUG")
-                    # Patsy necesita que los strings en Treatment estén entre comillas simples DENTRO de la fórmula.
-                    # Ej: Treatment('Mi Valor con Espacios')
-                    # Si ref_cat_bd_str ya es un string, solo necesitamos escaparle las comillas simples si las tuviera.
-                    # Por simplicidad, asumimos que las categorías no tienen comillas simples.
-                    # Si la categoría es puramente numérica pero se trata como string (ej. '1', '2'), Patsy igual necesita comillas.
-                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_bd_str.replace(\"'\", \"''\")}'))"
+                    self.log(f"Build Matrix: Usando Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}'.", "DEBUG")
+                    # Escapar comillas simples dentro de la categoría de referencia para Patsy: ' -> ''
+                    patsy_escaped_ref_cat = ref_cat_bd_str.replace("'", "''")
+                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{patsy_escaped_ref_cat}'))"
                 else:
                     if ref_cat_bd_str: # Se configuró una referencia, pero no se encontró en los datos actuales
                         self.log(f"Advertencia: Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}' no encontrada en los datos procesados (valores únicos: {unique_values_in_data}). Patsy usará su default.", "WARN")
