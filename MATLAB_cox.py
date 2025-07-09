@@ -364,6 +364,7 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             spline_type_combo.set("Natural")
             spline_type_combo.grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=5)
             self.row_configs[cov_name]['spline_type_combo'] = spline_type_combo
+            spline_type_combo.bind("<<ComboboxSelected>>", lambda event, c=cov_name: self._toggle_row_controls_state(c))
 
             # Spline DF
             ttk.Label(row_labelframe, text="  Spline DF:").grid(row=4, column=0, sticky=tk.W, padx=15, pady=2)
@@ -372,6 +373,14 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             spline_df_spinbox = ttk.Spinbox(row_labelframe, from_=2, to=10, textvariable=spline_df_var, width=5, state="disabled")
             spline_df_spinbox.grid(row=4, column=1, sticky=tk.W, padx=5)
             self.row_configs[cov_name]['spline_df_spinbox'] = spline_df_spinbox
+
+            # NUEVO: Spline Degree (para B-spline)
+            ttk.Label(row_labelframe, text="  Grado Spline (B):").grid(row=5, column=0, sticky=tk.W, padx=15, pady=2)
+            spline_degree_var = tk.IntVar(value=3)
+            self.row_configs[cov_name]['spline_degree_var'] = spline_degree_var
+            spline_degree_spinbox = ttk.Spinbox(row_labelframe, from_=1, to=5, textvariable=spline_degree_var, width=5, state="disabled")
+            spline_degree_spinbox.grid(row=5, column=1, sticky=tk.W, padx=5)
+            self.row_configs[cov_name]['spline_degree_spinbox'] = spline_degree_spinbox
 
             # --- Load existing or inferred configuration for the row ---
             # Type
@@ -400,8 +409,16 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
                     spl_conf = self.app_instance.spline_config_details[cov_name]
                     spline_type_combo.set(spl_conf.get('type', 'Natural'))
                     spline_df_var.set(spl_conf.get('df', 4))
+                    if spl_conf.get('type') == "B-spline":
+                        spline_degree_var.set(spl_conf.get('degree', 3))
                 else:
                     spline_var.set(False)
+                    # Ensure defaults are set if spline_var is false or no prior config
+                    spline_type_combo.set("Natural")
+                    spline_df_var.set(4)
+                    spline_degree_var.set(3)
+
+            # Update control states based on loaded/inferred config
 
             # Update control states based on loaded/inferred config
             self._toggle_row_controls_state(cov_name)
@@ -446,9 +463,21 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
         spline_details_state = tk.NORMAL if (var_type == "Cuantitativa" and use_spline) else tk.DISABLED
         config['spline_type_combo'].config(state=spline_details_state)
         config['spline_df_spinbox'].config(state=spline_details_state)
-        if spline_details_state == tk.DISABLED:
+
+        # NUEVO: Manejar estado del spinbox de grado
+        spline_type_for_degree = config['spline_type_combo'].get()
+        spline_degree_state = tk.DISABLED
+        if spline_details_state == tk.NORMAL and spline_type_for_degree == "B-spline":
+            spline_degree_state = tk.NORMAL
+
+        config['spline_degree_spinbox'].config(state=spline_degree_state)
+
+        if spline_details_state == tk.DISABLED: # Reset type and df if spline section is disabled
             config['spline_type_combo'].set("Natural")
             config['spline_df_var'].set(4)
+        if spline_degree_state == tk.DISABLED: # Reset degree if degree spinbox is disabled
+            config['spline_degree_var'].set(3)
+
 
     def apply_configurations(self):
         self.app_instance.log("Aplicando configuraciones detalladas de covariables...", "INFO")
@@ -474,8 +503,14 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
                 if use_spline:
                     spline_type = config_widgets['spline_type_combo'].get()
                     spline_df = config_widgets['spline_df_var'].get()
-                    self.app_instance.spline_config_details[cov_name] = {'type': spline_type, 'df': spline_df}
-                    self.app_instance.log(f"Config. spline aplicada para '{cov_name}': Tipo={spline_type}, DF={spline_df}.", "DEBUG")
+                    spline_config_dict_detailed = {'type': spline_type, 'df': spline_df}
+                    if spline_type == "B-spline":
+                        spline_degree = config_widgets['spline_degree_var'].get()
+                        spline_config_dict_detailed['degree'] = spline_degree
+                        self.app_instance.log(f"Config. spline aplicada para '{cov_name}': Tipo={spline_type}, DF={spline_df}, Grado={spline_degree}.", "DEBUG")
+                    else:
+                        self.app_instance.log(f"Config. spline aplicada para '{cov_name}': Tipo={spline_type}, DF={spline_df}.", "DEBUG")
+                    self.app_instance.spline_config_details[cov_name] = spline_config_dict_detailed
                 else:
                     if cov_name in self.app_instance.spline_config_details:
                         del self.app_instance.spline_config_details[cov_name]
@@ -1260,12 +1295,20 @@ class CoxModelingApp(ttk.Frame):
         self.combo_tipo_spline_seleccionada = ttk.Combobox(subframe_spline_detalles, values=["Natural", "B-spline"], state="disabled", width=12)
         self.combo_tipo_spline_seleccionada.set("Natural")
         self.combo_tipo_spline_seleccionada.pack(side=tk.LEFT, padx=5)
+        self.combo_tipo_spline_seleccionada.bind("<<ComboboxSelected>>", self._toggle_spline_and_refcat_controls)
+
 
         # Spinbox para grados de libertad (df) del spline
         ttk.Label(subframe_spline_detalles, text="  Grados de Libertad (df):").pack(side=tk.LEFT, padx=(15, 5))
         self.var_df_spline_seleccionada = IntVar(value=4)
         self.spinbox_df_spline = ttk.Spinbox(subframe_spline_detalles, from_=2, to=10, textvariable=self.var_df_spline_seleccionada, width=5, state="disabled")
         self.spinbox_df_spline.pack(side=tk.LEFT, padx=5)
+
+        # NUEVO: Spinbox para grado del B-spline
+        ttk.Label(subframe_spline_detalles, text="  Grado (B-spline):").pack(side=tk.LEFT, padx=(15, 5))
+        self.var_degree_spline_seleccionada = tk.IntVar(value=3) # Default cúbico
+        self.spinbox_degree_spline = ttk.Spinbox(subframe_spline_detalles, from_=1, to=5, textvariable=self.var_degree_spline_seleccionada, width=5, state="disabled")
+        self.spinbox_degree_spline.pack(side=tk.LEFT, padx=5)
 
         # Botón para aplicar configuración de covariables
         ttk.Button(frame_config_covariable_seleccionada, text="Aplicar Configuración a Seleccionadas", command=self.apply_covariate_config_to_selected).pack(pady=10)
@@ -1478,7 +1521,8 @@ class CoxModelingApp(ttk.Frame):
             'radio_cuantitativa', 'radio_cualitativa', 
             'combo_ref_categoria_seleccionada', 'var_usar_spline_seleccionada', 
             'checkbutton_usar_spline', 'combo_tipo_spline_seleccionada', 
-            'var_df_spline_seleccionada', 'spinbox_df_spline'
+            'var_df_spline_seleccionada', 'spinbox_df_spline',
+            'var_degree_spline_seleccionada', 'spinbox_degree_spline'
         ]
         if not all(hasattr(self, attr) for attr in ui_attrs_expected):
             self.log("Advertencia: Faltan atributos de UI para configurar covariables. UI puede estar incompleta.", "WARN")
@@ -1526,12 +1570,18 @@ class CoxModelingApp(ttk.Frame):
                 spl_conf = self.spline_config_details[var_name_cfg]
                 self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
                 self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
+                if spl_conf.get('type') == "B-spline": # Cargar grado si es B-spline
+                    self.var_degree_spline_seleccionada.set(spl_conf.get('degree', 3))
+                else:
+                    self.var_degree_spline_seleccionada.set(3) # Default si no es B-spline
             elif current_var_type == "Cuantitativa": # Es cuantitativa pero sin config de spline
                  self.var_usar_spline_seleccionada.set(False) # Asegurar que esté desactivado
                  self.combo_tipo_spline_seleccionada.set('Natural') # Default
                  self.var_df_spline_seleccionada.set(4) # Default
+                 self.var_degree_spline_seleccionada.set(3) # Default
             else: # Cualitativa, spline no aplica
                 self.var_usar_spline_seleccionada.set(False)
+                self.var_degree_spline_seleccionada.set(3) # Default
 
         else: # Ninguna seleccionada o error
             self.label_cov_seleccionada_nombre.config(text="Ninguna Seleccionada")
@@ -1578,10 +1628,21 @@ class CoxModelingApp(ttk.Frame):
         spline_details_state = "readonly" if self.var_usar_spline_seleccionada.get() and can_use_spline else "disabled"
         self.combo_tipo_spline_seleccionada.config(state=spline_details_state)
         self.spinbox_df_spline.config(state=spline_details_state)
+
+        # NUEVO: Manejar estado del spinbox de grado
+        can_use_bspline_degree = (self.var_usar_spline_seleccionada.get() and
+                                   can_use_spline and # Si se puede usar spline en general
+                                   self.combo_tipo_spline_seleccionada.get() == "B-spline" and
+                                   self.combo_tipo_spline_seleccionada.cget('state') != 'disabled')
+
+        self.spinbox_degree_spline.config(state=tk.NORMAL if can_use_bspline_degree else tk.DISABLED)
+
         # Asegurar que los valores de spline no se mantengan si se cambia de tipo o se desmarca
-        if spline_details_state == "disabled":
+        if spline_details_state == "disabled": # Esto cubre el tipo y df
             self.combo_tipo_spline_seleccionada.set("Natural") # Reset
             self.var_df_spline_seleccionada.set(4) # Reset
+        if not can_use_bspline_degree: # Esto cubre el grado específicamente
+            self.var_degree_spline_seleccionada.set(3) # Reset a default si está deshabilitado
 
 
     def apply_covariate_config_to_selected(self):
@@ -1597,6 +1658,7 @@ class CoxModelingApp(ttk.Frame):
         use_spline_bulk = self.var_usar_spline_seleccionada.get()      # Spline use from main panel
         spline_type_bulk = self.combo_tipo_spline_seleccionada.get()  # Spline type from main panel
         spline_df_bulk = self.var_df_spline_seleccionada.get()        # Spline DF from main panel
+        spline_degree_bulk = self.var_degree_spline_seleccionada.get() # NUEVO: Spline Degree from main panel
         
         ref_category_for_single_selection = None
         if len(selected_var_names) == 1 and new_var_type_bulk == "Cualitativa" and self.combo_ref_categoria_seleccionada.cget('state') != 'disabled':
@@ -1652,8 +1714,13 @@ class CoxModelingApp(ttk.Frame):
                 
                 # Apply or remove spline config based on main panel's "Usar Spline"
                 if use_spline_bulk:
-                    self.spline_config_details[var_name_apply] = {'type': spline_type_bulk, 'df': spline_df_bulk}
-                    log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
+                    spline_config_dict = {'type': spline_type_bulk, 'df': spline_df_bulk}
+                    if spline_type_bulk == "B-spline":
+                        spline_config_dict['degree'] = spline_degree_bulk
+                        log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}, Grado={spline_degree_bulk}")
+                    else: # Natural spline
+                        log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
+                    self.spline_config_details[var_name_apply] = spline_config_dict
                 else: # Not using spline via main panel
                     if var_name_apply in self.spline_config_details:
                         del self.spline_config_details[var_name_apply]
@@ -2150,7 +2217,12 @@ class CoxModelingApp(ttk.Frame):
                 if orig_cov_name_bd in self.spline_config_details:
                     spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
                     patsy_func_bd = 'cr' if spl_cfg_bd.get('type', 'Natural') == 'Natural' else 'bs'
-                    term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)})"
+
+                    if patsy_func_bd == 'bs':
+                        spline_degree_bd = spl_cfg_bd.get('degree', 3) # Default a 3 (cúbico) si no está
+                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)}, degree={spline_degree_bd})"
+                    else: # 'cr' (Natural spline) no usa 'degree' explícitamente en patsy de la misma manera
+                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)})"
             else: 
                 if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
                    not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \

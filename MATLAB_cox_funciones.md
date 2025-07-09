@@ -4,7 +4,13 @@ Este documento detalla las funciones programadas en el archivo `MATABS/MATLAB_co
 
 La aplicación está estructurada en varias pestañas (`ttk.Notebook`) que guían al usuario a través del flujo de trabajo:
 
-*   **Pestaña 1: Carga y Preprocesamiento de Datos**: Permite cargar archivos de datos (CSV, Excel), aplicar filtros avanzados (si el componente `MATLAB_filter_component` está disponible), definir las columnas de tiempo y evento, y configurar las covariables (tipo, categoría de referencia, splines). También incluye funciones para transformaciones logarítmicas y creación de nuevas variables por fórmula.
+*   **Pestaña 1: Carga y Preprocesamiento de Datos**: Permite cargar archivos de datos (CSV, Excel), aplicar filtros avanzados (si el componente `MATLAB_filter_component` está disponible), definir las columnas de tiempo y evento, y configurar las covariables. La configuración de covariables incluye:
+    *   **Tipo**: Cuantitativa o Cualitativa.
+    *   **Categoría de Referencia**: Para variables cualitativas.
+    *   **Splines**: Para variables cuantitativas, se puede optar por:
+        *   **Natural Spline**: Utiliza `cr()` de Patsy (splines de regresión cúbica natural). Se configuran los grados de libertad (df).
+        *   **B-spline**: Utiliza `bs()` de Patsy. Se configuran los grados de libertad (df) y el **grado del spline** (ej. 1 para lineal, 2 para cuadrático, 3 para cúbico - por defecto).
+    *   También incluye funciones para transformaciones logarítmicas y creación de nuevas variables por fórmula.
 *   **Pestaña 2: Modelado Cox**: Aquí se configuran y ejecutan los modelos de Cox. Permite elegir entre modelado univariado o multivariado, seleccionar métodos de selección de variables (Backward, Forward, Stepwise), configurar la regularización (L1, L2, ElasticNet) y el manejo de empates. Una vez ejecutado el modelado, los modelos generados se listan en una `Treeview`, desde donde se pueden seleccionar para ver resultados detallados y generar gráficos.
 *   **Pestaña 3: Resultados y Visualización**: Esta pestaña sirve como un área para configurar opciones generales de gráficos y, potencialmente, para mostrar resultados o comparaciones de modelos (aunque la mayoría de las visualizaciones se abren en ventanas separadas).
 *   **Pestaña "Log"**: Muestra un registro detallado de las acciones de la aplicación, advertencias y errores, lo cual es crucial para la depuración y el seguimiento del proceso.
@@ -86,7 +92,10 @@ A continuación, se detallan las funciones más importantes de la clase principa
     *   **Proceso**:
         1.  Verifica la disponibilidad de `patsy`.
         2.  Si no hay covariables, crea una matriz de diseño vacía (para un modelo nulo).
-        3.  Para cada covariable seleccionada, construye la sintaxis Patsy adecuada basándose en `self.covariables_type_config`, `self.ref_categories_config` y `self.spline_config_details`. Esto incluye el uso de `C()` para categóricas (con `Treatment()` para la categoría de referencia) y `cr()` o `bs()` para splines.
+        3.  Para cada covariable seleccionada, construye la sintaxis Patsy adecuada basándose en `self.covariables_type_config`, `self.ref_categories_config` y `self.spline_config_details`.
+            *   Variables Cualitativas: Se usa `C(Q('nombre_var'), Treatment('ref_cat'))`.
+            *   Variables Cuantitativas con Spline Natural: Se usa `cr(Q('nombre_var'), df=N)`.
+            *   Variables Cuantitativas con B-Spline: Se usa `bs(Q('nombre_var'), df=N, degree=D)`, donde `D` es el grado del spline (ej. 1, 2, 3).
         4.  Combina las partes de la fórmula en una única cadena Patsy.
         5.  Usa `patsy.dmatrix` para generar la matriz de diseño `X`. `dmatrix` también se encarga de eliminar filas con `NaN` en las covariables utilizadas.
         6.  Filtra el DataFrame de entrada original para que coincida con el índice de la matriz de diseño resultante.
