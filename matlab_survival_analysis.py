@@ -157,6 +157,9 @@ class SurvivalAnalysisTab(ttk.Frame):
         # Nuevo: Selección exclusiva del tipo de gráfica
         self.cmb_graph_type = None  # Se creará en create_widgets
 
+        # Nuevo: Forzar tratamiento categórico para variable de agrupación
+        self.force_categorical_grouping_var = tk.BooleanVar(value=False)
+
         # =============================================================================
         # LLAMADA A LA CREACIÓN DE WIDGETS
         # =============================================================================
@@ -224,6 +227,13 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.entry_filter = ttk.Entry(frm_grouping) # Entry para etiquetas/orden
         self.entry_filter.grid(row=1, column=1, padx=5, pady=2, sticky="we")
         ttk.Label(frm_grouping, text="(Ej: 1:GrupoA,3:GrupoC,2:GrupoB)").grid(row=2, column=1, sticky="w", padx=5, pady=0)
+
+        # Checkbox para forzar tratamiento categórico
+        chk_force_categorical = ttk.Checkbutton(frm_grouping,
+                                                text="Forzar tratamiento categórico de la variable de agrupación",
+                                                variable=self.force_categorical_grouping_var)
+        chk_force_categorical.grid(row=3, column=0, columnspan=2, sticky="w", padx=5, pady=(5,2))
+
         frm_grouping.columnconfigure(1, weight=1)
 
         # 4. Filtros Avanzados (Componente)
@@ -699,6 +709,13 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # 2. Aplicar filtros globales (blancos, no numéricos)
         df_temp_filtered = self.apply_global_filters(df_temp_filtered)
+
+        # <<< INICIO NUEVA SECCIÓN PARA FORZAR CATEGÓRICO ANTES DE _apply_main_categorization >>>
+        cat_var_km = self.cmb_cat.get().strip()
+        if cat_var_km and cat_var_km in df_temp_filtered.columns and self.force_categorical_grouping_var.get():
+            self.log_debug(f"KM: Forzando tratamiento categórico para '{cat_var_km}'. Convirtiendo a string ANTES de _apply_main_categorization.")
+            df_temp_filtered[cat_var_km] = df_temp_filtered[cat_var_km].astype(str)
+        # <<< FIN NUEVA SECCIÓN >>>
 
         # 3. Aplicar filtro/etiquetado/orden de la variable de agrupación principal
         df_final_for_analysis, self.ordered_categories = self._apply_main_categorization(df_temp_filtered)
@@ -1219,6 +1236,13 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # 2. Aplicar filtros globales (blancos, no numéricos)
         df_temp_filtered = self.apply_global_filters(df_temp_filtered)
+
+        # <<< INICIO NUEVA SECCIÓN PARA FORZAR CATEGÓRICO ANTES DE _apply_main_categorization >>>
+        cat_var_lr = self.cmb_cat.get().strip()
+        if cat_var_lr and cat_var_lr in df_temp_filtered.columns and self.force_categorical_grouping_var.get():
+            self.log_debug(f"LogRank: Forzando tratamiento categórico para '{cat_var_lr}'. Convirtiendo a string ANTES de _apply_main_categorization.")
+            df_temp_filtered[cat_var_lr] = df_temp_filtered[cat_var_lr].astype(str)
+        # <<< FIN NUEVA SECCIÓN >>>
 
         # 3. Aplicar filtro/etiquetado/orden de la variable de agrupación principal
         df_final_for_analysis, self.ordered_categories = self._apply_main_categorization(df_temp_filtered)
