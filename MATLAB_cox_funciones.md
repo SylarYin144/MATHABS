@@ -86,7 +86,10 @@ A continuación, se detallan las funciones más importantes de la clase principa
     *   **Proceso**:
         1.  Verifica la disponibilidad de `patsy`.
         2.  Si no hay covariables, crea una matriz de diseño vacía (para un modelo nulo).
-        3.  Para cada covariable seleccionada, construye la sintaxis Patsy adecuada basándose en `self.covariables_type_config`, `self.ref_categories_config` y `self.spline_config_details`. Esto incluye el uso de `C()` para categóricas (con `Treatment()` para la categoría de referencia) y `cr()` o `bs()` para splines.
+        3.  Para cada covariable seleccionada, construye la sintaxis Patsy adecuada basándose en `self.covariables_type_config`, `self.ref_categories_config` y `self.spline_config_details`.
+            *   **Categóricas**: Usa `C(Q('var'), Treatment(Q('ref_cat')))` o `C(Q('var'))`.
+            *   **Splines Naturales**: Usa `cr(Q('var'), df=N)`. Estos son splines cúbicos naturales. El grado no es configurable a través de un parámetro `degree` en `patsy.cr()`. Pueden surgir problemas de convergencia (`Matrix singular error`) con `lifelines` debido a colinealidad, especialmente con ciertos datasets o configuraciones de `df`. El log de la aplicación proveerá advertencias si esto ocurre.
+            *   **B-Splines**: Usa `bs(Q('var'), df=N, degree=D)`. Se puede configurar tanto los grados de libertad (`df`) como el `degree` del spline (ej., 1 para lineal, 2 para cuadrático, 3 para cúbico - por defecto 3). Esta configuración está disponible en el diálogo detallado de covariables y en el panel de configuración rápida de la Pestaña 1.
         4.  Combina las partes de la fórmula en una única cadena Patsy.
         5.  Usa `patsy.dmatrix` para generar la matriz de diseño `X`. `dmatrix` también se encarga de eliminar filas con `NaN` en las covariables utilizadas.
         6.  Filtra el DataFrame de entrada original para que coincida con el índice de la matriz de diseño resultante.
