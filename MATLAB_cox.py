@@ -2151,10 +2151,10 @@ class CoxModelingApp(ttk.Frame):
                     spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
                     patsy_func_bd = 'cr' if spl_cfg_bd.get('type', 'Natural') == 'Natural' else 'bs'
                     term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)})"
-            else: 
+            else:
                 if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
                    not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
-                   not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype): 
+                   not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype):
                      df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
 
                 ref_cat_bd = self.ref_categories_config.get(orig_cov_name_bd)
@@ -2173,7 +2173,7 @@ class CoxModelingApp(ttk.Frame):
                         self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
                         term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
                 else:
-                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))" 
+                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
             formula_parts_bd.append(term_syntax_bd)
 
         formula_patsy_bd = "0 + " + " + ".join(formula_parts_bd) if formula_parts_bd else "0"
@@ -2496,7 +2496,7 @@ class CoxModelingApp(ttk.Frame):
         self.log("*"*35 + " INICIO MODELADO COX " + "*"*35, "HEADER")
         successful_fits = 0
         failed_fits = 0
-        temp_models_list_orch = [] 
+        temp_models_list_orch = []
 
         prep_res = self._preparar_datos_para_modelado()
         if prep_res is None:
