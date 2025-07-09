@@ -385,29 +385,13 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             # Ref. Cat. (if Cualitativa)
             if current_type == "Cualitativa":
                 if self.app_instance.data is not None and cov_name in self.app_instance.data:
-                    try:
-                        # Manejo de NaNs similar al panel simple
-                        unique_cats_series_dialog = self.app_instance.data[cov_name].fillna("NA_explicit_string").astype(str).unique()
-                        unique_vals = sorted([str(cat) for cat in unique_cats_series_dialog])
-                        ref_combo['values'] = unique_vals
-                        self.app_instance.log(f"Dialog Config: Categorías para '{cov_name}': {unique_vals}", "DEBUG")
-
-                        stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
-                        # La categoría de referencia guardada debe ser string para la comparación
-                        if stored_ref_cat is not None and str(stored_ref_cat) in unique_vals:
-                            ref_combo.set(str(stored_ref_cat))
-                            self.app_instance.log(f"Dialog Config: Ref. cat. para '{cov_name}' cargada: '{stored_ref_cat}'", "DEBUG")
-                        elif unique_vals:
-                            ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
-                            self.app_instance.log(f"Dialog Config: Ref. cat. para '{cov_name}' default: '{unique_vals[0]}'", "DEBUG")
-                        else:
-                            ref_combo.set("")
-                            self.app_instance.log(f"Dialog Config: No hay categorías únicas para '{cov_name}'", "WARN")
-                    except Exception as e_populate_ref_dialog:
-                        self.app_instance.log(f"Dialog Config: Error poblando refcat para '{cov_name}': {e_populate_ref_dialog}", "ERROR")
-                        ref_combo.set("")
-                        ref_combo['values'] = []
-
+                    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
+                    ref_combo['values'] = unique_vals
+                    stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+                    if stored_ref_cat in unique_vals:
+                        ref_combo.set(stored_ref_cat)
+                    elif unique_vals:
+                        ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
 
             # Spline (if Cuantitativa)
             if current_type == "Cuantitativa":
@@ -442,38 +426,15 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
         # Ref Cat Combo
         if var_type == "Cualitativa":
             config['ref_combo'].config(state="readonly")
-            # Poblar el combobox si aún no tiene valores o si la variable es la correcta
-            # Esto es importante si el tipo se cambia dinámicamente dentro del diálogo
-            if self.app_instance.data is not None and cov_name in self.app_instance.data:
-                try:
-                    unique_cats_series_dialog = self.app_instance.data[cov_name].fillna("NA_explicit_string").astype(str).unique()
-                    unique_vals = sorted([str(cat) for cat in unique_cats_series_dialog])
-
-                    current_combo_values = []
-                    try: # El combobox podría no tener 'values' si es la primera vez o error previo
-                        current_combo_values = list(config['ref_combo']['values'])
-                    except tk.TclError: # Atrapa error si 'values' no está configurado
-                        pass
-
-                    if not current_combo_values or set(current_combo_values) != set(unique_vals):
-                        config['ref_combo']['values'] = unique_vals
-                        # Si se actualizan los valores, intentar preseccionar la config guardada o el primero
-                        stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
-                        if stored_ref_cat is not None and str(stored_ref_cat) in unique_vals:
-                            config['ref_combo'].set(str(stored_ref_cat))
-                        elif unique_vals:
-                            config['ref_combo'].set(unique_vals[0])
-                        else:
-                            config['ref_combo'].set("")
-                except Exception as e_toggle_populate:
-                    self.app_instance.log(f"Dialog Config (toggle): Error poblando refcat para '{cov_name}': {e_toggle_populate}", "ERROR")
-                    config['ref_combo']['values'] = []
-                    config['ref_combo'].set("")
+            # TODO: Populate ref_combo with unique values from self.app_instance.data[cov_name]
+            # For now, keeping it simple as per subtask instructions.
+            # Example: if self.app_instance.data is not None and cov_name in self.app_instance.data:
+            #    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
+            #    config['ref_combo']['values'] = unique_vals
+            #    if unique_vals: config['ref_combo'].set(unique_vals[0])
         else:
             config['ref_combo'].config(state="disabled")
             config['ref_combo'].set("")
-            config['ref_combo']['values'] = [] # Limpiar valores si no es cualitativa
-
 
         # Spline Checkbutton (itself)
         config['cb_spline'].config(state=tk.NORMAL if var_type == "Cuantitativa" else tk.DISABLED)
@@ -1097,7 +1058,6 @@ class CoxModelingApp(ttk.Frame):
         # Diccionario del modelo seleccionado en la Treeview
         self.selected_model_in_treeview = None
         self.btn_oos_calibration = None
-        self.univariate_results = [] # Nueva variable para almacenar resultados univariados
 
         # Variables de control para la UI (Pestaña 2: Modelado)
         self.cox_model_type_var = StringVar(value="Multivariado")  # "Univariado" | "Multivariado"
@@ -1116,7 +1076,6 @@ class CoxModelingApp(ttk.Frame):
         self.cv_num_kfolds_var = IntVar(value=5)  # Número de folds para CV
         self.cv_random_seed_var = IntVar(value=42)  # Semilla aleatoria para CV
         self.covariate_scaling_method_var = StringVar(value="Ninguna")
-        self.generar_fp_univariado_auto_var = BooleanVar(value=False) # Para el nuevo checkbox
 
         # Crear Notebook (pestañas)
         self.notebook = ttk.Notebook(self)
@@ -1548,70 +1507,41 @@ class CoxModelingApp(ttk.Frame):
             self.var_tipo_covariable_seleccionada.set(current_var_type)
 
             if current_var_type == "Cualitativa":
-                # Poblar el combobox de categoría de referencia
-                try:
-                    # Obtener valores únicos, incluyendo NaNs como strings si existen
-                    # astype(str) convierte NaN de numpy a la cadena "nan"
-                    unique_cats_series = self.data[var_name_cfg].fillna("NA_explicit_string").astype(str).unique()
-                    unique_cats = sorted([str(cat) for cat in unique_cats_series])
-
-                    self.combo_ref_categoria_seleccionada['values'] = unique_cats
-                    self.log_message(f"UI Config: Categorías para '{var_name_cfg}': {unique_cats}", "DEBUG")
-
-                    current_ref_cat_config = self.ref_categories_config.get(var_name_cfg)
-
-                    # Si hay una configuración guardada y existe en las categorías actuales (después de conversión a str), la usamos.
-                    # self.ref_categories_config debería guardar la categoría tal como se espera que Patsy la vea (como string).
-                    if current_ref_cat_config is not None and str(current_ref_cat_config) in unique_cats:
-                        self.combo_ref_categoria_seleccionada.set(str(current_ref_cat_config))
-                        self.log_message(f"UI Config: Ref. cat. para '{var_name_cfg}' cargada: '{current_ref_cat_config}'", "DEBUG")
-                    elif unique_cats: # Si no hay config o la config no es válida, default a la primera
-                        self.combo_ref_categoria_seleccionada.set(unique_cats[0])
-                        self.log_message(f"UI Config: Ref. cat. para '{var_name_cfg}' default: '{unique_cats[0]}'", "DEBUG")
-                    else: # Sin categorías únicas (raro si la variable existe)
-                        self.combo_ref_categoria_seleccionada.set("")
-                        self.log_message(f"UI Config: No hay categorías únicas para '{var_name_cfg}'", "WARN")
-                except Exception as e_populate_ref:
-                    self.log_message(f"UI Config: Error poblando refcat para '{var_name_cfg}': {e_populate_ref}", "ERROR")
+                unique_cats = sorted(list(self.data[var_name_cfg].astype(str).unique()))
+                self.combo_ref_categoria_seleccionada['values'] = unique_cats
+                current_ref_cat = self.ref_categories_config.get(var_name_cfg)
+                if current_ref_cat in unique_cats:
+                    self.combo_ref_categoria_seleccionada.set(current_ref_cat)
+                elif unique_cats: # Default a la primera si no hay config o la config no es válida
+                    self.combo_ref_categoria_seleccionada.set(unique_cats[0])
+                else: # Sin categorías
                     self.combo_ref_categoria_seleccionada.set("")
-                    self.combo_ref_categoria_seleccionada['values'] = []
             else: # Cuantitativa
                 self.combo_ref_categoria_seleccionada.set("")
                 self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
             
             # Configuración de Spline
-            if current_var_type == "Cuantitativa":
-                self.checkbutton_usar_spline.config(state=tk.NORMAL)
-                if var_name_cfg in self.spline_config_details:
-                    self.var_usar_spline_seleccionada.set(True)
-                    spl_conf = self.spline_config_details[var_name_cfg]
-                    self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
-                    self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
-                else:
-                    self.var_usar_spline_seleccionada.set(False)
-                    self.combo_tipo_spline_seleccionada.set('Natural')
-                    self.var_df_spline_seleccionada.set(4)
-            else: # Cualitativa o no hay datos para determinar tipo
-                self.var_usar_spline_seleccionada.set(False) # Desmarcar
-                self.checkbutton_usar_spline.config(state=tk.DISABLED) # Deshabilitar
-                # Resetear valores de detalle de spline a default, ya que no aplican
-                self.combo_tipo_spline_seleccionada.set('Natural')
-                self.var_df_spline_seleccionada.set(4)
-
-        else: # Ninguna seleccionada o múltiples seleccionadas
-            self.label_cov_seleccionada_nombre.config(text=f"{len(sel_idx)} Variables Seleccionadas" if multiple_selected else "Ninguna Seleccionada")
-
-            # Si no es selección múltiple (es decir, ninguna seleccionada), resetear todos los controles de config del panel simple
-            if not multiple_selected:
-                self.var_tipo_covariable_seleccionada.set("Cuantitativa")
-                self.combo_ref_categoria_seleccionada.set("")
-                self.combo_ref_categoria_seleccionada.config(values=[])
+            if current_var_type == "Cuantitativa" and var_name_cfg in self.spline_config_details:
+                self.var_usar_spline_seleccionada.set(True)
+                spl_conf = self.spline_config_details[var_name_cfg]
+                self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
+                self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
+            elif current_var_type == "Cuantitativa": # Es cuantitativa pero sin config de spline
+                 self.var_usar_spline_seleccionada.set(False) # Asegurar que esté desactivado
+                 self.combo_tipo_spline_seleccionada.set('Natural') # Default
+                 self.var_df_spline_seleccionada.set(4) # Default
+            else: # Cualitativa, spline no aplica
                 self.var_usar_spline_seleccionada.set(False)
-                self.checkbutton_usar_spline.config(state=tk.DISABLED) # Explicitly disable
-                self.combo_tipo_spline_seleccionada.set('Natural')
-                self.var_df_spline_seleccionada.set(4)
-            # Para selección múltiple, no cambiamos los valores aquí, solo el estado general en _toggle.
-            # El usuario cambiaría el tipo masivamente, y luego si es Cuantitativa, podría marcar Usar Spline.
+
+        else: # Ninguna seleccionada o error
+            self.label_cov_seleccionada_nombre.config(text="Ninguna Seleccionada")
+            self.radio_cuantitativa.config(state=tk.DISABLED)
+            self.radio_cualitativa.config(state=tk.DISABLED)
+            self.var_tipo_covariable_seleccionada.set("Cuantitativa") # Reset a default
+            self.combo_ref_categoria_seleccionada.set("")
+            self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
+            self.var_usar_spline_seleccionada.set(False)
+            # Los demás (checkbutton_usar_spline, etc.) se manejan en _toggle
 
         self._toggle_spline_and_refcat_controls()
 
@@ -1638,31 +1568,20 @@ class CoxModelingApp(ttk.Frame):
                  self.combo_ref_categoria_seleccionada['values'] = []
 
 
-        # Spline Checkbutton (principal)
-        # Habilitado si se selecciona al menos una variable y el tipo elegido en el panel es "Cuantitativa",
-        # O si son múltiples variables (permitiendo cambio masivo de tipo y luego de spline).
-        # Si el tipo es Cualitativo, siempre deshabilitado.
-        if num_selected > 0 and current_type_choice_panel == "Cuantitativa":
-            self.checkbutton_usar_spline.config(state=tk.NORMAL)
-        else: # Cualitativa, o ninguna seleccionada, o múltiples donde el tipo podría no ser aún cuantitativo
-            self.checkbutton_usar_spline.config(state=tk.DISABLED)
-            self.var_usar_spline_seleccionada.set(False) # Si el check se deshabilita, desmarcarlo
-
-        # Detalles de Spline (tipo y df):
-        # Habilitados solo si el check "Usar Spline" está marcado Y su checkbutton está habilitado (es decir, es cuantitativa).
-        spline_details_should_be_active = self.var_usar_spline_seleccionada.get() and \
-                                          (self.checkbutton_usar_spline.cget('state') == tk.NORMAL)
-
-        spline_details_combo_state = "readonly" if spline_details_should_be_active else tk.DISABLED
-        spline_details_spin_state = tk.NORMAL if spline_details_should_be_active else tk.DISABLED
-
-        self.combo_tipo_spline_seleccionada.config(state=spline_details_combo_state)
-        self.spinbox_df_spline.config(state=spline_details_spin_state)
+        # Spline: solo para cuantitativas (1 o más)
+        can_use_spline = (num_selected > 0 and current_type_choice == "Cuantitativa")
+        self.checkbutton_usar_spline.config(state=tk.NORMAL if can_use_spline else tk.DISABLED)
+        if not can_use_spline: # Si no se puede usar spline, desactivar el check
+            self.var_usar_spline_seleccionada.set(False)
         
-        # Si los detalles de spline se deshabilitan, resetear sus valores a default.
-        if not spline_details_should_be_active:
-            self.combo_tipo_spline_seleccionada.set("Natural")
-            self.var_df_spline_seleccionada.set(4)
+        # Detalles de Spline: si se marca "Usar Spline" y es aplicable
+        spline_details_state = "readonly" if self.var_usar_spline_seleccionada.get() and can_use_spline else "disabled"
+        self.combo_tipo_spline_seleccionada.config(state=spline_details_state)
+        self.spinbox_df_spline.config(state=spline_details_state)
+        # Asegurar que los valores de spline no se mantengan si se cambia de tipo o se desmarca
+        if spline_details_state == "disabled":
+            self.combo_tipo_spline_seleccionada.set("Natural") # Reset
+            self.var_df_spline_seleccionada.set(4) # Reset
 
 
     def apply_covariate_config_to_selected(self):
@@ -1732,16 +1651,13 @@ class CoxModelingApp(ttk.Frame):
                     log_msgs_for_var.append("Config. Ref.Cat. eliminada (tipo cambiado a Cuantitativa).")
                 
                 # Apply or remove spline config based on main panel's "Usar Spline"
-                # Esto se aplica si el tipo de variable actual (new_var_type_bulk) es Cuantitativa
-                if use_spline_bulk: # use_spline_bulk es self.var_usar_spline_seleccionada.get()
-                    # spline_type_bulk es self.combo_tipo_spline_seleccionada.get()
-                    # spline_df_bulk es self.var_df_spline_seleccionada.get()
+                if use_spline_bulk:
                     self.spline_config_details[var_name_apply] = {'type': spline_type_bulk, 'df': spline_df_bulk}
-                    log_msgs_for_var.append(f"Spline aplicado: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
-                else: # Not using spline via main panel, or type is not quantitative for this var
+                    log_msgs_for_var.append(f"Spline: Tipo='{spline_type_bulk}', DF={spline_df_bulk}")
+                else: # Not using spline via main panel
                     if var_name_apply in self.spline_config_details:
                         del self.spline_config_details[var_name_apply]
-                        log_msgs_for_var.append("Config. spline eliminada (desmarcado en panel simple o no aplicable).")
+                        log_msgs_for_var.append("Config. spline eliminada (desmarcado en panel simple).")
             
             self.log(" ".join(log_msgs_for_var), "CONFIG")
             num_applied += 1
@@ -1895,14 +1811,9 @@ class CoxModelingApp(ttk.Frame):
         # Tipo de Modelado
         frame_tipo_modelado = ttk.Frame(left_col_frame)
         frame_tipo_modelado.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").grid(row=0, column=0, padx=(0,5), pady=3, sticky=tk.W)
-        ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado", command=self._toggle_univariado_fp_checkbox_state).grid(row=0, column=1, padx=3, pady=3, sticky=tk.W)
-        ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado", command=self._toggle_univariado_fp_checkbox_state).grid(row=0, column=2, padx=3, pady=3, sticky=tk.W)
-
-        # Checkbox para Forest Plot Univariado Automático
-        self.cb_auto_forest_plot_univariado = ttk.Checkbutton(frame_tipo_modelado, text="Generar Forest Plot Univariado Automáticamente", variable=self.generar_fp_univariado_auto_var, state=tk.DISABLED)
-        self.cb_auto_forest_plot_univariado.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky=tk.W)
-
+        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").pack(side=tk.LEFT, padx=(0,5))
+        ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado").pack(side=tk.LEFT, padx=3)
+        ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado").pack(side=tk.LEFT, padx=3)
 
         # Selección de Variables
         frame_sel_vars = ttk.LabelFrame(left_col_frame, text="Selección de Variables (para Multivariado)")
@@ -2048,23 +1959,8 @@ class CoxModelingApp(ttk.Frame):
         clear_models_frame.pack(fill=tk.X, pady=5)
         ttk.Button(clear_models_frame, text="Limpiar Todos los Modelos", command=self._clear_all_generated_models).pack(side=tk.RIGHT, padx=5)
 
-        # Botón para Forest Plot de Univariados
-        self.btn_forest_plot_univariados = ttk.Button(frame_acciones, text="Forest Plot Univariados", command=self.generar_forest_plot_univariados, state=tk.DISABLED)
-        self.btn_forest_plot_univariados.pack(side=tk.LEFT, padx=3, pady=2, fill=tk.X, expand=True)
-
-
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
-        self._toggle_univariado_fp_checkbox_state() # Estado inicial del checkbox de FP univariado
-
-    def _toggle_univariado_fp_checkbox_state(self):
-        """Habilita o deshabilita el checkbox de Forest Plot univariado automático."""
-        if hasattr(self, 'cb_auto_forest_plot_univariado'):
-            if self.cox_model_type_var.get() == "Univariado":
-                self.cb_auto_forest_plot_univariado.config(state=tk.NORMAL)
-            else:
-                self.cb_auto_forest_plot_univariado.config(state=tk.DISABLED)
-                self.generar_fp_univariado_auto_var.set(False) # Desmarcar si se cambia a multivariado
 
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
@@ -2255,38 +2151,28 @@ class CoxModelingApp(ttk.Frame):
                     spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
                     patsy_func_bd = 'cr' if spl_cfg_bd.get('type', 'Natural') == 'Natural' else 'bs'
                     term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spl_cfg_bd.get('df', 4)})"
-            else: # Cualitativa
-                # Asegurar consistencia de NaNs: convertir NaNs en la columna de datos a "NA_explicit_string"
-                # antes de verificar la categoría de referencia y construir la fórmula.
-                # Esto debe hacerse en una copia si df_for_patsy_bd se reutiliza o es el original.
-                # Como df_for_patsy_bd es una copia de df_input_bd, y df_input_bd es una copia de self.data (o filtrado),
-                # esta modificación es local a esta función para esta variable.
-                if df_for_patsy_bd[orig_cov_name_bd].isnull().any():
-                    df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].fillna("NA_explicit_string")
+            else:
+                if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
+                   not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
+                   not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype):
+                     df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
 
-                # Convertir toda la columna a string para asegurar que Patsy la trate como categórica
-                # y para que la comparación de la categoría de referencia sea consistente.
-                df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
-
-                ref_cat_config_val = self.ref_categories_config.get(orig_cov_name_bd)
-
-                # La categoría de referencia también debe ser un string para la comparación y para Patsy.
-                # Si se seleccionó "NA_explicit_string" en la UI, ref_cat_config_val ya será ese string.
-                ref_cat_bd_str = str(ref_cat_config_val).strip() if ref_cat_config_val is not None else None
-
-                unique_values_in_data = df_for_patsy_bd[orig_cov_name_bd].unique()
-
-                if ref_cat_bd_str and ref_cat_bd_str in unique_values_in_data:
-                    self.log(f"Build Matrix: Usando Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}'.", "DEBUG")
-                    self.log(f"Build Matrix: Usando Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}'.", "DEBUG")
-                    # Escapar comillas simples dentro de la categoría de referencia para Patsy: ' -> ''
-                    patsy_escaped_ref_cat = ref_cat_bd_str.replace("'", "''")
-                    term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{patsy_escaped_ref_cat}'))"
+                ref_cat_bd = self.ref_categories_config.get(orig_cov_name_bd)
+                if ref_cat_bd and str(ref_cat_bd).strip():
+                    ref_cat_str_bd = str(ref_cat_bd)
+                    if ref_cat_str_bd in df_for_patsy_bd[orig_cov_name_bd].astype(str).unique():
+                        # For string literals like 'F', Patsy expects Treatment('F')
+                        # If ref_cat_str_bd could be numeric, further type checking might be needed,
+                        # but for now, assuming string reference categories are common.
+                        # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
+                        if re.match(r"^-?\d+(\.\d+)?$", ref_cat_str_bd): # Check if it looks like a number
+                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
+                        else: # Assume string, enclose in quotes for Patsy
+                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                    else:
+                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
+                        term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
                 else:
-                    if ref_cat_bd_str: # Se configuró una referencia, pero no se encontró en los datos actuales
-                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_bd_str}' para '{orig_cov_name_bd}' no encontrada en los datos procesados (valores únicos: {unique_values_in_data}). Patsy usará su default.", "WARN")
-                    else: # No se configuró referencia
-                        self.log(f"Advertencia: No se configuró Ref.Cat. para '{orig_cov_name_bd}'. Patsy usará su default.", "WARN")
                     term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
             formula_parts_bd.append(term_syntax_bd)
 
@@ -2611,7 +2497,6 @@ class CoxModelingApp(ttk.Frame):
         successful_fits = 0
         failed_fits = 0
         temp_models_list_orch = []
-        self.univariate_results = [] # Limpiar resultados univariados anteriores
 
         prep_res = self._preparar_datos_para_modelado()
         if prep_res is None:
@@ -2668,41 +2553,6 @@ class CoxModelingApp(ttk.Frame):
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
                             successful_fits += 1
-                            # Almacenar resultados clave para el forest plot univariado
-                            metrics_uni = md_uni.get("metrics", {})
-                            hr_ci_uni = metrics_uni.get("HR_CI (individual)", {})
-
-                            # El modelo univariado tendrá solo una covariable (o varios términos si es spline/categórica)
-                            # Necesitamos el HR, CI y p-valor para la variable original.
-                            # El nombre de la variable original es `orig_cov_uni`.
-                            # Los `terms_uni` son los nombres de las columnas en X_design.
-                            # `summary_df` dentro de metrics_uni tiene la info por término.
-                            summary_df_uni = metrics_uni.get("summary_df")
-                            if summary_df_uni is not None and not summary_df_uni.empty:
-                                # Para variables simples (no categóricas con múltiples niveles, no splines complejos),
-                                # el summary_df podría tener un solo row o el término principal.
-                                # Si es categórica, `orig_cov_uni` se transforma en `C(Q('orig_cov_uni'))[T.level]`
-                                # Si es spline, `cr(Q('orig_cov_uni'), df=4)[0]`, etc.
-                                # Intentamos encontrar la entrada más relevante.
-                                # Para simplicidad inicial, si hay una sola fila en summary_df, la usamos.
-                                # O si el nombre original está directamente como índice.
-
-                                first_term_name = summary_df_uni.index[0] if not summary_df_uni.empty else None
-                                hr_val = summary_df_uni.loc[first_term_name, 'exp(coef)'] if first_term_name and 'exp(coef)' in summary_df_uni.columns else np.nan
-                                hr_lower = summary_df_uni.loc[first_term_name, 'exp(coef) lower 95%'] if first_term_name and 'exp(coef) lower 95%' in summary_df_uni.columns else np.nan
-                                hr_upper = summary_df_uni.loc[first_term_name, 'exp(coef) upper 95%'] if first_term_name and 'exp(coef) upper 95%' in summary_df_uni.columns else np.nan
-                                p_val_uni = summary_df_uni.loc[first_term_name, 'p'] if first_term_name and 'p' in summary_df_uni.columns else np.nan
-
-                                self.univariate_results.append({
-                                    "variable": orig_cov_uni, # Usar el nombre original de la variable
-                                    "hr": hr_val,
-                                    "hr_lower": hr_lower,
-                                    "hr_upper": hr_upper,
-                                    "p_value": p_val_uni
-                                })
-                                self.log(f"Resultado univariado para '{orig_cov_uni}' almacenado: HR={hr_val:.2f} (p={p_val_uni:.3f})", "DEBUG")
-                            else:
-                                self.log(f"No se pudo extraer HR/CI/p-valor del summary_df para univariado de '{orig_cov_uni}'.", "WARN")
                         else:
                             failed_fits += 1
         
@@ -2786,19 +2636,6 @@ class CoxModelingApp(ttk.Frame):
         self.log(f"  Ajustes Exitosos: {successful_fits}", "SUCCESS" if successful_fits > 0 else "INFO")
         self.log(f"  Ajustes Fallidos: {failed_fits}", "ERROR" if failed_fits > 0 else "INFO")
 
-        # Habilitar botón de Forest Plot Univariados si hay resultados
-        if self.univariate_results:
-            if hasattr(self, 'btn_forest_plot_univariados'): # Comprobar si el botón existe
-                self.btn_forest_plot_univariados.config(state=tk.NORMAL)
-            self.log("Resultados univariados disponibles. Botón Forest Plot Univariados habilitado.", "INFO")
-            # Generar automáticamente el Forest Plot si el checkbox está activado
-            if self.generar_fp_univariado_auto_var.get():
-                self.log("Checkbox de Forest Plot univariado automático activado. Generando gráfico...", "INFO")
-                self.generar_forest_plot_univariados()
-        else:
-            if hasattr(self, 'btn_forest_plot_univariados'): # Comprobar si el botón existe
-                self.btn_forest_plot_univariados.config(state=tk.DISABLED)
-
         self.log("*"*35 + " FIN PROCESO DE MODELADO COX " + "*"*35, "HEADER")
 
 
@@ -2819,10 +2656,6 @@ class CoxModelingApp(ttk.Frame):
                 self.btn_oos_calibration.config(state=tk.NORMAL)
             else:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
-
-        # El estado del botón de forest plot univariado no depende de la selección del treeview,
-        # sino de la existencia de self.univariate_results, que se maneja en _execute_cox_modeling_orchestrator
-        # y _clear_all_generated_models.
 
         self._update_results_buttons_state()
 
@@ -4079,9 +3912,6 @@ class CoxModelingApp(ttk.Frame):
             self.selected_model_in_treeview = None
             if self.btn_oos_calibration:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
-            if hasattr(self, 'btn_forest_plot_univariados'): # Asegurarse que el botón existe
-                self.btn_forest_plot_univariados.config(state=tk.DISABLED)
-            self.univariate_results = [] # Limpiar también los resultados univariados
             self._update_results_buttons_state() # Deshabilitar botones de resultados
             self.log("Todos los modelos generados han sido eliminados.", "INFO")
 
@@ -5015,102 +4845,6 @@ class CoxModelingApp(ttk.Frame):
         ax.grid(True, linestyle=':', alpha=0.7)
         self.log(f"Gráfico de correlación vs tiempo generado para modelo '{model_name_for_title}'.", "INFO")
 
-    def generar_forest_plot_univariados(self):
-        self.log("Iniciando generación de Forest Plot para resultados univariados.", "INFO")
-        if not self.univariate_results:
-            messagebox.showinfo("Sin Datos", "No hay resultados univariados disponibles para generar el Forest Plot. Ejecute primero el modelado univariado.", parent=self.parent_for_dialogs)
-            self.log("No hay resultados univariados para Forest Plot.", "INFO")
-            return
-
-        fig_fp_uni = None
-        try:
-            df_plot_uni = pd.DataFrame(self.univariate_results)
-            df_plot_uni.dropna(subset=['hr', 'hr_lower', 'hr_upper', 'p_value'], inplace=True)
-
-            if df_plot_uni.empty:
-                messagebox.showinfo("Datos Insuficientes", "No hay suficientes datos válidos en los resultados univariados para graficar.", parent=self.parent_for_dialogs)
-                self.log("DataFrame para Forest Plot univariado vacío después de limpiar NaNs.", "WARN")
-                return
-
-            df_plot_uni.sort_values(by='hr', ascending=True, inplace=True)
-
-            fig_fp_uni, ax_fp_uni = plt.subplots(figsize=(10, max(4, len(df_plot_uni) * 0.45)))
-
-            y_pos_fp_uni = np.arange(len(df_plot_uni))
-            hrs_fp_uni = df_plot_uni['hr'].astype(float)
-            low_ci_fp_uni = df_plot_uni['hr_lower'].astype(float)
-            upp_ci_fp_uni = df_plot_uni['hr_upper'].astype(float)
-
-            xerr_low = hrs_fp_uni - low_ci_fp_uni
-            xerr_upp = upp_ci_fp_uni - hrs_fp_uni
-
-            xerr_low = np.maximum(0, xerr_low)
-            xerr_upp = np.maximum(0, xerr_upp)
-
-            # Usar fmt='o' para el marcador central (HR)
-            # El errorbar en sí mismo (las líneas) será negro por 'ecolor'
-            # El capsize define las pequeñas líneas verticales en los extremos del IC
-            ax_fp_uni.errorbar(hrs_fp_uni, y_pos_fp_uni, xerr=[xerr_low, xerr_upp],
-                               fmt='o', # Marcador de punto para el HR
-                               markersize=5, markerfacecolor='black', markeredgecolor='black',
-                               ecolor='black', # Color de las líneas de error (IC)
-                               capsize=3, # Tamaño de los "caps" en los extremos del IC
-                               elinewidth=1, # Grosor de la línea del IC
-                               zorder=10)
-
-            ax_fp_uni.set_yticks(y_pos_fp_uni)
-            ax_fp_uni.set_yticklabels(df_plot_uni['variable'], fontsize=9)
-            ax_fp_uni.invert_yaxis()
-
-            ax_fp_uni.axvline(1.0, color='red', ls='--', lw=1.0, zorder=5)
-
-            valid_hr_for_log = hrs_fp_uni[hrs_fp_uni > 0]
-            if not valid_hr_for_log.empty:
-                 if (low_ci_fp_uni > 0).all() and (upp_ci_fp_uni > 0).all() and (hrs_fp_uni > 0).all():
-                    ax_fp_uni.set_xscale('log')
-                    formatter = ScalarFormatter()
-                    formatter.set_scientific(False)
-                    ax_fp_uni.xaxis.set_major_formatter(formatter)
-                    # Podríamos considerar poner ticks específicos si la escala log es muy amplia
-                    # Ejemplo: ax_fp_uni.set_xticks([0.1, 0.5, 1, 2, 5])
-                 else:
-                    self.log("Algunos HRs o ICs son <= 0. No se aplicará escala logarítmica. Usando escala lineal.", "WARN")
-                    formatter_linear = ScalarFormatter(useOffset=False)
-                    formatter_linear.set_scientific(False)
-                    ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
-            else:
-                 self.log("No hay HRs válidos (>0) o datos vacíos para determinar escala. Usando escala lineal.", "WARN")
-                 formatter_linear = ScalarFormatter(useOffset=False)
-                 formatter_linear.set_scientific(False)
-                 ax_fp_uni.xaxis.set_major_formatter(formatter_linear)
-
-            # Forzar que los ticks se muestren como números flotantes normales
-            # Esto es un intento adicional para asegurar el formato deseado.
-            ax_fp_uni.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, pos: f'{x:.2f}'.rstrip('0').rstrip('.')))
-
-
-            opts_fp_uni = self.current_plot_options.copy()
-            opts_fp_uni['title'] = opts_fp_uni.get('title') or "Forest Plot de Resultados Univariados Cox"
-            opts_fp_uni['xlabel'] = opts_fp_uni.get('xlabel') or "Hazard Ratio (HR) con IC 95%"
-            opts_fp_uni['ylabel'] = opts_fp_uni.get('ylabel') or "Variable"
-
-            if 'log' in ax_fp_uni.get_xscale():
-                if 'xlim_min' in opts_fp_uni: del opts_fp_uni['xlim_min']
-                if 'xlim_max' in opts_fp_uni: del opts_fp_uni['xlim_max']
-
-            apply_plot_options(ax_fp_uni, opts_fp_uni, self.log)
-
-            plt.tight_layout(pad=1.5)
-
-            self._create_plot_window(fig_fp_uni, "Forest Plot - Análisis Univariados")
-            self.log("Forest Plot de resultados univariados generado exitosamente.", "SUCCESS")
-
-        except Exception as e_fp_uni:
-            self.log(f"Error al generar Forest Plot univariado: {e_fp_uni}", "ERROR")
-            traceback.print_exc(limit=3)
-            messagebox.showerror("Error de Gráfico", f"No se pudo generar el Forest Plot univariado:\n{e_fp_uni}", parent=self.parent_for_dialogs)
-            if fig_fp_uni is not None:
-                plt.close(fig_fp_uni)
 
 # --- Fin de la clase CoxModelingApp ---
 
