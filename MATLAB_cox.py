@@ -2276,23 +2276,49 @@ class CoxModelingApp(ttk.Frame):
 
             config_type_bd = self.covariables_type_config.get(orig_cov_name_bd, "Cuantitativa" if pd.api.types.is_numeric_dtype(df_for_patsy_bd[orig_cov_name_bd]) else "Cualitativa")
             
-            term_syntax_bd = f"Q('{orig_cov_name_bd}')" 
-            if config_type_bd == "Cuantitativa":
-                if orig_cov_name_bd in self.spline_config_details:
-                    spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
-                    spline_type = spl_cfg_bd.get('type', 'Natural')
-                    spline_df = spl_cfg_bd.get('df', 4)
+            term_syntax_bd = f"Q('{orig_cov_name_bd}')" # Default term
 
-                    if spline_type == 'Natural':
-                        patsy_func_bd = 'cr'
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df})"
-                    elif spline_type == 'B-spline':
-                        patsy_func_bd = 'bs'
-                        spline_degree = spl_cfg_bd.get('degree', 3) # Default a cúbico si no está
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
-                    else: # Fallback por si acaso
-                        term_syntax_bd = f"Q('{orig_cov_name_bd}')"
-            else:
+            if config_type_bd == "Cuantitativa":
+                is_spline_candidate = orig_cov_name_bd in self.spline_config_details
+
+                # >>> INICIO DE LA MODIFICACIÓN PROPUESTA PARA SPLINES <<<
+                if is_spline_candidate:
+                    try:
+                        if orig_cov_name_bd not in df_for_patsy_bd.columns:
+                            self.log(f"Advertencia: La columna '{orig_cov_name_bd}' no se encontró en df_for_patsy_bd al preparar para spline. Se omitirá.", "WARN")
+                            continue # Saltar esta covariable
+
+                        # Asegurar que la columna sea numérica para operaciones de spline
+                        df_for_patsy_bd[orig_cov_name_bd] = pd.to_numeric(df_for_patsy_bd[orig_cov_name_bd], errors='coerce')
+
+                        if df_for_patsy_bd[orig_cov_name_bd].isnull().all():
+                            self.log(f"Advertencia: La columna '{orig_cov_name_bd}' es completamente NaN después de pd.to_numeric. No se puede usar para spline. Se omitirá.", "WARN")
+                            continue # Saltar esta covariable
+
+                        # Proceder con la configuración del spline
+                        spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
+                        spline_type = spl_cfg_bd.get('type', 'Natural')
+                        spline_df = spl_cfg_bd.get('df', 4)
+
+                        if spline_type == 'Natural':
+                            patsy_func_bd = 'cr'
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df})"
+                        elif spline_type == 'B-spline':
+                            patsy_func_bd = 'bs'
+                            spline_degree = spl_cfg_bd.get('degree', 3)
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
+                        else: # Fallback si el tipo de spline no es reconocido
+                            term_syntax_bd = f"Q('{orig_cov_name_bd}')"
+                            self.log(f"Advertencia: Tipo de spline '{spline_type}' no reconocido para '{orig_cov_name_bd}'. Usando término cuantitativo estándar.", "WARN")
+
+                    except Exception as e_spline_prep:
+                        self.log(f"Error al preparar '{orig_cov_name_bd}' para spline: {e_spline_prep}. Se usará como término cuantitativo estándar.", "ERROR")
+                        term_syntax_bd = f"Q('{orig_cov_name_bd}')" # Fallback a término normal si hay error en la preparación del spline
+                else: # No es candidato a spline, usar término cuantitativo estándar
+                    term_syntax_bd = f"Q('{orig_cov_name_bd}')"
+                # >>> FIN DE LA MODIFICACIÓN PROPUESTA PARA SPLINES <<<
+
+            else: # Cualitativa
                 if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
                    not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
                    not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype):
