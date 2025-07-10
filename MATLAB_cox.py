@@ -431,51 +431,57 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
         self.wait_window(self)
 
     def _toggle_row_controls_state(self, cov_name):
-        if not cov_name in self.row_configs: return
+        if not cov_name in self.row_configs:
+            # self.app_instance.log(f"DEBUG: _toggle_row_controls_state - cov_name '{cov_name}' not in self.row_configs. Saliendo.", "DEBUG")
+            return
 
         config = self.row_configs[cov_name]
-        var_type = config['type_var'].get() # "Cuantitativa" o "Cualitativa"
+        var_is_quantitative = config['type_var'].get() == "Cuantitativa"
 
-        # 1. Configurar estado del ComboBox de Categoría de Referencia
-        if var_type == "Cualitativa":
-            config['ref_combo'].config(state="readonly")
-            # La lógica de población de ref_combo ya está en __init__
-        else: # Cuantitativa
-            config['ref_combo'].config(state="disabled")
+        # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': var_is_quantitative={var_is_quantitative}", "DEBUG")
+
+        # Configurar ComboBox de Categoría de Referencia
+        config['ref_combo'].config(state="readonly" if not var_is_quantitative else "disabled")
+        if var_is_quantitative:
             config['ref_combo'].set("")
 
-        # 2. Configurar estado del CheckBox "Usar Spline"
-        is_quantitative = (var_type == "Cuantitativa")
-        cb_spline_state = tk.NORMAL if is_quantitative else tk.DISABLED
-        config['cb_spline'].config(state=cb_spline_state)
+        # Configurar CheckBox "Usar Spline"
+        config['cb_spline'].config(state=tk.NORMAL if var_is_quantitative else tk.DISABLED)
+        if not var_is_quantitative:
+            config['spline_var'].set(False) # Forzar desmarcado si no es cuantitativa
 
-        if not is_quantitative:
-            config['spline_var'].set(False) # Desmarcar si no es cuantitativa
+        # Obtener el estado actual del checkbox "Usar Spline" DESPUÉS de cualquier posible cambio
+        spline_is_active = config['spline_var'].get()
+        # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': spline_is_active={spline_is_active}", "DEBUG")
 
-        # Obtener el estado actual del checkbox "Usar Spline" (puede haber sido cambiado por la línea anterior)
-        use_spline_checked = config['spline_var'].get()
+        # Configurar "Tipo Spline" y "Spline DF"
+        # Habilitados si la variable es cuantitativa Y el checkbox "Usar Spline" está marcado.
+        can_configure_spline_type_and_df = var_is_quantitative and spline_is_active
+        spline_type_df_control_state = tk.NORMAL if can_configure_spline_type_and_df else tk.DISABLED
 
-        # 3. Configurar estado de "Tipo Spline" y "Spline DF"
-        # Estos dependen de si es cuantitativa Y si "Usar Spline" está marcado.
-        spline_type_df_state = tk.NORMAL if (is_quantitative and use_spline_checked) else tk.DISABLED
-        config['spline_type_combo'].config(state=spline_type_df_state)
-        config['spline_df_spinbox'].config(state=spline_type_df_state)
+        config['spline_type_combo'].config(state=spline_type_df_control_state)
+        config['spline_df_spinbox'].config(state=spline_type_df_control_state)
+        # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': spline_type_df_control_state='{spline_type_df_control_state}'", "DEBUG")
 
-        # 4. Configurar estado de "Spline Grado"
-        # Este depende de los anteriores Y de si el tipo de spline es "B-spline".
-        spline_type_selected = config['spline_type_combo'].get()
-        spline_degree_state = tk.NORMAL if (spline_type_df_state == tk.NORMAL and spline_type_selected == "B-spline") else tk.DISABLED
-        config['spline_degree_spinbox'].config(state=spline_degree_state)
+        # Configurar "Spline Grado"
+        # Habilitado si los detalles del spline (tipo/df) están habilitados Y el tipo es "B-spline".
+        selected_spline_type = config['spline_type_combo'].get()
+        can_configure_degree = can_configure_spline_type_and_df and (selected_spline_type == "B-spline")
+        spline_degree_control_state = tk.NORMAL if can_configure_degree else tk.DISABLED
+        config['spline_degree_spinbox'].config(state=spline_degree_control_state)
+        # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': selected_spline_type='{selected_spline_type}', spline_degree_control_state='{spline_degree_control_state}'", "DEBUG")
 
-        # 5. Resetear valores si los controles de spline están deshabilitados
-        if spline_type_df_state == tk.DISABLED: # Si Tipo/DF están deshabilitados, Grado también lo estará.
+        # Resetear valores si los controles correspondientes están deshabilitados
+        if not can_configure_spline_type_and_df:
             config['spline_type_combo'].set("Natural")
             config['spline_df_var'].set(4)
+            config['spline_degree_var'].set(3) # Grado también se resetea
+
+        if not can_configure_degree:
+            # Si el grado no es configurable (pero tipo/df sí podrían serlo, ej. para Natural spline),
+            # reseteamos la variable de grado a 3.
+            # Esto es importante si se cambia de B-spline a Natural.
             config['spline_degree_var'].set(3)
-        elif spline_degree_state == tk.DISABLED: # Tipo/DF están habilitados, pero Grado no (porque es "Natural" o no B-spline)
-            # Si el tipo es Natural, el grado no es editable, así que podemos resetear su display/variable.
-            if spline_type_selected == "Natural":
-                 config['spline_degree_var'].set(3) # Resetear a 3, aunque no se use.
 
     def apply_configurations(self):
         self.app_instance.log("Aplicando configuraciones detalladas de covariables...", "INFO")
