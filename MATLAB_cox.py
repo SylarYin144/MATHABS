@@ -2461,6 +2461,227 @@ class CoxModelingApp(ttk.Frame):
                                    scaled_columns_info=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
+        ui_selected_tie_method = self.tie_handling_method_var.get()
+
+        model_data_rm = {
+            "model_name": model_name_rm, "time_col_for_model": time_col_rm, "event_col_for_model": event_col_rm,
+            "formula_patsy": formula_patsy_rm,
+            "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg,
+            "covariates_processed": covariates_display_terms_rm,
+            "df_used_for_fit": self.data.copy(),
+            "X_design_used_for_fit": X_design_rm.copy(),
+            "y_survival_used_for_fit": y_survival_rm.copy(),
+            "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
+            "tie_method_used": ui_selected_tie_method,
+            "metrics": {}, "schoenfeld_results": pd.DataFrame(), "model": None, "loglik_null": None,
+            "c_index_cv_mean": None, "c_index_cv_std": None,
+            "schoenfeld_status_message": "Test de Schoenfeld no ejecutado o no aplicable inicialmente.",
+            "proportional_hazard_test_summary": None,
+            "oos_predictions": None,
+            "scaling_method_applied": scaling_method_applied,
+            "fitted_scaler_object": fitted_scaler_obj,
+            "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else []
+        }
+        model_data_rm['custom_model_name'] = None
+        model_data_rm['model_notes'] = ''
+
+        # 1. Fit Null Model
+        try:
+            cph_null_rm = CoxPHFitter(penalizer=0.0)
+            df_for_null_fit_rm = df_lifelines_rm[[time_col_rm, event_col_rm]].copy()
+            cph_null_rm.fit(df_for_null_fit_rm, duration_col=time_col_rm, event_col=event_col_rm, formula="0")
+            model_data_rm["loglik_null"] = cph_null_rm.log_likelihood_
+        except Exception as e_null_fit:
+            self.log(f"Error ajustando modelo nulo para '{model_name_rm}': {e_null_fit}", "WARN")
+            model_data_rm["loglik_null"] = None
+
+        # 2. Prepare for Main Model Fit
+        cph_main_rm_instance = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
+        df_for_fit_main = df_lifelines_rm.copy()
+        model_data_rm["df_final_fit_shape"] = df_for_fit_main.shape
+        actual_formula_for_fit = formula_patsy_rm
+
+        self.log(f"DEBUG: Attempting to fit main model '{model_name_rm}'. DF shape: {df_for_fit_main.shape}, Formula: '{actual_formula_for_fit}'", "DEBUG")
+
+        # 3. Main Model Fit with Detailed Error Handling
+        fitted_cph_model = None # Initialize before try block
+        if df_for_fit_main.empty:
+            self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. El DataFrame para el ajuste está vacío.", "ERROR")
+        elif X_design_rm.empty and actual_formula_for_fit != "0":
+            self.log(f"FALLO DE AJUSTE DEL MODELO: '{model_name_rm}'. X_design (columnas de patsy) está vacío pero la fórmula no es nula ('{actual_formula_for_fit}').", "ERROR")
+        else:
+            try:
+                cph_main_rm_instance.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                model_data_rm["model"] = cph_main_rm_instance
+                fitted_cph_model = cph_main_rm_instance # Assign here after successful fit
+                self.log(f"Modelo '{model_name_rm}' ajustado exitosamente.", "SUCCESS")
+            except ConvergenceError as e_conv:
+                num_obs_fail = df_for_fit_main.shape[0]
+                num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_conv}", "ERROR")
+                self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                if "cr(" in actual_formula_for_fit:
+                    self.log("  ADVERTENCIA ADICIONAL: El modelo incluía splines naturales (cr()). Estos pueden ser numéricamente inestables. Considere usar B-splines (bs()) o reducir los grados de libertad (df).", "WARN")
+                traceback.print_exc(limit=2)
+            except np.linalg.LinAlgError as e_linalg:
+                num_obs_fail = df_for_fit_main.shape[0]
+                num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
+                self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_linalg}", "ERROR")
+                self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+                if "cr(" in actual_formula_for_fit:
+                    self.log("  ADVERTENCIA ADICIONAL: El modelo incluía splines naturales (cr()). Estos pueden causar problemas de colinealidad. Considere usar B-splines (bs()) o reducir los grados de libertad (df).", "WARN")
+                traceback.print_exc(limit=2)
+            except Exception as e_fit_main:
+                num_obs_fail = df_for_fit_main.shape[0] if isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
+                num_events_fail = (df_for_fit_main[event_col_rm].sum() if isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
+                self.log(f"FALLO DE AJUSTE DEL MODELO (Error General e Inesperado): '{model_name_rm}'", "ERROR")
+                self.log(f"  Error específico: {e_fit_main}", "ERROR")
+                if num_obs_fail != 'N/A':
+                    self.log(f"  Observaciones (si disponibles): {num_obs_fail}, Eventos (si disponibles): {num_events_fail}", "ERROR")
+                traceback.print_exc(limit=3)
+
+        # Ensure fitted_cph_model is the one from model_data_rm for subsequent operations
+        fitted_cph_model = model_data_rm.get("model")
+
+        # 4. Post-Fit Operations
+        if fitted_cph_model:
+            if not X_design_rm.empty:
+                if hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+                    self.log(f"--- Iniciando Test de Schoenfeld para Modelo: '{model_name_rm}' ---", "INFO")
+                    try:
+                        results_check_assumptions = fitted_cph_model.check_assumptions(df_for_fit_main)
+                        model_data_rm["check_assumptions_results_raw"] = results_check_assumptions
+                        schoenfeld_df_candidate = None
+                        found_schoenfeld_results = False
+                        if isinstance(results_check_assumptions, list) and results_check_assumptions:
+                            for i_item, item_ca in enumerate(results_check_assumptions):
+                                if isinstance(item_ca, pd.DataFrame) and not item_ca.empty and all(col_ca in item_ca.columns for col_ca in ['test_statistic', 'p']):
+                                    schoenfeld_df_candidate = item_ca
+                                    found_schoenfeld_results = True
+                                    break
+                                elif hasattr(item_ca, 'summary') and isinstance(item_ca.summary, pd.DataFrame) and not item_ca.summary.empty and all(col_ca in item_ca.summary.columns for col_ca in ['test_statistic', 'p']):
+                                    schoenfeld_df_candidate = item_ca.summary
+                                    found_schoenfeld_results = True
+                                    break
+                            if not found_schoenfeld_results and len(results_check_assumptions) >= 2 and isinstance(results_check_assumptions[1], pd.DataFrame) and all(col_ca in results_check_assumptions[1].columns for col_ca in ['test_statistic', 'p']):
+                                 schoenfeld_df_candidate = results_check_assumptions[1]
+                                 found_schoenfeld_results = True
+
+                        if found_schoenfeld_results and schoenfeld_df_candidate is not None:
+                            model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy()
+                            model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
+                        else:
+                            model_data_rm["schoenfeld_status_message"] = "Schoenfeld: resultados detallados no encontrados o en formato inesperado."
+                    except Exception as e_sch_detailed:
+                        model_data_rm["schoenfeld_status_message"] = "Error durante Test de Schoenfeld (check_assumptions)."
+                        self.log(f"ERROR en Test Schoenfeld para '{model_name_rm}': {e_sch_detailed}\n{traceback.format_exc()}", "ERROR")
+                    self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado. Status: {model_data_rm['schoenfeld_status_message']} ---", "INFO")
+                else:
+                    self.log(f"INFO: Modelo '{model_name_rm}' sin parámetros. Test de Schoenfeld no aplicable.", "INFO")
+                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo sin covariables)."
+            else:
+                self.log(f"INFO: Modelo nulo '{model_name_rm}' (X_design_rm vacío). Test de Schoenfeld no aplicable.", "INFO")
+                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
+
+            schoenfeld_df_current = model_data_rm.get("schoenfeld_results")
+            status_msg_current = model_data_rm.get("schoenfeld_status_message", "")
+            should_try_ph_test_fallback = (schoenfeld_df_current is None or schoenfeld_df_current.empty) and \
+                                          ("calculado exitosamente" not in status_msg_current)
+
+            if should_try_ph_test_fallback and hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+                self.log(f"INFO: Intentando `proportional_hazard_test` para '{model_name_rm}'.", "INFO")
+                try:
+                    from lifelines.statistics import proportional_hazard_test
+                    ph_test_results = proportional_hazard_test(fitted_cph_model, df_for_fit_main, time_transform='log')
+                    if ph_test_results is not None and hasattr(ph_test_results, 'summary') and isinstance(ph_test_results.summary, pd.DataFrame) and not ph_test_results.summary.empty:
+                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results.summary
+                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test proporcionó un resumen."
+                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' exitoso.", "INFO")
+                    else:
+                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test no arrojó resumen."
+                except Exception as e_ph_test_fallback:
+                    self.log(f"ERROR en `proportional_hazard_test` para '{model_name_rm}': {e_ph_test_fallback}", "ERROR")
+                    model_data_rm["schoenfeld_status_message"] += f" (Error en proportional_hazard_test: {str(e_ph_test_fallback)[:30]}...)."
+
+            if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
+                self.log(f"Iniciando cálculo de C-Index CV para '{model_name_rm}'.", "INFO")
+                try:
+                    kf_cv = KFold(n_splits=self.cv_num_kfolds_var.get(), shuffle=True, random_state=self.cv_random_seed_var.get())
+                    c_indices_cv_list = []
+                    all_oos_predictions_data = []
+                    for train_idx, test_idx in kf_cv.split(df_for_fit_main):
+                        df_fold_for_fit_cv = df_for_fit_main.iloc[train_idx].copy()
+                        df_fold_for_pred_cv = df_for_fit_main.iloc[test_idx].copy()
+                        y_te_cv_for_cindex = df_fold_for_pred_cv[[time_col_rm, event_col_rm]]
+                        if df_fold_for_fit_cv.empty or y_te_cv_for_cindex.empty : continue
+                        cph_fold_cv = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
+                        cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                        preds_te_fold_cv = cph_fold_cv.predict_partial_hazard(df_fold_for_pred_cv)
+                        c_idx_fold_cv = concordance_index(y_te_cv_for_cindex[time_col_rm], -preds_te_fold_cv, y_te_cv_for_cindex[event_col_rm])
+                        c_indices_cv_list.append(c_idx_fold_cv)
+                        try:
+                            oos_sf_fold_cv = cph_fold_cv.predict_survival_function(df_fold_for_pred_cv)
+                            for subj_orig_idx_cv in df_fold_for_pred_cv.index:
+                                all_oos_predictions_data.append({
+                                    "subject_id": subj_orig_idx_cv,
+                                    "true_time": y_te_cv_for_cindex.loc[subj_orig_idx_cv, time_col_rm],
+                                    "true_event": y_te_cv_for_cindex.loc[subj_orig_idx_cv, event_col_rm],
+                                    "predicted_survival_function": oos_sf_fold_cv[subj_orig_idx_cv]
+                                })
+                        except Exception as e_pred_sf_cv_loop:
+                            self.log(f"Error prediciendo OOS SF en CV para '{model_name_rm}': {e_pred_sf_cv_loop}", "WARN")
+                    if c_indices_cv_list:
+                        model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list)
+                        model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
+                        self.log(f"C-Index CV para '{model_name_rm}': Media={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
+                    if all_oos_predictions_data:
+                        model_data_rm["oos_predictions"] = all_oos_predictions_data
+                        self.log(f"Almacenadas {len(all_oos_predictions_data)} predicciones OOS de CV para '{model_name_rm}'.", "INFO")
+                except Exception as e_cv_rm_main:
+                    self.log(f"Error general en C-Index CV para '{model_name_rm}': {e_cv_rm_main}", "ERROR")
+                    traceback.print_exc(limit=3)
+            elif self.calculate_cv_cindex_var.get():
+                 self.log(f"C-Index CV no calculado para '{model_name_rm}' (modelo nulo o X_design vacío).", "INFO")
+        else:
+            self.log(f"Ajuste del modelo '{model_name_rm}' falló. Omitiendo tests de Schoenfeld y C-Index CV.", "WARN")
+            model_data_rm["schoenfeld_status_message"] = "No aplicable (fallo en ajuste de modelo)."
+            model_data_rm["c_index_cv_mean"] = None
+            model_data_rm["c_index_cv_std"] = None
+            model_data_rm["oos_predictions"] = None
+
+        original_vars_for_this_model = _extract_original_var_names_from_patsy_formula(full_patsy_formula_for_new_data_transform_arg)
+
+        model_data_rm["active_spline_configs"] = {
+            var: self.spline_config_details[var].copy()
+            for var in original_vars_for_this_model
+            if var in self.spline_config_details
+        }
+        model_data_rm["active_type_configs"] = {
+            var: self.covariables_type_config[var]
+            for var in original_vars_for_this_model
+            if var in self.covariables_type_config
+        }
+        model_data_rm["original_vars_in_model_list"] = original_vars_for_this_model
+
+
+        model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
+        model_data_rm["_X_design_rm_INTERNAL_USE"] = X_design_rm.copy()
+        model_data_rm["_y_survival_rm_INTERNAL_USE"] = y_survival_rm.copy()
+
+        model_data_rm["metrics"] = compute_model_metrics(
+            fitted_cph_model,
+            X_design_rm, y_survival_rm, time_col_rm, event_col_rm,
+            model_data_rm.get("c_index_cv_mean"),
+            model_data_rm.get("c_index_cv_std"),
+            model_data_rm.get("schoenfeld_results"),
+            model_data_rm.get("loglik_null"),
+            self.log
+        )
+        return model_data_rm
+        self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
+
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
         
         model_data_rm = {
