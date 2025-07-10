@@ -2041,23 +2041,21 @@ class CoxModelingApp(ttk.Frame):
         cols_tv = (
             "#", "Nombre Modelo", "Variables y Splines",
             "AIC", "-2 LogLik", "C-Index (Train)", "C-Index (CV)",
-            "Schoenfeld (p min)", "Wald (p min)"
+            "Schoenfeld (p min)", "Wald (p max)" # Columna renombrada
         )
         self.treeview_lista_modelos = ttk.Treeview(self.frame_modelos_generados_display, columns=cols_tv, show="headings", height=7)
         
         col_widths = {
             "#": 40,
             "Nombre Modelo": 220,
-            "Variables y Splines": 350,  # Aumentado para más detalles
+            "Variables y Splines": 350,
             "AIC": 90,
             "-2 LogLik": 100,
             "C-Index (Train)": 100,
             "C-Index (CV)": 100,
             "Schoenfeld (p min)": 120,
-            "Wald (p min)": 100
+            "Wald (p max)": 100 # Etiqueta actualizada
         }
-        # 'Schoenfeld (p global)' se reemplaza por 'Schoenfeld (p min)'
-        # 'LogLik' se reemplaza por '-2 LogLik'
 
         col_anchors = {
             "#": tk.CENTER,
@@ -2066,8 +2064,8 @@ class CoxModelingApp(ttk.Frame):
             "C-Index (Train)": tk.E,
             "C-Index (CV)": tk.E,
             "Schoenfeld (p min)": tk.E,
-            "Wald (p min)": tk.E,
-            "Variables y Splines": tk.W, # Contenido de texto largo
+            "Wald (p max)": tk.E, # Etiqueta actualizada
+            "Variables y Splines": tk.W,
             "Nombre Modelo": tk.W
         }
         # --- FIN MODIFICACIÓN DE COLUMNAS ---
@@ -2753,23 +2751,24 @@ class CoxModelingApp(ttk.Frame):
                 individual_schoenfeld_p_values.extend(ph_test_summary_df['p'].dropna().tolist())
 
             if individual_schoenfeld_p_values:
-                min_p_schoenfeld = np.nanmin(individual_schoenfeld_p_values) # Usar nanmin
+                min_p_schoenfeld = np.nanmin(individual_schoenfeld_p_values)
                 if pd.notna(min_p_schoenfeld):
                     schoenfeld_p_min_tv = format_p_value(min_p_schoenfeld)
 
-            wald_p_min_tv = "N/A"
+            # --- Wald (p max) ---
+            wald_p_max_tv = "N/A"
             summary_df_wald = metrics_tv.get('summary_df')
             if summary_df_wald is not None and not summary_df_wald.empty and 'p' in summary_df_wald.columns:
                 individual_wald_p_values = summary_df_wald['p'].dropna().tolist()
                 if individual_wald_p_values:
-                    min_p_wald = np.nanmin(individual_wald_p_values) # Usar nanmin
-                    if pd.notna(min_p_wald):
-                         wald_p_min_tv = format_p_value(min_p_wald)
+                    max_p_wald = np.nanmax(individual_wald_p_values) # CAMBIO a nanmax
+                    if pd.notna(max_p_wald):
+                         wald_p_max_tv = format_p_value(max_p_wald)
 
             vals_tv = (
                 i + 1, display_name_tv, vars_splines_str,
                 aic_tv, neg2loglik_tv, c_idx_tr_tv, c_idx_cv_tv,
-                schoenfeld_p_min_tv, wald_p_min_tv
+                schoenfeld_p_min_tv, wald_p_max_tv # Usar wald_p_max_tv
             )
             self.treeview_lista_modelos.insert("", tk.END, iid=str(i), values=vals_tv)
         self.log(f"Treeview actualizada con {len(self.generated_models_data)} modelos y nuevas columnas.", "INFO")
@@ -2834,15 +2833,15 @@ class CoxModelingApp(ttk.Frame):
                     except: p_vals_s.extend(s_df['p'].dropna().tolist())
                 if not p_vals_s and ph_df is not None and isinstance(ph_df, pd.DataFrame) and 'p' in ph_df.columns:
                     p_vals_s.extend(ph_df['p'].dropna().tolist())
-                val = np.nanmin(p_vals_s) if p_vals_s else None # np.nan si p_vals_s está vacío o todo NaN
+                val = np.nanmin(p_vals_s) if p_vals_s else None
 
-            elif col_name == "Wald (p min)":
+            elif col_name == "Wald (p max)": # Etiqueta actualizada
                 summary_df = metrics.get('summary_df')
                 if summary_df is not None and not summary_df.empty and 'p' in summary_df.columns:
                     p_vals_w = summary_df['p'].dropna().tolist()
-                    val = np.nanmin(p_vals_w) if p_vals_w else None
+                    val = np.nanmax(p_vals_w) if p_vals_w else None # CAMBIO a nanmax
 
-            if pd.isna(val): # Para números, NaNs al final en ascendente, al principio en descendente
+            if pd.isna(val):
                 return float('inf') if not self.last_sort_reverse else float('-inf')
             try: # Intentar convertir a float para ordenamiento numérico
                 return float(val)
