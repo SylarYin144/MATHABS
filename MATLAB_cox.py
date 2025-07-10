@@ -2037,13 +2037,47 @@ class CoxModelingApp(ttk.Frame):
         self.frame_modelos_generados_display = ttk.LabelFrame(g_content, text="Modelos Cox Generados en esta Sesión")
         self.frame_modelos_generados_display.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        cols_tv = ("#", "Nombre Modelo", "Covariables (Términos)", "C-Index (Train)", "AIC", "LogLik", "Schoenfeld (p global)")
+        # --- MODIFICACIÓN DE COLUMNAS ---
+        cols_tv = (
+            "#", "Nombre Modelo", "Variables y Splines",
+            "AIC", "-2 LogLik", "C-Index (Train)", "C-Index (CV)",
+            "Schoenfeld (p min)", "Wald (p min)"
+        )
         self.treeview_lista_modelos = ttk.Treeview(self.frame_modelos_generados_display, columns=cols_tv, show="headings", height=7)
         
-        col_widths = {"#": 40, "Nombre Modelo": 200, "Covariables (Términos)": 280, "C-Index (Train)": 100, "AIC": 100, "LogLik": 100, "Schoenfeld (p global)": 140}
-        col_anchors = {"#": tk.CENTER, "C-Index (Train)": tk.E, "AIC": tk.E, "LogLik": tk.E, "Schoenfeld (p global)": tk.E}
+        col_widths = {
+            "#": 40,
+            "Nombre Modelo": 220,
+            "Variables y Splines": 350,  # Aumentado para más detalles
+            "AIC": 90,
+            "-2 LogLik": 100,
+            "C-Index (Train)": 100,
+            "C-Index (CV)": 100,
+            "Schoenfeld (p min)": 120,
+            "Wald (p min)": 100
+        }
+        # 'Schoenfeld (p global)' se reemplaza por 'Schoenfeld (p min)'
+        # 'LogLik' se reemplaza por '-2 LogLik'
+
+        col_anchors = {
+            "#": tk.CENTER,
+            "AIC": tk.E,
+            "-2 LogLik": tk.E,
+            "C-Index (Train)": tk.E,
+            "C-Index (CV)": tk.E,
+            "Schoenfeld (p min)": tk.E,
+            "Wald (p min)": tk.E,
+            "Variables y Splines": tk.W, # Contenido de texto largo
+            "Nombre Modelo": tk.W
+        }
+        # --- FIN MODIFICACIÓN DE COLUMNAS ---
+
         for col in cols_tv:
-            self.treeview_lista_modelos.heading(col, text=col)
+            self.treeview_lista_modelos.heading(
+                col,
+                text=col,
+                command=lambda c=col: self._sort_models_by_column(c) # Usar lambda para pasar el nombre de la columna
+            )
             self.treeview_lista_modelos.column(col, width=col_widths.get(col, 120), anchor=col_anchors.get(col, tk.W), minwidth=max(40, col_widths.get(col, 60)//2))
             
         ysb_tv = ttk.Scrollbar(self.frame_modelos_generados_display, orient=tk.VERTICAL, command=self.treeview_lista_modelos.yview)
@@ -2059,8 +2093,9 @@ class CoxModelingApp(ttk.Frame):
         
         acciones_config_btns = [
             ("Ver Resumen", self.show_selected_model_summary),
+            ("Editar Nombre/Notas", self._open_edit_model_details_dialog),
             ("Generar Gráficos Cox", self.open_graph_selection_dialog),
-            ("Calibración OOS (CV)", self.show_new_calibration_plots), # New OOS Calibration button
+            ("Calibración OOS (CV)", self.show_new_calibration_plots),
             ("Predicción", self.realizar_prediccion),
             ("Exportar Resumen", self.export_model_summary),
             ("Guardar Modelo", self.save_model),
@@ -2086,12 +2121,18 @@ class CoxModelingApp(ttk.Frame):
             self.btn_oos_calibration.config(state=tk.DISABLED)
 
         # Add the new button row for clear models
-        clear_models_frame = ttk.Frame(frame_acciones)
-        clear_models_frame.pack(fill=tk.X, pady=5)
+        clear_models_frame = ttk.Frame(frame_acciones) # Este frame ya existe, añadir el botón aquí
+        # clear_models_frame.pack(fill=tk.X, pady=5) # No re-pack si ya está
         ttk.Button(clear_models_frame, text="Limpiar Todos los Modelos", command=self._clear_all_generated_models).pack(side=tk.RIGHT, padx=5)
+
 
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
+
+    def _open_edit_model_details_dialog(self):
+        if not self._check_model_selected_and_valid():
+            return
+        EditModelDetailsDialog(self.parent_for_dialogs, self.selected_model_in_treeview, self)
 
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
@@ -2642,28 +2683,416 @@ class CoxModelingApp(ttk.Frame):
         if not self.generated_models_data: self.log("No hay modelos para mostrar.", "INFO"); return
 
         for i, md_tv in enumerate(self.generated_models_data):
-            name_tv = md_tv.get('model_name', f"Modelo {i+1}")
-            covs_tv_terms = md_tv.get('covariates_processed', [])
-            covs_str_tv = ", ".join(covs_tv_terms) if covs_tv_terms else "(Nulo)"
+            # --- Nombre Modelo ---
+            display_name_tv = md_tv.get('custom_model_name') or md_tv.get('model_name', f"Modelo {i+1}")
+
+            # --- Variables y Splines ---
+            original_vars_in_model = md_tv.get("original_vars_in_model_list", [])
+            active_spline_configs = md_tv.get('active_spline_configs', {})
             
+            vars_splines_str_parts = []
+            if not original_vars_in_model and md_tv.get('covariates_processed'):
+                vars_splines_str_parts = md_tv.get('covariates_processed', [])
+            elif not original_vars_in_model and not md_tv.get('covariates_processed'):
+                vars_splines_str_parts = ["(Nulo)"]
+            else:
+                for var_name in original_vars_in_model:
+                    part = var_name
+                    if var_name in active_spline_configs:
+                        spl_conf = active_spline_configs[var_name]
+                        spl_type = spl_conf.get('type', 'N/A')
+                        spl_df = spl_conf.get('df', 'N/A')
+                        if spl_type == 'B-spline':
+                            spl_deg = spl_conf.get('degree', 'N/A')
+                            part += f" (bs, df={spl_df}, deg={spl_deg})"
+                        elif spl_type == 'Natural':
+                            part += f" (cr, df={spl_df})"
+                    vars_splines_str_parts.append(part)
+
+            vars_splines_str = ", ".join(vars_splines_str_parts) if vars_splines_str_parts else "(Nulo)"
+            if len(vars_splines_str) > 70:
+                vars_splines_str = vars_splines_str[:67] + "..."
+
             metrics_tv = md_tv.get('metrics', {})
-            c_idx_tr_tv = metrics_tv.get('C-Index (Training)')
-            aic_tv = metrics_tv.get('AIC')
-            loglik_tv = metrics_tv.get('Log-Likelihood')
-            sch_p_glob_tv = metrics_tv.get('Schoenfeld p-value (global)')
+
+            aic_tv_val = metrics_tv.get('AIC')
+            aic_tv = f"{aic_tv_val:.2f}" if pd.notna(aic_tv_val) else "N/A"
+
+            loglik_tv_val = metrics_tv.get('Log-Likelihood')
+            neg2loglik_tv = f"{-2 * loglik_tv_val:.2f}" if pd.notna(loglik_tv_val) else "N/A"
+
+            c_idx_tr_tv_val = metrics_tv.get('C-Index (Training)')
+            c_idx_tr_tv = f"{c_idx_tr_tv_val:.3f}" if pd.notna(c_idx_tr_tv_val) else "N/A"
+
+            c_idx_cv_val = md_tv.get('c_index_cv_mean')
+            c_idx_cv_tv = f"{c_idx_cv_val:.3f}" if pd.notna(c_idx_cv_val) else "N/A"
+            if pd.notna(c_idx_cv_val) and pd.notna(md_tv.get('c_index_cv_std')):
+                c_idx_cv_tv += f" (±{md_tv.get('c_index_cv_std'):.3f})"
+
+            schoenfeld_p_min_tv = "N/A"
+            schoenfeld_df = md_tv.get("schoenfeld_results")
+            ph_test_summary_df = md_tv.get("proportional_hazard_test_summary")
+            individual_schoenfeld_p_values = []
+
+            if schoenfeld_df is not None and isinstance(schoenfeld_df, pd.DataFrame) and 'p' in schoenfeld_df.columns:
+                global_indices = ['global', 'test_statistic', 'global_test', 'overall', 'all']
+                try: # Manejo de MultiIndex o Index simple
+                    if isinstance(schoenfeld_df.index, pd.MultiIndex):
+                         idx_str_lower = schoenfeld_df.index.get_level_values(0).map(lambda x: str(x).lower())
+                    else:
+                         idx_str_lower = schoenfeld_df.index.map(lambda x: str(x).lower())
+                    valid_p_values = schoenfeld_df.loc[~idx_str_lower.isin(global_indices), 'p'].dropna()
+                    individual_schoenfeld_p_values.extend(valid_p_values.tolist())
+                except Exception as e_sch_idx:
+                    self.log(f"Advertencia: Problema al procesar índice de Schoenfeld df: {e_sch_idx}", "WARN")
+                    # Intentar un acceso más simple si falla el complejo
+                    individual_schoenfeld_p_values.extend(schoenfeld_df['p'].dropna().tolist())
+
+
+            if not individual_schoenfeld_p_values and ph_test_summary_df is not None and isinstance(ph_test_summary_df, pd.DataFrame) and 'p' in ph_test_summary_df.columns:
+                individual_schoenfeld_p_values.extend(ph_test_summary_df['p'].dropna().tolist())
+
+            if individual_schoenfeld_p_values:
+                min_p_schoenfeld = np.nanmin(individual_schoenfeld_p_values) # Usar nanmin
+                if pd.notna(min_p_schoenfeld):
+                    schoenfeld_p_min_tv = format_p_value(min_p_schoenfeld)
+
+            wald_p_min_tv = "N/A"
+            summary_df_wald = metrics_tv.get('summary_df')
+            if summary_df_wald is not None and not summary_df_wald.empty and 'p' in summary_df_wald.columns:
+                individual_wald_p_values = summary_df_wald['p'].dropna().tolist()
+                if individual_wald_p_values:
+                    min_p_wald = np.nanmin(individual_wald_p_values) # Usar nanmin
+                    if pd.notna(min_p_wald):
+                         wald_p_min_tv = format_p_value(min_p_wald)
 
             vals_tv = (
-                i + 1, name_tv, covs_str_tv,
-                f"{c_idx_tr_tv:.3f}" if pd.notna(c_idx_tr_tv) else "N/A",
-                f"{aic_tv:.2f}" if pd.notna(aic_tv) else "N/A",
-                f"{loglik_tv:.2f}" if pd.notna(loglik_tv) else "N/A",
-                format_p_value(sch_p_glob_tv) if pd.notna(sch_p_glob_tv) else "N/A"
+                i + 1, display_name_tv, vars_splines_str,
+                aic_tv, neg2loglik_tv, c_idx_tr_tv, c_idx_cv_tv,
+                schoenfeld_p_min_tv, wald_p_min_tv
             )
             self.treeview_lista_modelos.insert("", tk.END, iid=str(i), values=vals_tv)
-        self.log(f"Treeview actualizada con {len(self.generated_models_data)} modelos.", "INFO")
+        self.log(f"Treeview actualizada con {len(self.generated_models_data)} modelos y nuevas columnas.", "INFO")
+
+    def _sort_models_by_column(self, col_name):
+        """Ordena la lista de modelos generados por la columna especificada."""
+        if not self.generated_models_data:
+            return
+
+        if self.last_sort_col == col_name:
+            self.last_sort_reverse = not self.last_sort_reverse
+        else:
+            self.last_sort_col = col_name
+            self.last_sort_reverse = False
+
+        def get_sort_key(model_dict_item_tuple): # Recibe una tupla (índice_original, modelo_dict)
+            original_idx, model_dict = model_dict_item_tuple
+            metrics = model_dict.get('metrics', {})
+            val = None
+
+            if col_name == "#":
+                return original_idx # Usar el índice original para ordenar por "#"
+
+            elif col_name == "Nombre Modelo":
+                val = model_dict.get('custom_model_name') or model_dict.get('model_name', "")
+                return str(val).lower()
+
+            elif col_name == "Variables y Splines":
+                original_vars = model_dict.get("original_vars_in_model_list", [])
+                active_splines = model_dict.get('active_spline_configs', {})
+                parts = []
+                if not original_vars and not model_dict.get('covariates_processed'): parts = ["(Nulo)"]
+                elif not original_vars and model_dict.get('covariates_processed'): parts = model_dict.get('covariates_processed')
+                else:
+                    for var in original_vars:
+                        part_str = var
+                        if var in active_splines:
+                            conf = active_splines[var]
+                            st, sd = conf.get('type',''), conf.get('df','')
+                            if st == 'B-spline': sg = conf.get('degree','') ; part_str += f" (bs,df={sd},deg={sg})"
+                            elif st == 'Natural': part_str += f" (cr,df={sd})"
+                        parts.append(part_str)
+                val = ", ".join(parts) if parts else "(Nulo)"
+                return str(val).lower()
+
+            elif col_name == "AIC": val = metrics.get('AIC')
+            elif col_name == "-2 LogLik":
+                loglik = metrics.get('Log-Likelihood')
+                val = -2 * loglik if pd.notna(loglik) else None
+            elif col_name == "C-Index (Train)": val = metrics.get('C-Index (Training)')
+            elif col_name == "C-Index (CV)": val = model_dict.get('c_index_cv_mean')
+
+            elif col_name == "Schoenfeld (p min)":
+                s_df = model_dict.get("schoenfeld_results")
+                ph_df = model_dict.get("proportional_hazard_test_summary")
+                p_vals_s = []
+                if s_df is not None and isinstance(s_df, pd.DataFrame) and 'p' in s_df.columns:
+                    global_indices = ['global', 'test_statistic', 'global_test', 'overall', 'all']
+                    try:
+                        idx_str_lower_s = s_df.index.get_level_values(0).map(lambda x: str(x).lower()) if isinstance(s_df.index, pd.MultiIndex) else s_df.index.map(lambda x: str(x).lower())
+                        p_vals_s.extend(s_df.loc[~idx_str_lower_s.isin(global_indices), 'p'].dropna().tolist())
+                    except: p_vals_s.extend(s_df['p'].dropna().tolist())
+                if not p_vals_s and ph_df is not None and isinstance(ph_df, pd.DataFrame) and 'p' in ph_df.columns:
+                    p_vals_s.extend(ph_df['p'].dropna().tolist())
+                val = np.nanmin(p_vals_s) if p_vals_s else None # np.nan si p_vals_s está vacío o todo NaN
+
+            elif col_name == "Wald (p min)":
+                summary_df = metrics.get('summary_df')
+                if summary_df is not None and not summary_df.empty and 'p' in summary_df.columns:
+                    p_vals_w = summary_df['p'].dropna().tolist()
+                    val = np.nanmin(p_vals_w) if p_vals_w else None
+
+            if pd.isna(val): # Para números, NaNs al final en ascendente, al principio en descendente
+                return float('inf') if not self.last_sort_reverse else float('-inf')
+            try: # Intentar convertir a float para ordenamiento numérico
+                return float(val)
+            except (ValueError, TypeError): # Fallback a string si no es convertible
+                return str(val).lower()
+
+        # Guardar el índice original antes de ordenar para el caso '#'
+        # Y para reordenar la lista self.generated_models_data correctamente
+        indexed_models_to_sort = list(enumerate(self.generated_models_data))
+
+        # Ordenar
+        indexed_models_to_sort.sort(key=get_sort_key, reverse=self.last_sort_reverse)
+
+        # Reconstruir la lista principal de modelos
+        self.generated_models_data = [model_data for original_idx, model_data in indexed_models_to_sort]
+
+        self._update_models_treeview()
+        self.log(f"Modelos ordenados por '{col_name}' ({'Descendente' if self.last_sort_reverse else 'Ascendente'}).", "INFO")
+
+# --- Clase para el diálogo de edición de Nombre/Notas del Modelo ---
+class EditModelDetailsDialog(tk.Toplevel):
+    def __init__(self, parent, model_dict_ref, app_instance_ref):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title("Editar Detalles del Modelo")
+
+        self.model_dict = model_dict_ref
+        self.app_instance = app_instance_ref
+
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Nombre del Modelo:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.name_var = tk.StringVar(value=self.model_dict.get('custom_model_name') or self.model_dict.get('model_name', ''))
+        name_entry = ttk.Entry(main_frame, textvariable=self.name_var, width=60)
+        name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ttk.Label(main_frame, text="Notas:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.NW)
+        self.notes_text = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, height=10, width=60, font=("TkDefaultFont", 9))
+        self.notes_text.insert(tk.END, self.model_dict.get('model_notes', ''))
+        self.notes_text.grid(row=1, column=1, padx=5, pady=5, sticky=tk.NSEW)
+
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.grid(row=2, column=0, columnspan=2, pady=10)
+
+        ttk.Button(buttons_frame, text="Guardar", command=self._on_save).pack(side=tk.LEFT, padx=10)
+        ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=10)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        name_entry.focus_set()
+        self.wait_window(self)
+
+    def _on_save(self):
+        new_name = self.name_var.get().strip()
+        new_notes = self.notes_text.get("1.0", tk.END).strip()
+
+        # Guardar None si el nombre personalizado está vacío, para que se use el nombre por defecto.
+        self.model_dict['custom_model_name'] = new_name if new_name else None
+        self.model_dict['model_notes'] = new_notes
+
+        if self.app_instance:
+            self.app_instance._update_models_treeview()
+            self.app_instance.log(f"Detalles actualizados para modelo (nombre original: {self.model_dict.get('model_name')})", "INFO")
+
+        self.destroy()
+
+# Helper function (puede ir dentro de la clase o ser global si es más genérico)
+def _extract_original_var_names_from_patsy_formula(patsy_formula_str: str) -> list[str]:
+    if not patsy_formula_str:
+        return []
+    matches = re.findall(r"Q\('([^']+)'\)", patsy_formula_str)
+    return sorted(list(set(matches)))
+
+class CoxModelingApp(ttk.Frame):
+    def __init__(self, parent_notebook_tab):
+        super().__init__(parent_notebook_tab)
+        self.pack(fill=tk.BOTH, expand=True)
+        self.parent_for_dialogs = self.winfo_toplevel()
+
+        # Variables para datos y configuración
+        self.raw_data = None
+        self.data = None
+        self.time_col_original_name = ""
+        self.event_col_original_name = ""
+        self.selected_covariables_from_ui = []
+        self.covariables_type_config = {}  # {var_name: "Cuantitativa" | "Cualitativa"}
+        self.ref_categories_config = {}  # {cual_var_name: "ref_category_value"}
+        # {cuant_var_name: {'type': 'Natural'|'B-spline', 'df': int, 'degree': int}}
+        self.spline_config_details = {}
+        self.current_plot_options = {}  # Diccionario para guardar opciones de gráficos
+
+        # Variables para modelos
+        self.generated_models_data = [] # Lista de diccionarios, cada uno con datos de un modelo
+        self.selected_model_in_treeview = None # Diccionario del modelo seleccionado en la Treeview
+        self.btn_oos_calibration = None
+
+        # Variables de control para la UI (Pestaña 2: Modelado)
+        self.cox_model_type_var = StringVar(value="Multivariado")
+        self.var_selection_method_var = StringVar(value="Ninguno (usar todas)")
+        self.p_enter_var = DoubleVar(value=0.05)
+        self.p_remove_var = DoubleVar(value=0.05)
+        self.penalization_method_var = StringVar(value="Ninguna")
+        self.penalizer_strength_var = DoubleVar(value=0.1)
+        self.l1_ratio_for_elasticnet_var = DoubleVar(value=0.5)
+        self.tie_handling_method_var = StringVar(value="efron")
+        self.calculate_cv_cindex_var = BooleanVar(value=True)
+        self.cv_num_kfolds_var = IntVar(value=5)
+        self.cv_random_seed_var = IntVar(value=42)
+        self.covariate_scaling_method_var = StringVar(value="Ninguna")
+
+        # Atributos para el ordenamiento del Treeview de modelos
+        self.last_sort_col = None
+        self.last_sort_reverse = False
+
+        # Crear Notebook (pestañas)
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        # Pestaña 1: Carga, Filtros y Preproceso
+        self.tab_frame_preproc = ttk.Frame(self.notebook, padding="10")
+        self.tab_frame_preproc.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(self.tab_frame_preproc, text='  1. Carga y Preprocesamiento de Datos  ')
+        self.tab_frame_preproc_content = ScrolledFrame(self.tab_frame_preproc)
+        self.tab_frame_preproc_content.pack(fill=tk.BOTH, expand=True)
+
+        # Pestaña 2: Modelado Cox
+        self.tab_frame_modeling = ttk.Frame(self.notebook, padding="10")
+        self.tab_frame_modeling.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(self.tab_frame_modeling, text='  2. Modelado Cox  ')
+        self.tab_frame_modeling_content = ScrolledFrame(self.tab_frame_modeling)
+        self.tab_frame_modeling_content.pack(fill=tk.BOTH, expand=True)
+
+        # Pestaña 3: Visualización y Reportes
+        self.tab_frame_results = ttk.Frame(self.notebook, padding="10")
+        self.tab_frame_results.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(self.tab_frame_results, text='  3. Resultados y Visualización  ')
+        self.tab_frame_results_content = ScrolledFrame(self.tab_frame_results)
+        self.tab_frame_results_content.pack(fill=tk.BOTH, expand=True)
+
+        # Pestaña 4: Log
+        self.tab_frame_log = ttk.Frame(self.notebook, padding="10")
+        self.tab_frame_log.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(self.tab_frame_log, text='  Log  ')
+        self.log_text_widget = scrolledtext.ScrolledText(
+            self.tab_frame_log, wrap=tk.WORD, height=10, state=tk.DISABLED, font=("Courier New", 9))
+        self.log_text_widget.pack(fill=tk.BOTH, expand=True)
+        self.log_text_widget.tag_config("INFO", foreground="black")
+        self.log_text_widget.tag_config("DEBUG", foreground="gray")
+        self.log_text_widget.tag_config("WARN", foreground="orange")
+        self.log_text_widget.tag_config("ERROR", foreground="red")
+        self.log_text_widget.tag_config("SUCCESS", foreground="green")
+        self.log_text_widget.tag_config("HEADER", foreground="blue", font=("Courier New", 9, "bold"))
+        self.log_text_widget.tag_config("SUBHEADER", foreground="purple", font=("Courier New", 9, "bold"))
+        self.log_text_widget.tag_config("CONFIG", foreground="darkgreen")
+
+        self.create_preproc_controls()
+        self.create_grid_controls()
+        self.create_results_controls()
+        self.log("Interfaz de CoxModelingApp inicializada y controles creados.", "INFO")
+
+    def log(self, message_text, level_str="INFO"):
+        # ... (sin cambios)
+
+    # --- MÉTODOS PARA PESTAÑA 1: CARGA, FILTROS Y PREPROCESO ---
+    # ... (sin cambios hasta _run_model_and_get_metrics) ...
+
+    def _run_model_and_get_metrics(self, df_lifelines_rm, X_design_rm, y_survival_rm,
+                                   time_col_rm, event_col_rm,
+                                   formula_patsy_rm, model_name_rm,
+                                   covariates_display_terms_rm,
+                                   full_patsy_formula_for_new_data_transform_arg,
+                                   penalizer_val_rm=0.0, l1_ratio_val_rm=0.0,
+                                   model_type_for_fit_logic="Multivariado",
+                                   scaling_method_applied="Ninguna",
+                                   fitted_scaler_obj=None,
+                                   scaled_columns_info=None):
+        self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
+
+        ui_selected_tie_method = self.tie_handling_method_var.get()
+
+        model_data_rm = {
+            "model_name": model_name_rm, "time_col_for_model": time_col_rm, "event_col_for_model": event_col_rm,
+            "formula_patsy": formula_patsy_rm,
+            "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg,
+            "covariates_processed": covariates_display_terms_rm, # Estos son los términos de Patsy
+            # "df_used_for_fit": df_lifelines_rm.copy(), # Evitar copiar DFs grandes si no es estrictamente necesario para después
+            # "X_design_used_for_fit": X_design_rm.copy(),
+            # "y_survival_used_for_fit": y_survival_rm.copy(),
+            "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
+            "tie_method_used": ui_selected_tie_method,
+            "metrics": {}, "schoenfeld_results": pd.DataFrame(), "model": None, "loglik_null": None,
+            "c_index_cv_mean": None, "c_index_cv_std": None,
+            "schoenfeld_status_message": "Test de Schoenfeld no ejecutado o no aplicable inicialmente.",
+            "proportional_hazard_test_summary": None,
+            "oos_predictions": None,
+            "scaling_method_applied": scaling_method_applied,
+            "fitted_scaler_object": fitted_scaler_obj,
+            "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else []
+            # Los nuevos campos 'custom_model_name', 'model_notes', 'active_spline_configs',
+            # 'active_type_configs', 'original_vars_in_model_list' se añadirán aquí o al final.
+        }
+        model_data_rm['custom_model_name'] = None # Inicializar para Paso 4
+        model_data_rm['model_notes'] = ''     # Inicializar para Paso 4
+
+        # 1. Fit Null Model
+        # ... (sin cambios) ...
+
+        # 2. Prepare for Main Model Fit
+        # ... (sin cambios) ...
+
+        # 3. Main Model Fit with Detailed Error Handling
+        # ... (sin cambios) ...
+
+        # 4. Post-Fit Operations
+        # ... (sin cambios en Schoenfeld, CV, etc.) ...
+
+        # --- GUARDAR CONFIGURACIONES ACTIVAS Y VARS ORIGINALES PARA ESTE MODELO ---
+        original_vars_for_this_model = _extract_original_var_names_from_patsy_formula(full_patsy_formula_for_new_data_transform_arg)
+
+        model_data_rm["active_spline_configs"] = {
+            var: self.spline_config_details[var].copy() # Guardar una copia
+            for var in original_vars_for_this_model
+            if var in self.spline_config_details
+        }
+        model_data_rm["active_type_configs"] = {
+            var: self.covariables_type_config[var]
+            for var in original_vars_for_this_model
+            if var in self.covariables_type_config
+        }
+        model_data_rm["original_vars_in_model_list"] = original_vars_for_this_model
+        # --- FIN GUARDAR CONFIGURACIONES ACTIVAS ---
 
 
-    def _execute_cox_modeling_orchestrator(self):
+        # 5. Store internal data copies (considerar si realmente son necesarias para todas las funciones posteriores)
+        # Si solo se necesitan para funciones específicas, cargarlas/pasarlas on-demand.
+        # Por ahora, se mantiene como estaba para no romper otras funcionalidades.
+        model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
+        model_data_rm["_X_design_rm_INTERNAL_USE"] = X_design_rm.copy()
+        model_data_rm["_y_survival_rm_INTERNAL_USE"] = y_survival_rm.copy()
+
+        # 6. Calculate and Store Final Metrics
+        # ... (sin cambios) ...
+
+        return model_data_rm
+
+    def _update_models_treeview(self):
         self.log("*"*35 + " INICIO MODELADO COX " + "*"*35, "HEADER")
         successful_fits = 0
         failed_fits = 0
@@ -4044,15 +4473,22 @@ class CoxModelingApp(ttk.Frame):
 
     def save_model(self):
         if not self._check_model_selected_and_valid(): return
-        md_save = self.selected_model_in_treeview; name_save = md_save.get('model_name','Modelo_Guardado')
-        
-        model_dict_to_save = md_save.copy()
+        md_save = self.selected_model_in_treeview
+        # El nombre para el archivo usará el nombre personalizado si existe, sino el generado.
+        effective_name_for_file = md_save.get('custom_model_name') or md_save.get('model_name','Modelo_Guardado')
 
-        fpath_save = filedialog.asksaveasfilename(title="Guardar Modelo Como...",defaultextension=".pkl",initialfile=f"{name_save.replace(' ','_').replace(':','')}.pkl",filetypes=[("Pickle","*.pkl"),("Todos","*.*")])
+        fpath_save = filedialog.asksaveasfilename(
+            title="Guardar Modelo Como...",
+            defaultextension=".pkl",
+            initialfile=f"{effective_name_for_file.replace(' ','_').replace(':','').replace('/','-')}.pkl", # Sanitize
+            filetypes=[("Pickle","*.pkl"),("Todos","*.*")]
+        )
         if not fpath_save: self.log("Guardado cancelado.", "INFO"); return
         try:
-            with open(fpath_save, "wb") as f_save: pickle.dump(model_dict_to_save, f_save)
-            self.log(f"Modelo '{name_save}' guardado en: {fpath_save}", "SUCCESS"); messagebox.showinfo("Modelo Guardado",f"Modelo guardado en:\n{fpath_save}",parent=self.parent_for_dialogs)
+            # md_save ya es el diccionario que queremos guardar, y ya contiene custom_model_name y model_notes
+            with open(fpath_save, "wb") as f_save: pickle.dump(md_save, f_save)
+            self.log(f"Modelo '{effective_name_for_file}' guardado en: {fpath_save}", "SUCCESS")
+            messagebox.showinfo("Modelo Guardado",f"Modelo guardado en:\n{fpath_save}",parent=self.parent_for_dialogs)
         except Exception as e_save: self.log(f"Error guardando modelo: {e_save}","ERROR"); messagebox.showerror("Error Guardando",f"No se pudo guardar:\n{e_save}",parent=self.parent_for_dialogs)
 
     def load_model_from_file(self):
@@ -4060,18 +4496,38 @@ class CoxModelingApp(ttk.Frame):
         if not fpath_load: self.log("Carga cancelada.", "INFO"); return
         try:
             with open(fpath_load, "rb") as f_load: loaded_md = pickle.load(f_load)
-            if not (isinstance(loaded_md,dict) and 'model' in loaded_md and 'model_name' in loaded_md and isinstance(loaded_md.get('model'),CoxPHFitter)):
-                raise ValueError("Archivo no contiene un modelo CoxPHFitter válido en el formato esperado.")
-            if '_df_for_fit_main_INTERNAL_USE' not in loaded_md or \
-               '_X_design_rm_INTERNAL_USE' not in loaded_md or \
-               '_y_survival_rm_INTERNAL_USE' not in loaded_md:
-                self.log(f"Advertencia: Modelo '{loaded_md.get('model_name')}' cargado sin DataFrames internos. Algunas funciones de visualización (Schoenfeld, Calibración) pueden no funcionar.", "WARN")
-                messagebox.showwarning("Datos Faltantes en Modelo", "El modelo cargado no contiene los DataFrames internos necesarios para todos los gráficos (ej. Schoenfeld, Calibración). Estos gráficos podrían no funcionar.", parent=self.parent_for_dialogs)
 
-            self.generated_models_data.append(loaded_md); self._update_models_treeview()
-            new_idx_load = len(self.generated_models_data)-1
+            if not isinstance(loaded_md, dict) or not all(k in loaded_md for k in ['model_name', 'model']):
+                raise ValueError("Archivo no contiene un modelo en el formato esperado (faltan claves 'model_name' o 'model').")
+
+            # Asegurar defaults para todos los campos, incluyendo los nuevos y los de configuraciones activas
+            loaded_md.setdefault('custom_model_name', None)
+            loaded_md.setdefault('model_notes', '')
+            loaded_md.setdefault('active_spline_configs', {})
+            loaded_md.setdefault('active_type_configs', {})
+            loaded_md.setdefault('original_vars_in_model_list', [])
+            loaded_md.setdefault('full_patsy_formula_for_new_data_transform', "")
+            loaded_md.setdefault('metrics', {}) # Asegurar que metrics exista
+            loaded_md.setdefault('c_index_cv_mean', None)
+            loaded_md.setdefault('c_index_cv_std', None)
+            loaded_md.setdefault('schoenfeld_results', pd.DataFrame()) # Default a DF vacío
+            loaded_md.setdefault('proportional_hazard_test_summary', None)
+            # Asegurar que los DataFrames internos para gráficos también tengan un default (None o vacío)
+            loaded_md.setdefault('_df_for_fit_main_INTERNAL_USE', None)
+            loaded_md.setdefault('_X_design_rm_INTERNAL_USE', None)
+            loaded_md.setdefault('_y_survival_rm_INTERNAL_USE', None)
+
+
+            if not isinstance(loaded_md.get('model'), CoxPHFitter) and loaded_md.get('model') is not None : # Permitir modelos nulos donde 'model' es None
+                 self.log(f"Advertencia: El objeto 'model' en el archivo cargado para '{loaded_md.get('model_name')}' no es una instancia de CoxPHFitter. Funcionalidad limitada.", "WARN")
+
+            self.generated_models_data.append(loaded_md)
+            self._update_models_treeview()
+            new_idx_load = len(self.generated_models_data) - 1
             self.treeview_lista_modelos.selection_set(str(new_idx_load)); self.treeview_lista_modelos.focus(str(new_idx_load)); self._on_model_select_from_treeview()
-            self.log(f"Modelo '{loaded_md.get('model_name')}' cargado desde: {fpath_load}", "SUCCESS"); messagebox.showinfo("Modelo Cargado",f"Modelo '{loaded_md.get('model_name')}' cargado.",parent=self.parent_for_dialogs)
+            display_name_loaded = loaded_md.get('custom_model_name') or loaded_md.get('model_name')
+            self.log(f"Modelo '{display_name_loaded}' cargado desde: {fpath_load}", "SUCCESS")
+            messagebox.showinfo("Modelo Cargado",f"Modelo '{display_name_loaded}' cargado.",parent=self.parent_for_dialogs)
         except (pickle.UnpicklingError, ValueError) as e_load_val: self.log(f"Error carga/formato modelo: {e_load_val}","ERROR"); messagebox.showerror("Error Carga/Formato",f"Error al cargar o formato inválido:\n{e_load_val}",parent=self.parent_for_dialogs)
         except Exception as e_load_gen: self.log(f"Error general cargando modelo: {e_load_gen}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Carga",f"No se pudo cargar:\n{e_load_gen}",parent=self.parent_for_dialogs)
 
