@@ -1406,6 +1406,54 @@ class CoxModelingApp(ttk.Frame):
         else:
             self.combo_var_para_log.set("")
  
+        # >>> INICIO DE LA MODIFICACIÓN PROPUESTA <<<
+        # Después de poblar self.listbox_covariables_disponibles y antes de llamar a on_covariate_select_for_config
+
+        # Asegurar que todas las covariables en la lista tengan una configuración base si aún no la tienen
+        if self.data is not None:
+            # cov_cols ya está definido como: cov_cols = [c for c in cols if c not in [time_sel, event_sel]]
+            # cols es: cols = sorted(self.data.columns.tolist())
+            # time_sel es: time_sel = self.combo_col_tiempo.get()
+            # event_sel es: event_sel = self.combo_col_evento.get()
+
+            # Es importante que cov_cols se calcule aquí con los valores actualizados de tiempo y evento
+            current_cols_in_df = sorted(self.data.columns.tolist())
+            current_time_selection = self.combo_col_tiempo.get()
+            current_event_selection = self.combo_col_evento.get()
+            actual_cov_cols = [c for c in current_cols_in_df if c not in [current_time_selection, current_event_selection]]
+
+            for cov_name in actual_cov_cols:
+                if cov_name not in self.covariables_type_config:
+                    # Inferir tipo y almacenar
+                    try:
+                        is_numeric = pd.api.types.is_numeric_dtype(self.data[cov_name])
+                        inferred_type = "Cuantitativa" if is_numeric else "Cualitativa"
+                        self.covariables_type_config[cov_name] = inferred_type
+                        self.log(f"Configuración de tipo inferida y almacenada para '{cov_name}': {inferred_type}", "DEBUG")
+
+                        if inferred_type == "Cualitativa":
+                            # Asignar categoría de referencia por defecto si no existe
+                            if cov_name not in self.ref_categories_config:
+                                unique_cats = sorted(list(self.data[cov_name].astype(str).unique()))
+                                if unique_cats:
+                                    self.ref_categories_config[cov_name] = unique_cats[0]
+                                    self.log(f"Categoría de referencia por defecto almacenada para '{cov_name}': {unique_cats[0]}", "DEBUG")
+                        elif inferred_type == "Cuantitativa":
+                            # Asegurar que no haya config de ref.cat. para cuantitativas
+                            if cov_name in self.ref_categories_config:
+                                del self.ref_categories_config[cov_name]
+
+                        # Si se cambia a Cualitativa y tenía config de spline, limpiarla
+                        if inferred_type == "Cualitativa" and cov_name in self.spline_config_details:
+                            del self.spline_config_details[cov_name]
+                            self.log(f"Configuración de spline eliminada para '{cov_name}' debido a tipo Cualitativo inferido.", "DEBUG")
+                    except KeyError:
+                        self.log(f"Advertencia: La covariable '{cov_name}' no se encontró en self.data al intentar inferir tipo por defecto. Esto puede ocurrir si las columnas cambian rápidamente.", "WARN")
+                    except Exception as e_infer:
+                        self.log(f"Error al inferir configuración por defecto para '{cov_name}': {e_infer}", "ERROR")
+
+        # >>> FIN DE LA MODIFICACIÓN PROPUESTA <<<
+
         self.on_covariate_select_for_config() # Actualizar UI de configuración de covariable
         self.log(f"DEBUG: Columnas disponibles en self.data: {self.data.columns.tolist() if self.data is not None else 'N/A'}", "DEBUG")
 
