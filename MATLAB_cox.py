@@ -2444,6 +2444,22 @@ class CoxModelingApp(ttk.Frame):
                                 "La generación del Gráfico de Correlación vs. Tiempo aún no está completamente implementada.",
                                 parent=self.parent_for_dialogs)
 
+    def realizar_prediccion(self):
+        self.log("Funcionalidad 'Predicción' llamada.", "INFO")
+
+        if not self._check_model_selected_and_valid():
+            return
+
+        selected_model_name = self.selected_model_in_treeview.get('custom_model_name') or \
+                              self.selected_model_in_treeview.get('model_name', "Modelo Desconocido")
+
+        self.log(f"Predicción solicitada para el modelo: {selected_model_name}.", "INFO")
+
+        messagebox.showinfo("Funcionalidad en Desarrollo",
+                            "La funcionalidad de predicción para nuevos datos aún no está implementada completamente en esta versión.",
+                            parent=self.parent_for_dialogs)
+        self.log("Mostrado mensaje 'Funcionalidad en Desarrollo' para Predicción.", "INFO")
+
     def _on_model_select_from_treeview(self, event=None):
         self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
         selected_item_id = self.treeview_lista_modelos.focus()
