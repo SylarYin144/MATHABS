@@ -2334,6 +2334,116 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showinfo("Función no Completa", "La generación del Gráfico de Coeficientes aún no está completamente implementada.", parent=self.parent_for_dialogs)
     # --- End Stub Plotting Methods ---
 
+    def show_new_calibration_plots(self):
+        self.log("Abriendo diálogo de opciones para gráficos de calibración OOS / correlación vs tiempo...", "INFO")
+
+        if not self._check_model_selected_and_valid():
+            return
+
+        selected_model_dict = self.selected_model_in_treeview
+        oos_predictions = selected_model_dict.get("oos_predictions")
+
+        if not oos_predictions:
+            messagebox.showwarning("Sin Predicciones OOS",
+                                   "El modelo seleccionado no tiene predicciones Out-of-Sample (OOS) de Validación Cruzada (CV) almacenadas. "
+                                   "Asegúrese de que la opción 'Calcular C-Index con CV' estuviera marcada al generar el modelo.",
+                                   parent=self.parent_for_dialogs)
+            self.log("Intento de mostrar gráficos OOS para un modelo sin predicciones OOS.", "WARN")
+            return
+
+        available_vars_for_strat = []
+        if self.data is not None:
+            df_model_was_fit_on = selected_model_dict.get("df_used_for_fit")
+
+            time_col_model = selected_model_dict.get("time_col_for_model")
+            event_col_model = selected_model_dict.get("event_col_for_model")
+
+            if df_model_was_fit_on is not None and not df_model_was_fit_on.empty:
+                potential_strat_vars = df_model_was_fit_on.columns.tolist()
+                if time_col_model in potential_strat_vars:
+                    potential_strat_vars.remove(time_col_model)
+                if event_col_model in potential_strat_vars:
+                    potential_strat_vars.remove(event_col_model)
+                available_vars_for_strat = sorted(potential_strat_vars)
+            elif self.data is not None and not self.data.empty:
+                self.log("Usando self.data para variables de estratificación (df_used_for_fit no disponible en modelo).", "DEBUG")
+                potential_strat_vars = self.data.columns.tolist()
+                time_col_ui = self.combo_col_tiempo.get()
+                event_col_ui = self.combo_col_evento.get()
+                if time_col_ui in potential_strat_vars: potential_strat_vars.remove(time_col_ui)
+                if event_col_ui in potential_strat_vars: potential_strat_vars.remove(event_col_ui)
+                available_vars_for_strat = sorted(potential_strat_vars)
+            else:
+                self.log("No hay datos disponibles (ni df_used_for_fit ni self.data) para obtener variables de estratificación.", "WARN")
+
+        if not LIFELINES_CALIBRATION_AVAILABLE and not LIFELINES_BRIER_SCORE_AVAILABLE :
+             self.log("Advertencia: Ni 'survival_probability_calibration' ni 'brier_score' están disponibles. Funcionalidad de gráficos OOS limitada.", "WARN")
+
+        dialog = CalibrationPlotOptionsDialog(
+            parent=self.parent_for_dialogs,
+            available_strat_vars=available_vars_for_strat,
+            log_func=self.log
+        )
+
+        if dialog.result:
+            self.log(f"Opciones recibidas del diálogo de calibración/correlación: {dialog.result}", "DEBUG")
+            self._generate_oos_plot_callback(dialog.result)
+        else:
+            self.log("Diálogo de opciones de calibración/correlación cancelado o sin resultado válido.", "INFO")
+
+    def _generate_oos_plot_callback(self, options_from_dialog):
+        self.log(f"Callback de generación de gráfico OOS recibido con opciones: {options_from_dialog}", "INFO")
+
+        if not self._check_model_selected_and_valid():
+            return
+
+        plot_choice = options_from_dialog.get('oos_plot_choice')
+
+        if plot_choice == "calibration":
+            if not LIFELINES_CALIBRATION_AVAILABLE:
+                messagebox.showwarning("Funcionalidad Limitada",
+                                       "La librería 'lifelines' no tiene 'survival_probability_calibration' disponible en su versión actual. "
+                                       "El gráfico de calibración OOS no se puede generar.",
+                                       parent=self.parent_for_dialogs)
+                self.log("Intento de generar gráfico de calibración OOS sin 'survival_probability_calibration' disponible.", "WARN")
+                return
+            self.log("Delegando a _plot_oos_calibration_curve_from_options...", "DEBUG")
+            self._plot_oos_calibration_curve_from_options(options_from_dialog)
+        elif plot_choice == "correlation_time":
+            self.log("Delegando a _plot_correlation_over_time_from_options...", "DEBUG")
+            self._plot_correlation_over_time_from_options(options_from_dialog)
+        else:
+            self.log(f"Opción de gráfico OOS desconocida: '{plot_choice}'", "ERROR")
+            messagebox.showerror("Error Interno", f"Opción de gráfico OOS no reconocida: {plot_choice}", parent=self.parent_for_dialogs)
+
+    def _plot_oos_calibration_curve_from_options(self, options):
+        self.log(f"STUB: _plot_oos_calibration_curve_from_options() llamada con opciones: {options}", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Calibración OOS\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.set_title("Calibración OOS (Stub)")
+            self.results_tab_manager.display_figure(fig, plot_type_key='oos_calibration_stub')
+        else:
+            messagebox.showinfo("Función no Completa",
+                                "La generación del Gráfico de Calibración OOS aún no está completamente implementada.",
+                                parent=self.parent_for_dialogs)
+
+    def _plot_correlation_over_time_from_options(self, options):
+        self.log(f"STUB: _plot_correlation_over_time_from_options() llamada con opciones: {options}", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Correlación (Observado vs. Predicho) vs. Tiempo\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.set_title("Correlación vs. Tiempo (Stub)")
+            self.results_tab_manager.display_figure(fig, plot_type_key='correlation_time_stub')
+        else:
+            messagebox.showinfo("Función no Completa",
+                                "La generación del Gráfico de Correlación vs. Tiempo aún no está completamente implementada.",
+                                parent=self.parent_for_dialogs)
+
     def _on_model_select_from_treeview(self, event=None):
         self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
         selected_item_id = self.treeview_lista_modelos.focus()
