@@ -2334,8 +2334,9 @@ class CoxModelingApp(ttk.Frame):
                         term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df})"
                     elif spline_type == 'B-spline':
                         patsy_func_bd = 'bs'
-                        spline_degree = spl_cfg_bd.get('degree', 3) # Default a cúbico si no está
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
+                        spline_degree = spl_cfg_bd.get('degree', 3)
+                        # Add extrapolation='constant' to handle boundary issues in CV folds
+                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree}, extrapolation='constant')"
                     else: # Fallback por si acaso
                         term_syntax_bd = f"Q('{orig_cov_name_bd}')"
             else:
@@ -2620,43 +2621,74 @@ class CoxModelingApp(ttk.Frame):
                 try:
                     kf_cv = KFold(n_splits=self.cv_num_kfolds_var.get(), shuffle=True, random_state=self.cv_random_seed_var.get())
                     c_indices_cv_list = []
-                    all_oos_predictions_data = []
-                    for train_idx, test_idx in kf_cv.split(df_lifelines_rm):
+                    all_oos_predictions_data_cv = [] # Renamed to avoid conflict with outer scope if any
+
+                    self.log(f"CV C-Index for '{model_name_rm}': Starting KFold loop. Formula for folds: {actual_formula_for_fit}", "DEBUG")
+
+                    for i_fold, (train_idx, test_idx) in enumerate(kf_cv.split(df_lifelines_rm)):
+                        self.log(f"CV C-Index Fold {i_fold+1}/{kf_cv.get_n_splits()}: Processing...", "DEBUG")
                         df_fold_for_fit_cv = df_lifelines_rm.iloc[train_idx].copy()
-                        y_te_cv = y_survival_rm.iloc[test_idx]
-                        if df_fold_for_fit_cv.empty or y_te_cv.empty: continue
+                        df_fold_for_pred_cv = df_lifelines_rm.iloc[test_idx].copy() # Data for prediction
+                        y_te_cv = y_survival_rm.iloc[test_idx] # True outcomes for test set
+
+                        if df_fold_for_fit_cv.empty or y_te_cv.empty or df_fold_for_pred_cv.empty:
+                            self.log(f"CV C-Index Fold {i_fold+1}: Data empty for train or test. Skipping fold.", "WARN")
+                            continue
                         
+                        self.log(f"CV C-Index Fold {i_fold+1}: Training data shape: {df_fold_for_fit_cv.shape}", "DEBUG")
+                        self.log(f"CV C-Index Fold {i_fold+1}: Test data shape for prediction: {df_fold_for_pred_cv.shape}", "DEBUG")
+
                         cph_fold_cv = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
-                        cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
-                        
-                        preds_te_fold_cv = cph_fold_cv.predict_partial_hazard(df_lifelines_rm.iloc[test_idx])
-                        c_idx_fold_cv = concordance_index(y_te_cv[time_col_rm], -preds_te_fold_cv, y_te_cv[event_col_rm])
-                        c_indices_cv_list.append(c_idx_fold_cv)
-
                         try:
-                            df_test_fold_original_cols_cv = df_lifelines_rm.iloc[test_idx]
-                            oos_sf_fold_cv = cph_fold_cv.predict_survival_function(df_test_fold_original_cols_cv)
-                            for subj_orig_idx_cv in df_test_fold_original_cols_cv.index:
-                                all_oos_predictions_data.append({
-                                    "subject_id": subj_orig_idx_cv,
-                                    "true_time": y_te_cv.loc[subj_orig_idx_cv, time_col_rm],
-                                    "true_event": y_te_cv.loc[subj_orig_idx_cv, event_col_rm],
-                                    "predicted_survival_function": oos_sf_fold_cv[subj_orig_idx_cv]
-                                })
-                        except Exception as e_pred_sf_cv_loop:
-                            self.log(f"Error prediciendo OOS SF en CV para '{model_name_rm}': {e_pred_sf_cv_loop}", "WARN")
+                            self.log(f"CV C-Index Fold {i_fold+1}: Attempting to fit with formula: {actual_formula_for_fit}", "DEBUG")
+                            cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                            self.log(f"CV C-Index Fold {i_fold+1}: Fit successful.", "DEBUG")
 
+                            preds_te_fold_cv = cph_fold_cv.predict_partial_hazard(df_fold_for_pred_cv)
+                            c_idx_fold_cv = concordance_index(y_te_cv[time_col_rm], -preds_te_fold_cv, y_te_cv[event_col_rm])
+                            c_indices_cv_list.append(c_idx_fold_cv)
+                            self.log(f"CV C-Index Fold {i_fold+1}: Calculated C-Index: {c_idx_fold_cv:.4f}", "DEBUG")
+
+                            # OOS predictions for this fold (if needed later for calibration etc.)
+                            try:
+                                oos_sf_fold_cv = cph_fold_cv.predict_survival_function(df_fold_for_pred_cv)
+                                for subj_orig_idx_cv in df_fold_for_pred_cv.index:
+                                    all_oos_predictions_data_cv.append({
+                                        "subject_id": subj_orig_idx_cv, # This is original index from df_lifelines_rm
+                                        "true_time": y_te_cv.loc[subj_orig_idx_cv, time_col_rm],
+                                        "true_event": y_te_cv.loc[subj_orig_idx_cv, event_col_rm],
+                                        "predicted_survival_function": oos_sf_fold_cv[subj_orig_idx_cv]
+                                    })
+                            except Exception as e_pred_sf_cv_loop:
+                                self.log(f"CV C-Index Fold {i_fold+1}: Error predicting OOS SF: {e_pred_sf_cv_loop}", "WARN")
+
+                        except ConvergenceError as e_conv_fold:
+                            self.log(f"CV C-Index Fold {i_fold+1}: FIT FAILED (ConvergenceError). Error: {e_conv_fold}", "ERROR")
+                            self.log(f"CV C-Index Fold {i_fold+1}: Traceback:\n{traceback.format_exc(limit=2)}", "DEBUG")
+                        except Exception as e_fold_fit:
+                            self.log(f"CV C-Index Fold {i_fold+1}: FIT FAILED (Other Error). Error: {e_fold_fit}", "ERROR")
+                            self.log(f"CV C-Index Fold {i_fold+1}: Traceback:\n{traceback.format_exc(limit=2)}", "DEBUG")
+
+                    self.log(f"CV C-Index for '{model_name_rm}': Completed KFold loop. Collected C-Indices: {c_indices_cv_list}", "DEBUG")
                     if c_indices_cv_list:
                         model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list)
                         model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
-                        self.log(f"C-Index CV para '{model_name_rm}': Media={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
-                    if all_oos_predictions_data:
-                        model_data_rm["oos_predictions"] = all_oos_predictions_data
-                        self.log(f"Almacenadas {len(all_oos_predictions_data)} predicciones OOS de CV para '{model_name_rm}'.", "INFO")
-                except Exception as e_cv_rm_main:
-                    self.log(f"Error general en C-Index CV para '{model_name_rm}': {e_cv_rm_main}", "ERROR")
+                        self.log(f"C-Index CV for '{model_name_rm}' ({len(c_indices_cv_list)}/{kf_cv.get_n_splits()} folds successful): Mean={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
+                    else:
+                        self.log(f"C-Index CV for '{model_name_rm}': No C-Indices calculated from any fold.", "WARN")
+                        model_data_rm["c_index_cv_mean"] = None # Ensure it's None if list is empty
+                        model_data_rm["c_index_cv_std"] = None
+
+                    if all_oos_predictions_data_cv: # Check if list is populated
+                        model_data_rm["oos_predictions"] = all_oos_predictions_data_cv # Assign to the correct key
+                        self.log(f"Almacenadas {len(all_oos_predictions_data_cv)} predicciones OOS de CV para '{model_name_rm}'.", "INFO")
+                    else:
+                        model_data_rm["oos_predictions"] = None # Ensure it's None if list is empty
+
+                except Exception as e_cv_rm_main: # Catch errors in KFold setup or outer loop logic
+                    self.log(f"Error general en C-Index CV (fuera del bucle de folds) para '{model_name_rm}': {e_cv_rm_main}", "ERROR")
                     traceback.print_exc(limit=3)
-            elif self.calculate_cv_cindex_var.get():
+            elif self.calculate_cv_cindex_var.get(): # This means X_design_rm was empty (null model)
                  self.log(f"C-Index CV no calculado para '{model_name_rm}' (modelo nulo o X_design vacío).", "INFO")
         else: # model_data_rm["model"] is None (fit failed)
             self.log(f"Ajuste del modelo '{model_name_rm}' falló. Omitiendo tests de Schoenfeld y C-Index CV.", "WARN")
@@ -2728,7 +2760,7 @@ class CoxModelingApp(ttk.Frame):
             # ya que esta fórmula se construye con la configuración de splines.
 
             patsy_formula_for_splines = md_tv.get('formula_patsy', '') # Usar la fórmula del modelo
-            
+
             for orig_var_name in original_covs_in_model:
                 display_str = orig_var_name
                 # Buscar configuración de spline para esta variable original en la fórmula del modelo
