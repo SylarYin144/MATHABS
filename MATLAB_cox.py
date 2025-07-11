@@ -1538,6 +1538,17 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Error de Filtro", f"No se pudieron aplicar los filtros:\n{e}", parent=self.parent_for_dialogs)
             traceback.print_exc(limit=3)
 
+    def open_detailed_configuration_dialog(self):
+        sel_indices = self.listbox_covariables_disponibles.curselection()
+        if not sel_indices:
+            messagebox.showwarning("Sin Selección", "Seleccione una o más covariables de la lista para configurar detalladamente.", parent=self.parent_for_dialogs)
+            return
+
+        selected_covs = [self.listbox_covariables_disponibles.get(i) for i in sel_indices]
+
+        DetailedCovariateConfigDialog(self.parent_for_dialogs, self, selected_covs)
+        self.log(f"Abierto diálogo de configuración detallada para: {selected_covs}", "INFO")
+
     def on_covariate_select_for_config(self, event=None):
         """Actualiza la UI de configuración de covariables cuando se selecciona una en la listbox."""
         sel_idx = self.listbox_covariables_disponibles.curselection()
