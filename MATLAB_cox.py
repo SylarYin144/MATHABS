@@ -2131,6 +2131,92 @@ class CoxModelingApp(ttk.Frame):
             return
         EditModelDetailsDialog(self.parent_for_dialogs, self.selected_model_in_treeview, self)
 
+    def _check_model_selected_and_valid(self):
+        if self.selected_model_in_treeview is None:
+            messagebox.showwarning("Sin Selección", "Por favor, seleccione un modelo de la lista primero.", parent=self.parent_for_dialogs)
+            self.log("Acción de modelo intentada sin selección en Treeview.", "WARN")
+            return False
+
+        model_dict = self.selected_model_in_treeview
+        if not isinstance(model_dict, dict):
+            messagebox.showerror("Error de Datos", "La selección del modelo no es un diccionario válido.", parent=self.parent_for_dialogs)
+            self.log(f"Error: selected_model_in_treeview no es un diccionario. Tipo: {type(model_dict)}", "ERROR")
+            return False
+
+        return True
+
+    def show_selected_model_summary(self):
+        self.log("Intentando mostrar resumen del modelo seleccionado...", "INFO")
+        if not self._check_model_selected_and_valid():
+            return
+
+        selected_model_dict = self.selected_model_in_treeview
+        model_object = selected_model_dict.get("model")
+        model_name_display = selected_model_dict.get('custom_model_name') or selected_model_dict.get('model_name', "Modelo Seleccionado")
+
+        summary_str = f"Resumen para el Modelo: {model_name_display}\n"
+        summary_str += "=" * (len(summary_str) -1) + "\n\n"
+
+        if model_object and hasattr(model_object, 'summary') and isinstance(model_object.summary, pd.DataFrame):
+            try:
+                summary_df_as_string = model_object.summary.to_string()
+                summary_str += "--- Resumen del Modelo (Lifelines) ---\n"
+                summary_str += summary_df_as_string + "\n\n"
+            except Exception as e_summary_df:
+                self.log(f"Error al convertir el DataFrame del resumen del modelo a string: {e_summary_df}", "ERROR")
+                summary_str += "Error al formatear el DataFrame del resumen del modelo.\n\n"
+        elif model_object and hasattr(model_object, 'print_summary'):
+            try:
+                import io
+                from contextlib import redirect_stdout
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    model_object.print_summary(decimals=4, style="ascii")
+                summary_print_output = f.getvalue()
+                summary_str += "--- Resumen del Modelo (print_summary) ---\n"
+                summary_str += summary_print_output + "\n\n"
+            except Exception as e_print_summary:
+                self.log(f"Error al intentar usar print_summary(): {e_print_summary}", "WARN")
+                summary_str += "El objeto del modelo tiene un método print_summary(), pero falló su ejecución.\n\n"
+        else:
+            summary_str += "No se encontró un resumen detallado del modelo (objeto 'summary' o método 'print_summary()').\n\n"
+
+        metrics = selected_model_dict.get("metrics", {})
+        if metrics:
+            summary_str += "--- Métricas Calculadas ---\n"
+            for key, value in metrics.items():
+                if isinstance(value, float) and not math.isnan(value):
+                    if "p-value" in key.lower() or "p_value" in key.lower() or (isinstance(value, float) and value < 0.1 and value != 0):
+                         summary_str += f"{key}: {format_p_value(value)}\n"
+                    else:
+                         summary_str += f"{key}: {value:.4f}\n"
+                elif isinstance(value, (dict, pd.DataFrame, pd.Series)):
+                    summary_str += f"{key}: (Ver detalles en otras opciones o exportación)\n"
+                elif value is not None and not (isinstance(value, float) and math.isnan(value)):
+                    summary_str += f"{key}: {value}\n"
+            summary_str += "\n"
+
+        schoenfeld_df = selected_model_dict.get("schoenfeld_results")
+        schoenfeld_status = selected_model_dict.get("schoenfeld_status_message", "")
+        if schoenfeld_df is not None and not schoenfeld_df.empty:
+            summary_str += "--- Resultados del Test de Schoenfeld (Resumen) ---\n"
+            try:
+                summary_str += schoenfeld_df.to_string() + "\n\n"
+            except Exception as e_sch_str:
+                summary_str += f"Error al formatear resultados de Schoenfeld: {e_sch_str}\n\n"
+        elif "calculado exitosamente" in schoenfeld_status.lower() and (schoenfeld_df is None or schoenfeld_df.empty):
+             summary_str += f"--- Test de Schoenfeld ---\nEstado: {schoenfeld_status} (Pero el DataFrame está vacío o no disponible aquí).\n\n"
+        elif schoenfeld_status:
+             summary_str += f"--- Test de Schoenfeld ---\nEstado: {schoenfeld_status}\n\n"
+
+        custom_notes = selected_model_dict.get('model_notes', '')
+        if custom_notes:
+            summary_str += "--- Notas Personalizadas ---\n"
+            summary_str += custom_notes + "\n"
+
+        ModelSummaryWindow(self.parent_for_dialogs, title=f"Resumen: {model_name_display}", summary_text=summary_str)
+        self.log(f"Mostrando resumen para el modelo: {model_name_display}", "SUCCESS")
+
     def _on_model_select_from_treeview(self, event=None):
         self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
         selected_item_id = self.treeview_lista_modelos.focus()
