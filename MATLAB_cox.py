@@ -2335,10 +2335,18 @@ class CoxModelingApp(ttk.Frame):
                     elif spline_type == 'B-spline':
                         patsy_func_bd = 'bs'
                         spline_degree = spl_cfg_bd.get('degree', 3)
-                        # Add extrapolation='constant' to handle boundary issues in CV folds
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree}, extrapolation='constant')"
-                    else: # Fallback por si acaso
+                        # Check for df > degree, which is a requirement for patsy's bs when df is used to determine knots.
+                        # If df <= degree, patsy would raise an error.
+                        # A simple adjustment if invalid: make df = degree + 1, or log error and skip spline.
+                        if spline_df <= spline_degree:
+                            self.log(f"WARN: B-spline df ({spline_df}) must be greater than degree ({spline_degree}) for variable '{orig_cov_name_bd}'. Adjusting df to {spline_degree + 1}.", "WARN")
+                            spline_df = spline_degree + 1
+                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
+                    else: # Fallback for unknown spline type, treat as quantitative without spline
                         term_syntax_bd = f"Q('{orig_cov_name_bd}')"
+                        self.log(f"WARN: Tipo de spline desconocido '{spline_type}' para '{orig_cov_name_bd}'. Tratada como cuantitativa normal.", "WARN")
+                else: # No spline config for this quantitative var
+                    term_syntax_bd = f"Q('{orig_cov_name_bd}')"
             else:
                 if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
                    not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
@@ -2621,9 +2629,79 @@ class CoxModelingApp(ttk.Frame):
                 try:
                     kf_cv = KFold(n_splits=self.cv_num_kfolds_var.get(), shuffle=True, random_state=self.cv_random_seed_var.get())
                     c_indices_cv_list = []
-                    all_oos_predictions_data_cv = [] # Renamed to avoid conflict with outer scope if any
+                    all_oos_predictions_data_cv = []
 
-                    self.log(f"CV C-Index for '{model_name_rm}': Starting KFold loop. Formula for folds: {actual_formula_for_fit}", "DEBUG")
+                    # --- Prepare formula for CV with explicit knots for B-splines ---
+                    cv_patsy_formula = actual_formula_for_fit # Start with the main model's formula
+
+                    # Find B-spline terms: bs(Q('var'), df=X, degree=Y)
+                    # We need original variable names to get data for knot calculation from df_lifelines_rm
+                    # and the df/degree to calculate knots.
+
+                    # Regex to find bs terms and capture var, df, degree
+                    # Example: bs(Q('Rep_CAG'), df=3, degree=3)
+                    # Need to handle spaces carefully.
+                    bs_pattern = re.compile(r"bs\(Q\('([^']+)'\),\s*df=(\d+),\s*degree=(\d+)\)")
+
+                    modified_bs_terms = {} # Store original term -> new term with knots
+
+                    for match in bs_pattern.finditer(actual_formula_for_fit):
+                        original_term = match.group(0)
+                        var_name = match.group(1)
+                        df = int(match.group(2))
+                        degree = int(match.group(3))
+
+                        self.log(f"CV C-Index: Found B-spline term for '{var_name}': {original_term}", "DEBUG")
+
+                        if var_name in df_lifelines_rm.columns:
+                            data_series = df_lifelines_rm[var_name].dropna()
+                            if len(data_series) < (degree + 1) or data_series.nunique() < 2 : # Not enough data or unique values for knots
+                                self.log(f"CV C-Index: Insufficient data or unique values for '{var_name}' to define B-spline knots. Skipping knot modification for this term.", "WARN")
+                                continue
+
+                            # Calculate number of interior knots: df - degree - 1 (Patsy's default for df interpretation)
+                            # However, an easier way to ensure consistency is to specify enough knots for 'df' basis functions.
+                            # A common interpretation: df = number of knots (including boundary) + degree - 1
+                            # Or, if df is number of basis functions, number of knots = df - degree + 1 (for B-splines, including boundary knots)
+                            # Patsy's `df` for `bs` means "produce a basis matrix with this many columns".
+                            # The number of interior knots is `df - degree - 1`. Must be >= 0.
+                            num_interior_knots = df - degree - 1
+
+                            knots = []
+                            if num_interior_knots >= 0: # If 0, only boundary knots are used by patsy if knots=[]
+                                # Define percentiles for interior knots
+                                # np.linspace(0, 100, num_interior_knots + 2) gives num_interior_knots+2 points, e.g., [0, 50, 100] for 1 knot
+                                # [1:-1] slices off 0 and 100 for interior knots
+                                if num_interior_knots > 0:
+                                    percentiles = np.linspace(0, 100, num_interior_knots + 2)[1:-1]
+                                    knots = np.percentile(data_series, percentiles).tolist()
+                                    self.log(f"CV C-Index: Calculated {len(knots)} interior knots for '{var_name}' (df={df}, degree={degree}): {knots}", "DEBUG")
+                                else: # num_interior_knots == 0
+                                     self.log(f"CV C-Index: Using boundary knots only for '{var_name}' (df={df}, degree={degree}, num_interior_knots=0).", "DEBUG")
+                                     knots = [] # Patsy will use boundary knots
+
+                                # Construct new bs term with explicit knots
+                                # include_intercept=False is patsy's default for bs when used in formulas like "0 + ..."
+                                new_bs_term = f"bs(Q('{var_name}'), knots={knots}, degree={degree}, include_intercept=False)"
+                                modified_bs_terms[original_term] = new_bs_term
+                            else: # df <= degree, this configuration is problematic for bs
+                                self.log(f"CV C-Index: Configuration for bs(Q('{var_name}'), df={df}, degree={degree}) is invalid (df must be > degree). Skipping explicit knot generation for this term in CV formula. This might lead to errors in folds if patsy also rejects it.", "WARN")
+                        else:
+                            self.log(f"CV C-Index: Variable '{var_name}' for B-spline not found in df_lifelines_rm. Cannot calculate knots.", "WARN")
+
+                    # Replace terms in the CV formula
+                    if modified_bs_terms:
+                        temp_cv_formula = cv_patsy_formula
+                        for old, new in modified_bs_terms.items():
+                            temp_cv_formula = temp_cv_formula.replace(old, new)
+                        cv_patsy_formula = temp_cv_formula
+                        self.log(f"CV C-Index: Modified formula for CV folds with explicit knots: {cv_patsy_formula}", "INFO")
+                    else:
+                        self.log(f"CV C-Index: No B-spline terms were modified with explicit knots for CV formula. Using original: {cv_patsy_formula}", "INFO")
+                    # --- End of CV formula preparation ---
+
+
+                    self.log(f"CV C-Index for '{model_name_rm}': Starting KFold loop. Formula for folds: {cv_patsy_formula}", "DEBUG")
 
                     for i_fold, (train_idx, test_idx) in enumerate(kf_cv.split(df_lifelines_rm)):
                         self.log(f"CV C-Index Fold {i_fold+1}/{kf_cv.get_n_splits()}: Processing...", "DEBUG")
@@ -2640,8 +2718,8 @@ class CoxModelingApp(ttk.Frame):
 
                         cph_fold_cv = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
                         try:
-                            self.log(f"CV C-Index Fold {i_fold+1}: Attempting to fit with formula: {actual_formula_for_fit}", "DEBUG")
-                            cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                            self.log(f"CV C-Index Fold {i_fold+1}: Attempting to fit with formula: {cv_patsy_formula}", "DEBUG") # Use cv_patsy_formula
+                            cph_fold_cv.fit(df_fold_for_fit_cv, duration_col=time_col_rm, event_col=event_col_rm, formula=cv_patsy_formula) # Use cv_patsy_formula
                             self.log(f"CV C-Index Fold {i_fold+1}: Fit successful.", "DEBUG")
 
                             preds_te_fold_cv = cph_fold_cv.predict_partial_hazard(df_fold_for_pred_cv)
