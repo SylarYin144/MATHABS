@@ -2555,40 +2555,64 @@ class CoxModelingApp(ttk.Frame):
 
                         if found_schoenfeld_results and schoenfeld_df_candidate is not None:
                             model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy()
-                            model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) calculado exitosamente."
+                            model_data_rm["schoenfeld_status_message"] = "Schoenfeld (check_assumptions) calculado exitosamente."
+                            self.log(f"Schoenfeld data for '{model_name_rm}' obtained from check_assumptions.", "DEBUG")
                         else:
-                            model_data_rm["schoenfeld_status_message"] = "Schoenfeld: resultados detallados no encontrados o en formato inesperado."
+                            model_data_rm["schoenfeld_status_message"] = "Schoenfeld (check_assumptions): resultados detallados no encontrados o en formato inesperado."
+                            self.log(f"Schoenfeld data for '{model_name_rm}' from check_assumptions was empty or not found.", "DEBUG")
                     except Exception as e_sch_detailed:
                         model_data_rm["schoenfeld_status_message"] = "Error durante Test de Schoenfeld (check_assumptions)."
-                        self.log(f"ERROR en Test Schoenfeld para '{model_name_rm}': {e_sch_detailed}\n{traceback.format_exc()}", "ERROR")
-                    self.log(f"--- Test de Schoenfeld para Modelo: '{model_name_rm}' Finalizado. Status: {model_data_rm['schoenfeld_status_message']} ---", "INFO")
-                else:
-                    self.log(f"INFO: Modelo '{model_name_rm}' sin parámetros. Test de Schoenfeld no aplicable.", "INFO")
-                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo sin covariables)."
+                        self.log(f"ERROR en Test Schoenfeld (check_assumptions) para '{model_name_rm}': {e_sch_detailed}\n{traceback.format_exc()}", "ERROR")
+                    self.log(f"--- Test de Schoenfeld (check_assumptions) para Modelo: '{model_name_rm}' Finalizado. Status: {model_data_rm['schoenfeld_status_message']} ---", "INFO")
+                else: # No parameters in model
+                    self.log(f"INFO: Modelo '{model_name_rm}' sin parámetros. Test de Schoenfeld (check_assumptions) no aplicable.", "INFO")
+                    model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) no aplicable (modelo sin covariables)."
             else: # X_design_rm is empty (null model)
-                self.log(f"INFO: Modelo nulo '{model_name_rm}' (X_design_rm vacío). Test de Schoenfeld no aplicable.", "INFO")
-                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld no aplicable (modelo nulo)."
+                self.log(f"INFO: Modelo nulo '{model_name_rm}' (X_design_rm vacío). Test de Schoenfeld (check_assumptions) no aplicable.", "INFO")
+                model_data_rm["schoenfeld_status_message"] = "Test de Schoenfeld (check_assumptions) no aplicable (modelo nulo)."
 
-            # Fallback proportional_hazard_test (if schoenfeld_results is still empty or had issues)
-            schoenfeld_df_current = model_data_rm.get("schoenfeld_results")
-            status_msg_current = model_data_rm.get("schoenfeld_status_message", "")
-            should_try_ph_test_fallback = (schoenfeld_df_current is None or schoenfeld_df_current.empty) and \
-                                          ("calculado exitosamente" not in status_msg_current)
+            # Fallback or supplement with proportional_hazard_test
+            # This test provides a summary table which might be what `schoenfeld_results` is expected to be
+            # if check_assumptions doesn't yield the detailed residuals table in the expected format.
+            schoenfeld_df_from_check_assumptions = model_data_rm.get("schoenfeld_results")
 
-            if should_try_ph_test_fallback and hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
-                self.log(f"INFO: Intentando `proportional_hazard_test` para '{model_name_rm}'.", "INFO")
+            # Condition to try proportional_hazard_test:
+            # 1. Model has parameters
+            # 2. EITHER schoenfeld_results from check_assumptions is empty/None
+            #    OR it doesn't seem to contain individual p-values (e.g. only global test or wrong format)
+            # For simplicity, we'll try it if check_assumptions didn't yield a non-empty DataFrame with a 'p' column.
+            should_try_ph_test = False
+            if hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+                if schoenfeld_df_from_check_assumptions is None or schoenfeld_df_from_check_assumptions.empty or 'p' not in schoenfeld_df_from_check_assumptions.columns:
+                    should_try_ph_test = True
+
+            if should_try_ph_test:
+                self.log(f"INFO: `schoenfeld_results` de `check_assumptions` para '{model_name_rm}' está vacío o no tiene columna 'p'. Intentando `proportional_hazard_test` como fuente alternativa/suplementaria.", "INFO")
                 try:
                     from lifelines.statistics import proportional_hazard_test
-                    ph_test_results = proportional_hazard_test(fitted_cph_model, df_for_fit_main, time_transform='log')
-                    if ph_test_results is not None and hasattr(ph_test_results, 'summary') and isinstance(ph_test_results.summary, pd.DataFrame) and not ph_test_results.summary.empty:
-                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results.summary
-                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test proporcionó un resumen."
-                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' exitoso.", "INFO")
+                    ph_test_results_obj = proportional_hazard_test(fitted_cph_model, df_for_fit_main, time_transform='log')
+
+                    if ph_test_results_obj is not None and hasattr(ph_test_results_obj, 'summary') and \
+                       isinstance(ph_test_results_obj.summary, pd.DataFrame) and not ph_test_results_obj.summary.empty and \
+                       'p' in ph_test_results_obj.summary.columns:
+
+                        # Store the summary from proportional_hazard_test
+                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results_obj.summary.copy()
+                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' proporcionó un resumen con p-valores.", "INFO")
+
+                        # If original schoenfeld_results was empty/missing 'p', replace it with this summary
+                        if schoenfeld_df_from_check_assumptions is None or schoenfeld_df_from_check_assumptions.empty or 'p' not in schoenfeld_df_from_check_assumptions.columns:
+                            model_data_rm["schoenfeld_results"] = ph_test_results_obj.summary.copy()
+                            model_data_rm["schoenfeld_status_message"] = "Resultados de Schoenfeld obtenidos de proportional_hazard_test (summary)."
+                            self.log(f"INFO: `schoenfeld_results` para '{model_name_rm}' ahora utiliza el resumen de `proportional_hazard_test`.", "INFO")
+                        else:
+                            model_data_rm["schoenfeld_status_message"] += " `proportional_hazard_test` también proporcionó un resumen."
                     else:
-                        model_data_rm["schoenfeld_status_message"] += " Adicionalmente, proportional_hazard_test no arrojó resumen."
+                        model_data_rm["schoenfeld_status_message"] += " `proportional_hazard_test` no arrojó un resumen con p-valores utilizables."
+                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' no produjo un resumen con p-valores.", "INFO")
                 except Exception as e_ph_test_fallback:
                     self.log(f"ERROR en `proportional_hazard_test` para '{model_name_rm}': {e_ph_test_fallback}", "ERROR")
-                    model_data_rm["schoenfeld_status_message"] += f" (Error en proportional_hazard_test: {str(e_ph_test_fallback)[:30]}...)."
+                    model_data_rm["schoenfeld_status_message"] += f" (Error en proportional_hazard_test: {str(e_ph_test_fallback)[:50]}...)."
 
             # C-Index CV
             if self.calculate_cv_cindex_var.get() and not X_design_rm.empty:
@@ -2747,20 +2771,63 @@ class CoxModelingApp(ttk.Frame):
             c_idx_cv_tv = md_tv.get('c_index_cv_mean') # Directamente del diccionario del modelo
 
             # Schoenfeld (p min)
-            schoenfeld_df = md_tv.get("schoenfeld_results")
+            schoenfeld_df_results = md_tv.get("schoenfeld_results") # This might now come from proportional_hazard_test summary
             schoenfeld_p_min_tv = "N/A"
-            if schoenfeld_df is not None and isinstance(schoenfeld_df, pd.DataFrame) and not schoenfeld_df.empty and 'p' in schoenfeld_df.columns:
-                # Excluir la fila 'GLOBAL' o 'global' o similar si existe, antes de tomar el min
-                sch_df_no_global = schoenfeld_df[~schoenfeld_df.index.astype(str).str.lower().isin(['global', 'test_statistic', 'global_test', 'overall'])]
-                if not sch_df_no_global['p'].dropna().empty:
-                    schoenfeld_p_min_tv = sch_df_no_global['p'].dropna().min()
+            self.log(f"DEBUG Treeview: Model '{name_tv}', schoenfeld_results type: {type(schoenfeld_df_results)}, empty: {schoenfeld_df_results.empty if isinstance(schoenfeld_df_results, pd.DataFrame) else 'N/A'}", "DEBUG")
+
+            if isinstance(schoenfeld_df_results, pd.DataFrame) and not schoenfeld_df_results.empty and 'p' in schoenfeld_df_results.columns:
+                # Filter out known global/summary rows by index name before taking min
+                # Common index names for global tests in lifelines: 'global', 'GLOBAL', '- globales -', 'Overall', 'Test Statistic'
+                # Making it case-insensitive and flexible
+                global_test_indices = ['global', 'overall', 'test statistic']
+
+                # Ensure index is string for filtering, handle MultiIndex if present
+                if isinstance(schoenfeld_df_results.index, pd.MultiIndex):
+                    # For MultiIndex, we might need a more specific way to identify global rows,
+                    # or assume that individual terms are in the first level of the index.
+                    # For now, we'll try to convert the first level to string and check.
+                    try:
+                        idx_to_check = schoenfeld_df_results.index.get_level_values(0).astype(str).str.lower()
+                    except Exception as e_multi_idx:
+                        self.log(f"DEBUG Treeview: Error processing MultiIndex for Schoenfeld: {e_multi_idx}", "WARN")
+                        idx_to_check = pd.Series([]) # Empty series if error
+                else: # Single index
+                    idx_to_check = schoenfeld_df_results.index.astype(str).str.lower()
+
+                individual_terms_schoenfeld_df = schoenfeld_df_results[
+                    ~idx_to_check.isin(global_test_indices)
+                ]
+
+                self.log(f"DEBUG Treeview: Model '{name_tv}', N individual Schoenfeld terms after filtering: {len(individual_terms_schoenfeld_df)}", "DEBUG")
+                if not individual_terms_schoenfeld_df.empty and 'p' in individual_terms_schoenfeld_df.columns:
+                    valid_p_values_schoenfeld = individual_terms_schoenfeld_df['p'].dropna()
+                    if not valid_p_values_schoenfeld.empty:
+                        schoenfeld_p_min_tv = valid_p_values_schoenfeld.min()
+                        self.log(f"DEBUG Treeview: Model '{name_tv}', Schoenfeld p min: {schoenfeld_p_min_tv} from {len(valid_p_values_schoenfeld)} values.", "DEBUG")
+                    else:
+                        self.log(f"DEBUG Treeview: Model '{name_tv}', No valid non-NaN Schoenfeld p-values for individual terms.", "DEBUG")
+                else:
+                    self.log(f"DEBUG Treeview: Model '{name_tv}', No individual Schoenfeld terms left after filtering or 'p' column missing.", "DEBUG")
+            else:
+                self.log(f"DEBUG Treeview: Model '{name_tv}', Schoenfeld results not DataFrame, empty, or no 'p' column.", "DEBUG")
 
             # Wald (p max)
-            summary_df_tv = metrics_tv.get('summary_df')
+            summary_df_tv = metrics_tv.get('summary_df') # This is CoxPHFitter.summary
             wald_p_max_tv = "N/A"
-            if summary_df_tv is not None and isinstance(summary_df_tv, pd.DataFrame) and not summary_df_tv.empty and 'p' in summary_df_tv.columns:
-                if not summary_df_tv['p'].dropna().empty:
-                    wald_p_max_tv = summary_df_tv['p'].dropna().max()
+            self.log(f"DEBUG Treeview: Model '{name_tv}', summary_df type: {type(summary_df_tv)}, empty: {summary_df_tv.empty if isinstance(summary_df_tv, pd.DataFrame) else 'N/A'}", "DEBUG")
+
+            if isinstance(summary_df_tv, pd.DataFrame) and not summary_df_tv.empty and 'p' in summary_df_tv.columns:
+                # summary_df from CoxPHFitter directly lists individual covariates/spline components.
+                # No need to filter out 'global' rows here as it doesn't typically have them.
+                valid_p_values_wald = summary_df_tv['p'].dropna()
+                if not valid_p_values_wald.empty:
+                    wald_p_max_tv = valid_p_values_wald.max()
+                    self.log(f"DEBUG Treeview: Model '{name_tv}', Wald p max: {wald_p_max_tv} from {len(valid_p_values_wald)} values.", "DEBUG")
+                else:
+                    self.log(f"DEBUG Treeview: Model '{name_tv}', No valid non-NaN Wald p-values.", "DEBUG")
+            else:
+                 self.log(f"DEBUG Treeview: Model '{name_tv}', Wald summary_df not DataFrame, empty, or no 'p' column.", "DEBUG")
+
 
             vals_tv = (
                 i + 1,                                      # #
