@@ -2217,6 +2217,123 @@ class CoxModelingApp(ttk.Frame):
         ModelSummaryWindow(self.parent_for_dialogs, title=f"Resumen: {model_name_display}", summary_text=summary_str)
         self.log(f"Mostrando resumen para el modelo: {model_name_display}", "SUCCESS")
 
+    def open_graph_selection_dialog(self):
+        self.log("Abriendo diálogo de selección de gráficos...", "INFO")
+        if not self._check_model_selected_and_valid():
+            return
+
+        graph_callbacks = {
+            "Curvas de Supervivencia (Kaplan-Meier)": self.plot_survival_curves,
+            "Función de Supervivencia del Modelo Cox": self.plot_cox_model_survival_function,
+            "Residuos de Schoenfeld (Gráfico por Variable)": self.plot_schoenfeld_residuals_individual,
+            "Residuos de Schoenfeld (vs. Tiempo Global)": self.plot_schoenfeld_residuals_vs_time,
+            "Forest Plot (Hazard Ratios)": self.plot_forest_plot_hrs,
+            "Gráfico de Coeficientes (Betas)": self.plot_coefficients_plot,
+        }
+
+        self._temp_graph_callbacks = graph_callbacks
+
+        dialog_title = "Seleccionar Gráficos para el Modelo Actual"
+        selected_model_name = self.selected_model_in_treeview.get('custom_model_name') or self.selected_model_in_treeview.get('model_name')
+        if selected_model_name:
+            dialog_title = f"Seleccionar Gráficos para: {selected_model_name}"
+
+        CoxGraphSelectionDialog(
+            self.parent_for_dialogs,
+            title=dialog_title,
+            graph_options_callbacks=graph_callbacks,
+            apply_callback=self._generate_selected_graphs
+        )
+
+    def _generate_selected_graphs(self, selected_graph_names):
+        self.log(f"Generando gráficos seleccionados: {selected_graph_names}", "INFO")
+        if not self._check_model_selected_and_valid():
+            return
+
+        if not hasattr(self, '_temp_graph_callbacks') or not self._temp_graph_callbacks:
+            self.log("Error: _temp_graph_callbacks no encontrado o vacío en _generate_selected_graphs.", "ERROR")
+            messagebox.showerror("Error Interno", "No se pudo encontrar la lista de callbacks de gráficos.", parent=self.parent_for_dialogs)
+            return
+
+        for graph_name in selected_graph_names:
+            callback_method = self._temp_graph_callbacks.get(graph_name)
+            if callback_method and callable(callback_method):
+                try:
+                    self.log(f"Ejecutando callback para gráfico: {graph_name}", "DEBUG")
+                    callback_method()
+                except Exception as e:
+                    self.log(f"Error al generar el gráfico '{graph_name}': {e}", "ERROR")
+                    traceback.print_exc(limit=3)
+                    messagebox.showerror("Error de Gráfico", f"No se pudo generar el gráfico '{graph_name}':\n{e}", parent=self.parent_for_dialogs)
+            else:
+                self.log(f"Advertencia: No se encontró un método de callback válido para el gráfico '{graph_name}'.", "WARN")
+                messagebox.showwarning("Callback Faltante", f"No hay una acción definida para generar el gráfico '{graph_name}'.", parent=self.parent_for_dialogs)
+
+        if hasattr(self, '_temp_graph_callbacks'):
+            del self._temp_graph_callbacks
+
+    # --- Stub Plotting Methods ---
+    def plot_survival_curves(self):
+        self.log("STUB: plot_survival_curves() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Curvas de Supervivencia (Kaplan-Meier)\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='survival_curves_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del gráfico de Curvas de Supervivencia aún no está completamente implementada.", parent=self.parent_for_dialogs)
+
+    def plot_cox_model_survival_function(self):
+        self.log("STUB: plot_cox_model_survival_function() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Función de Supervivencia del Modelo Cox\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='cox_survival_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del gráfico de Función de Supervivencia del Modelo Cox aún no está completamente implementada.", parent=self.parent_for_dialogs)
+
+    def plot_schoenfeld_residuals_individual(self):
+        self.log("STUB: plot_schoenfeld_residuals_individual() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Residuos de Schoenfeld (Individual)\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='schoenfeld_individual_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del gráfico de Residuos de Schoenfeld (Individual) aún no está completamente implementada.", parent=self.parent_for_dialogs)
+
+    def plot_schoenfeld_residuals_vs_time(self):
+        self.log("STUB: plot_schoenfeld_residuals_vs_time() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Residuos de Schoenfeld (vs. Tiempo)\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='schoenfeld_time_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del gráfico de Residuos de Schoenfeld (vs. Tiempo) aún no está completamente implementada.", parent=self.parent_for_dialogs)
+
+    def plot_forest_plot_hrs(self):
+        self.log("STUB: plot_forest_plot_hrs() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Forest Plot (Hazard Ratios)\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='forest_plot_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del Forest Plot (HRs) aún no está completamente implementada.", parent=self.parent_for_dialogs)
+
+    def plot_coefficients_plot(self):
+        self.log("STUB: plot_coefficients_plot() llamada.", "INFO")
+        if hasattr(self, 'results_tab_manager') and self.results_tab_manager:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Gráfico de Coeficientes (Betas)\n(No implementado aún)",
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            self.results_tab_manager.display_figure(fig, plot_type_key='coefficients_plot_stub')
+        else:
+            messagebox.showinfo("Función no Completa", "La generación del Gráfico de Coeficientes aún no está completamente implementada.", parent=self.parent_for_dialogs)
+    # --- End Stub Plotting Methods ---
+
     def _on_model_select_from_treeview(self, event=None):
         self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
         selected_item_id = self.treeview_lista_modelos.focus()
