@@ -2152,6 +2152,165 @@ class CoxModelingApp(ttk.Frame):
 
     # --- MÉTODOS PARA PESTAÑA 2: MODELADO COX --- (Continuación Lógica)
 
+    def _execute_cox_modeling_orchestrator(self):
+        self.log("--- Iniciando Orquestador de Modelado Cox ---", "HEADER")
+        if self.data is None or self.data.empty:
+            messagebox.showerror("Error de Datos", "No hay datos cargados para modelar.", parent=self.parent_for_dialogs)
+            self.log("Orquestador: Intento de modelar sin datos.", "ERROR")
+            return
+
+        (df_patsy_processed, X_design_initial, y_survival_initial,
+         formula_patsy_initial, terms_patsy_initial,
+         time_col_final, event_col_final,
+         scaling_method_applied, fitted_scaler_obj, scaled_columns_info) = self._preparar_datos_para_modelado()
+
+        if df_patsy_processed is None or X_design_initial is None or y_survival_initial is None:
+            self.log("Orquestador: Falló la preparación inicial de datos. Abortando modelado.", "ERROR")
+            # _preparar_datos_para_modelado ya muestra mensajes de error
+            return
+
+        if y_survival_initial.empty:
+            messagebox.showerror("Error de Datos", "No quedan datos después del preprocesamiento inicial (NaNs en T/E o columnas vacías).", parent=self.parent_for_dialogs)
+            self.log("Orquestador: DataFrame de supervivencia vacío después de preparación inicial.", "ERROR")
+            return
+
+        num_events = y_survival_initial[event_col_final].sum()
+        if num_events == 0:
+            messagebox.showwarning("Sin Eventos",
+                                 "La columna de evento no contiene ningún evento (todos los valores son 0) después del preprocesamiento. "
+                                 "No se pueden ajustar modelos de Cox.", parent=self.parent_for_dialogs)
+            self.log("Orquestador: No hay eventos en los datos preparados. Modelado Cox no posible.", "WARN")
+            return
+        elif num_events < 5: # Umbral arbitrario, pero muy pocos eventos son problemáticos
+             self.log(f"Orquestador: Advertencia - Muy pocos eventos ({num_events}) en los datos. Los resultados del modelo pueden ser inestables.", "WARN")
+
+
+        model_type_selected = self.cox_model_type_var.get()
+        penalizer_val = self.penalizer_strength_var.get() if self.penalization_method_var.get() != "Ninguna" else 0.0
+        l1_ratio_val = self.l1_ratio_for_elasticnet_var.get() if self.penalization_method_var.get() == "ElasticNet" else 0.0
+        if self.penalization_method_var.get() == "L1 (Lasso)":
+            l1_ratio_val = 1.0
+        elif self.penalization_method_var.get() == "L2 (Ridge)":
+            l1_ratio_val = 0.0
+
+        sel_cov_indices_ui = self.listbox_covariables_disponibles.curselection()
+        all_selected_covs_orig_names_from_ui = [self.listbox_covariables_disponibles.get(i) for i in sel_cov_indices_ui]
+
+
+        if model_type_selected == "Univariado":
+            self.log("Orquestador: Iniciando modelado univariado...", "INFO")
+            if not all_selected_covs_orig_names_from_ui:
+                messagebox.showwarning("Sin Covariables", "Seleccione al menos una covariable para el modelado univariado.", parent=self.parent_for_dialogs)
+                self.log("Orquestador: No hay covariables seleccionadas para univariado.", "WARN")
+                return
+
+            temp_models_data_univar = []
+            for i_univar, cov_name_univar in enumerate(all_selected_covs_orig_names_from_ui):
+                self.log(f"Ajustando modelo univariado para: {cov_name_univar} ({i_univar+1}/{len(all_selected_covs_orig_names_from_ui)})", "SUBHEADER")
+
+                df_filtered_univar, X_design_univar, formula_patsy_univar, terms_patsy_univar = self.build_design_matrix(
+                    df_patsy_processed, [cov_name_univar], time_col_final, event_col_final
+                )
+
+                if X_design_univar is None or df_filtered_univar is None:
+                    self.log(f"Orquestador (Univar): Falló build_design_matrix para '{cov_name_univar}'. Saltando.", "ERROR")
+                    continue
+
+                y_survival_univar = df_filtered_univar[[time_col_final, event_col_final]]
+
+                if X_design_univar.empty and formula_patsy_univar != "0":
+                     self.log(f"Orquestador (Univar): X_design para '{cov_name_univar}' vacío y fórmula no nula. Saltando.", "WARN")
+                     continue
+                if y_survival_univar.empty:
+                     self.log(f"Orquestador (Univar): y_survival para '{cov_name_univar}' vacío. Saltando.", "WARN")
+                     continue
+
+                model_name_univar = f"Univar_{cov_name_univar.replace(' ', '_')}"
+                model_result_univar = self._run_model_and_get_metrics(
+                    df_filtered_univar, X_design_univar, y_survival_univar,
+                    time_col_final, event_col_final,
+                    formula_patsy_univar, model_name_univar,
+                    terms_patsy_univar,
+                    formula_patsy_univar,
+                    penalizer_val, l1_ratio_val,
+                    model_type_for_fit_logic=model_type_selected,
+                    scaling_method_applied=scaling_method_applied,
+                    fitted_scaler_obj=fitted_scaler_obj,
+                    scaled_columns_info=scaled_columns_info
+                )
+                if model_result_univar and model_result_univar.get("model"):
+                    temp_models_data_univar.append(model_result_univar)
+                else:
+                    self.log(f"Orquestador (Univar): Modelo para '{cov_name_univar}' no se ajustó correctamente o no retornó resultados.", "WARN")
+
+            self.generated_models_data.extend(temp_models_data_univar)
+
+        elif model_type_selected == "Multivariado":
+            self.log("Orquestador: Iniciando modelado multivariado...", "INFO")
+
+            final_covs_for_multivar_model_orig_names = self._perform_variable_selection(
+                df_patsy_processed, X_design_initial, time_col_final, event_col_final, formula_patsy_initial, terms_patsy_initial
+            )
+
+            if not final_covs_for_multivar_model_orig_names and not (X_design_initial.empty and formula_patsy_initial == "0"):
+                self.log("Orquestador (Multivar): No quedaron covariables después de la selección de variables. Ajustando modelo nulo.", "INFO")
+                final_covs_for_multivar_model_orig_names = []
+
+            df_filtered_final_multi, X_design_final_multi, formula_patsy_final_multi, terms_patsy_final_multi = self.build_design_matrix(
+                df_patsy_processed, final_covs_for_multivar_model_orig_names, time_col_final, event_col_final
+            )
+
+            if X_design_final_multi is None or df_filtered_final_multi is None:
+                self.log("Orquestador (Multivar): Falló la reconstrucción de la matriz de diseño final. Abortando.", "ERROR")
+                return
+
+            y_survival_final_multi = df_filtered_final_multi[[time_col_final, event_col_final]]
+
+            if X_design_final_multi.empty and formula_patsy_final_multi != "0":
+                 self.log("Orquestador (Multivar): X_design final vacío y fórmula no nula. Abortando.", "ERROR")
+                 return
+            if y_survival_final_multi.empty:
+                 self.log("Orquestador (Multivar): y_survival final vacío. Abortando.", "ERROR")
+                 return
+
+            model_name_multivar = "Multivariado_Full"
+            if not final_covs_for_multivar_model_orig_names: model_name_multivar = "Multivariado_Nulo"
+
+            model_result_multivar = self._run_model_and_get_metrics(
+                df_filtered_final_multi, X_design_final_multi, y_survival_final_multi,
+                time_col_final, event_col_final,
+                formula_patsy_final_multi, model_name_multivar,
+                terms_patsy_final_multi,
+                formula_patsy_final_multi,
+                penalizer_val, l1_ratio_val,
+                model_type_for_fit_logic=model_type_selected,
+                scaling_method_applied=scaling_method_applied,
+                fitted_scaler_obj=fitted_scaler_obj,
+                scaled_columns_info=scaled_columns_info
+            )
+            if model_result_multivar and model_result_multivar.get("model"):
+                self.generated_models_data.append(model_result_multivar)
+            else:
+                self.log("Orquestador (Multivar): Modelo multivariado no se ajustó correctamente o no retornó resultados.", "WARN")
+
+        else:
+            messagebox.showerror("Error Interno", f"Tipo de modelo '{model_type_selected}' no reconocido.", parent=self.parent_for_dialogs)
+            self.log(f"Orquestador: Tipo de modelo desconocido '{model_type_selected}'.", "ERROR")
+            return
+
+        self._update_models_treeview()
+        if self.generated_models_data:
+            self.log(f"Orquestador: {len(self.generated_models_data)} modelo(s) generado(s) y añadido(s) a la lista.", "SUCCESS")
+            if hasattr(self, 'treeview_lista_modelos') and self.treeview_lista_modelos.get_children():
+                last_item_id = self.treeview_lista_modelos.get_children()[-1]
+                self.treeview_lista_modelos.selection_set(last_item_id)
+                self.treeview_lista_modelos.focus(last_item_id)
+                self.treeview_lista_modelos.see(last_item_id)
+        else:
+            self.log("Orquestador: No se generaron modelos válidos.", "WARN")
+
+        self.log("--- Finalizado Orquestador de Modelado Cox ---", "HEADER")
+
     def _preparar_datos_para_modelado(self):
         if self.data is None or self.data.empty:
             self.log("No hay datos cargados.", "WARN"); messagebox.showwarning("Sin Datos", "Cargue datos primero.", parent=self.parent_for_dialogs); return None, None, None, None, None, None, None, "Ninguna", None, []
