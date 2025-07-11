@@ -2131,6 +2131,67 @@ class CoxModelingApp(ttk.Frame):
             return
         EditModelDetailsDialog(self.parent_for_dialogs, self.selected_model_in_treeview, self)
 
+    def _on_model_select_from_treeview(self, event=None):
+        self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
+        selected_item_id = self.treeview_lista_modelos.focus()
+
+        if not selected_item_id:
+            self.selected_model_in_treeview = None
+            self.log("Ningún modelo seleccionado en Treeview.", "DEBUG")
+            if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
+            return
+
+        try:
+            item_values = self.treeview_lista_modelos.item(selected_item_id, 'values')
+            if not item_values:
+                self.selected_model_in_treeview = None
+                self.log("Error: Item seleccionado en Treeview no tiene valores.", "ERROR")
+                if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                     self.btn_oos_calibration.config(state=tk.DISABLED)
+                return
+
+            model_idx_str = item_values[0]
+            model_idx = int(model_idx_str) - 1
+
+            if 0 <= model_idx < len(self.generated_models_data):
+                self.selected_model_in_treeview = self.generated_models_data[model_idx]
+                self.log(f"Modelo seleccionado: '{self.selected_model_in_treeview.get('model_name', 'N/A')}'", "INFO")
+
+                if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                    oos_preds = self.selected_model_in_treeview.get("oos_predictions")
+                    c_index_cv = self.selected_model_in_treeview.get("metrics", {}).get("C-Index (CV Mean)")
+
+                    if oos_preds is not None and pd.notna(c_index_cv):
+                        self.btn_oos_calibration.config(state=tk.NORMAL)
+                        self.log("Botón OOS Calibración HABILITADO.", "DEBUG")
+                    else:
+                        self.btn_oos_calibration.config(state=tk.DISABLED)
+                        self.log(f"Botón OOS Calibración DESHABILITADO (oos_preds: {oos_preds is not None}, c_index_cv: {c_index_cv}).", "DEBUG")
+            else:
+                self.selected_model_in_treeview = None
+                self.log(f"Error: Índice de modelo '{model_idx_str}' fuera de rango.", "ERROR")
+                if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                     self.btn_oos_calibration.config(state=tk.DISABLED)
+
+        except ValueError:
+            self.selected_model_in_treeview = None
+            self.log(f"Error: No se pudo convertir el ID del item '{selected_item_id}' a índice numérico.", "ERROR")
+            if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
+        except Exception as e:
+            self.selected_model_in_treeview = None
+            self.log(f"Error al seleccionar modelo de Treeview: {e}", "ERROR")
+            traceback.print_exc(limit=2)
+            if hasattr(self, 'btn_oos_calibration') and self.btn_oos_calibration:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
+
+        # Explicitly call after selection logic to update UI based on (potentially) new selection
+        if hasattr(self, '_update_ui_after_model_selection'):
+            self._update_ui_after_model_selection()
+        elif hasattr(self, 'btn_oos_calibration') and not self.selected_model_in_treeview :
+             if self.btn_oos_calibration: self.btn_oos_calibration.config(state=tk.DISABLED)
+
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
         
