@@ -2460,6 +2460,22 @@ class CoxModelingApp(ttk.Frame):
                             parent=self.parent_for_dialogs)
         self.log("Mostrado mensaje 'Funcionalidad en Desarrollo' para Predicción.", "INFO")
 
+    def export_model_summary(self):
+        self.log("Funcionalidad 'Exportar Resumen' llamada.", "INFO")
+
+        if not self._check_model_selected_and_valid():
+            return
+
+        selected_model_name = self.selected_model_in_treeview.get('custom_model_name') or \
+                              self.selected_model_in_treeview.get('model_name', "Modelo Desconocido")
+
+        self.log(f"Exportar resumen solicitado para el modelo: {selected_model_name}.", "INFO")
+
+        messagebox.showinfo("Funcionalidad en Desarrollo",
+                            "La funcionalidad de exportar el resumen del modelo aún no está implementada completamente.",
+                            parent=self.parent_for_dialogs)
+        self.log("Mostrado mensaje 'Funcionalidad en Desarrollo' para Exportar Resumen.", "INFO")
+
     def _on_model_select_from_treeview(self, event=None):
         self.log("Selección en Treeview de Modelos cambió.", "DEBUG")
         selected_item_id = self.treeview_lista_modelos.focus()
