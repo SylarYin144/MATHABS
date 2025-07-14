@@ -1107,6 +1107,7 @@ class CoxModelingApp(ttk.Frame):
 
         # Variables de control para la UI (Pestaña 2: Modelado)
         self.cox_model_type_var = StringVar(value="Multivariado")  # "Univariado" | "Multivariado"
+        self.generate_univariate_forest_plot_var = BooleanVar(value=True) # <-- NUEVO
         # "Ninguno (usar todas)" | "Backward" | "Forward" | "Stepwise (Fwd luego Bwd)"
         self.var_selection_method_var = StringVar(value="Ninguno (usar todas)")
         # Umbral p-value para entrar (Forward/Stepwise)
@@ -1944,12 +1945,21 @@ class CoxModelingApp(ttk.Frame):
         # Tipo de Modelado
         frame_tipo_modelado = ttk.Frame(left_col_frame)
         frame_tipo_modelado.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").pack(side=tk.LEFT, padx=(0,5))
-        ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado").pack(side=tk.LEFT, padx=3)
-        ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado").pack(side=tk.LEFT, padx=3)
+        ttk.Label(frame_tipo_modelado, text="Tipo de Modelado:").grid(row=0, column=0, padx=(0,5), pady=3, sticky=tk.W)
+
+        radio_multi = ttk.Radiobutton(frame_tipo_modelado, text="Multivariado", variable=self.cox_model_type_var, value="Multivariado", command=self._toggle_univariate_forest_plot_cb)
+        radio_multi.grid(row=0, column=1, padx=3, pady=3, sticky=tk.W)
+
+        radio_uni = ttk.Radiobutton(frame_tipo_modelado, text="Univariado", variable=self.cox_model_type_var, value="Univariado", command=self._toggle_univariate_forest_plot_cb)
+        radio_uni.grid(row=0, column=2, padx=3, pady=3, sticky=tk.W)
+
+        # Checkbox para Forest Plot univariado
+        self.cb_univariate_forest_plot = ttk.Checkbutton(frame_tipo_modelado, text="Generar Forest Plot de Univariados", variable=self.generate_univariate_forest_plot_var)
+        self.cb_univariate_forest_plot.grid(row=1, column=1, columnspan=2, padx=20, pady=(5,0), sticky=tk.W)
+
 
         # Selección de Variables
-        frame_sel_vars = ttk.LabelFrame(left_col_frame, text="Selección de Variables (para Multivariado)")
+        self.frame_sel_vars = ttk.LabelFrame(left_col_frame, text="Selección de Variables (para Multivariado)")
         frame_sel_vars.pack(fill=tk.X, expand=True, pady=(0,10))
         
         grid_sel_vars = ttk.Frame(frame_sel_vars, padding=5)
@@ -2138,6 +2148,17 @@ class CoxModelingApp(ttk.Frame):
 
         self.log("Controles de Modelado Cox creados.", "DEBUG")
         self._toggle_penalization_params_ui_state() # Estado inicial de UI de penalización
+        self._toggle_univariate_forest_plot_cb() # Estado inicial del checkbox de Forest Plot
+
+    def _toggle_univariate_forest_plot_cb(self):
+        """Habilita o deshabilita el checkbox de Forest Plot univariado."""
+        if hasattr(self, 'cb_univariate_forest_plot'):
+            is_univariate = self.cox_model_type_var.get() == "Univariado"
+            self.cb_univariate_forest_plot.config(state=tk.NORMAL if is_univariate else tk.DISABLED)
+            # También controla la visibilidad del frame de selección de variables
+            if hasattr(self, 'frame_sel_vars'):
+                 self.frame_sel_vars.config(text="Selección de Variables" if is_univariate else "Selección de Variables (para Multivariado)")
+
 
     def _toggle_penalization_params_ui_state(self, event=None):
         pen_method = self.penalization_method_var.get()
@@ -3116,7 +3137,12 @@ class CoxModelingApp(ttk.Frame):
                             successful_fits += 1
                         else:
                             failed_fits += 1
-        
+
+            if self.generate_univariate_forest_plot_var.get() and temp_models_list_orch:
+                self.log("Generando Forest Plot para todos los modelos univariados...", "INFO")
+                # Llamar a una nueva función que se encargará de generar el gráfico
+                self._generate_univariate_forest_plot(temp_models_list_orch)
+
         elif model_type_ui == "Multivariado":
             self.log("Iniciando modelado Multivariado...", "INFO")
             df_multi_current = df_init_full 
@@ -4672,6 +4698,69 @@ class CoxModelingApp(ttk.Frame):
         report_full += "5. Conclusión General (Placeholder):\n   [Interprete hallazgos en contexto.]\n"
         ModelSummaryWindow(self.parent_for_dialogs, f"Reporte Metodológico: {name_rep}", report_full)
         self.log(f"Mostrando reporte metodológico para '{name_rep}'.", "INFO")
+
+    def _generate_univariate_forest_plot(self, univariate_models_data):
+        """Genera un Forest Plot a partir de una lista de modelos univariados."""
+        if not univariate_models_data:
+            self.log("No hay datos de modelos univariados para generar el Forest Plot.", "WARN")
+            return
+
+        plot_data = []
+        for model_dict in univariate_models_data:
+            summary_df = model_dict.get('metrics', {}).get('summary_df')
+            if summary_df is None or summary_df.empty:
+                continue
+
+            # Para univariados, el summary_df debería tener una sola fila.
+            # El nombre de la variable está en el índice.
+            var_name = summary_df.index[0]
+            hr = summary_df['exp(coef)'].iloc[0]
+            lower_ci = summary_df['exp(coef) lower 95%'].iloc[0]
+            upper_ci = summary_df['exp(coef) upper 95%'].iloc[0]
+            p_val = summary_df['p'].iloc[0]
+
+            plot_data.append({
+                'var_name': var_name,
+                'hr': hr,
+                'lower_ci': lower_ci,
+                'upper_ci': upper_ci,
+                'p_val': p_val
+            })
+
+        if not plot_data:
+            self.log("No se pudieron extraer datos de HR para el Forest Plot de univariados.", "WARN")
+            messagebox.showwarning("Sin Datos para Gráfico", "No se encontraron datos de Hazard Ratio en los modelos univariados para generar el gráfico.", parent=self.parent_for_dialogs)
+            return
+
+        df_plot = pd.DataFrame(plot_data)
+        df_plot.sort_values('hr', inplace=True) # Ordenar por HR ascendente por defecto
+
+        try:
+            fig, ax = plt.subplots(figsize=(10, max(4, len(df_plot) * 0.4)))
+            y_pos = np.arange(len(df_plot))
+
+            ax.errorbar(df_plot['hr'], y_pos, xerr=[df_plot['hr'] - df_plot['lower_ci'], df_plot['upper_ci'] - df_plot['hr']],
+                        fmt='o', capsize=5, color='k', ms=5, elinewidth=1.2)
+
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(df_plot['var_name'])
+            ax.invert_yaxis()
+            ax.axvline(1.0, color='gray', ls='--', lw=0.8)
+
+            opts = self.current_plot_options.copy()
+            opts['title'] = opts.get('title') or "Forest Plot de Análisis Univariado"
+            opts['xlabel'] = opts.get('xlabel') or "Hazard Ratio (HR) con IC 95%"
+
+            apply_plot_options(ax, opts, self.log)
+            plt.tight_layout()
+
+            self._create_plot_window(fig, "Forest Plot Univariado")
+            self.log("Forest Plot de modelos univariados generado exitosamente.", "SUCCESS")
+
+        except Exception as e:
+            self.log(f"Error generando Forest Plot de univariados: {e}", "ERROR")
+            traceback.print_exc(limit=3)
+            messagebox.showerror("Error de Gráfico", f"No se pudo generar el Forest Plot de univariados:\n{e}", parent=self.parent_for_dialogs)
 
 
     def show_new_calibration_plots(self):
