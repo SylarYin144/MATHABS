@@ -1960,9 +1960,9 @@ class CoxModelingApp(ttk.Frame):
 
         # Selección de Variables
         self.frame_sel_vars = ttk.LabelFrame(left_col_frame, text="Selección de Variables (para Multivariado)")
-        frame_sel_vars.pack(fill=tk.X, expand=True, pady=(0,10))
+        self.frame_sel_vars.pack(fill=tk.X, expand=True, pady=(0,10))
         
-        grid_sel_vars = ttk.Frame(frame_sel_vars, padding=5)
+        grid_sel_vars = ttk.Frame(self.frame_sel_vars, padding=5)
         grid_sel_vars.pack(fill=tk.X)
         ttk.Label(grid_sel_vars, text="Método:").grid(row=0, column=0, padx=5, pady=3, sticky=tk.W)
         metodos_sel = ["Ninguno (usar todas)", "Backward", "Forward", "Stepwise (Fwd luego Bwd)"]
