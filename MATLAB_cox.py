@@ -1801,6 +1801,7 @@ class CoxModelingApp(ttk.Frame):
         # Re-actualizar la UI de configuración para reflejar los cambios,
         # especialmente si la selección actual es una de las modificadas.
         self.on_covariate_select_for_config()
+        self.log(f"Current spline_config_details after apply: {self.spline_config_details}", "DEBUG")
 
 
     def convert_to_log_transform(self):
