@@ -379,7 +379,8 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             spline_degree_var = tk.IntVar(value=3) # Default cúbico
             self.row_configs[cov_name]['spline_degree_var'] = spline_degree_var
             # Grados comunes: 1 (lineal), 2 (cuadrático), 3 (cúbico)
-            spline_degree_spinbox = ttk.Spinbox(row_labelframe, from_=1, to=5, textvariable=spline_degree_var, width=5, state="disabled")
+            spline_degree_spinbox = ttk.Spinbox(row_labelframe, from_=1, to=5, textvariable=spline_degree_var, width=5,
+                                                state="disabled", command=lambda c=cov_name: self._validate_df_vs_degree_detailed(c))
             spline_degree_spinbox.grid(row=5, column=1, sticky=tk.W, padx=5)
             self.row_configs[cov_name]['spline_degree_spinbox'] = spline_degree_spinbox
 
@@ -482,6 +483,32 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             # reseteamos la variable de grado a 3.
             # Esto es importante si se cambia de B-spline a Natural.
             config['spline_degree_var'].set(3)
+
+        self._validate_df_vs_degree_detailed(cov_name)
+
+    def _validate_df_vs_degree_detailed(self, cov_name):
+        """Valida que df > degree en una fila específica del diálogo detallado."""
+        if cov_name not in self.row_configs:
+            return
+
+        config = self.row_configs[cov_name]
+        if not all(key in config for key in ['spline_df_var', 'spline_degree_var', 'spline_df_spinbox']):
+            return # Widgets no listos
+
+        try:
+            current_degree = config['spline_degree_var'].get()
+            current_df = config['spline_df_var'].get()
+
+            # Actualizar el rango mínimo del spinbox de df
+            config['spline_df_spinbox'].config(from_=current_degree + 1)
+
+            if current_df <= current_degree:
+                config['spline_df_var'].set(current_degree + 1)
+                self.app_instance.log(f"UI INFO (Detailed): Para '{cov_name}', se ajustó 'df' a {current_degree + 1} porque debe ser mayor que 'degree' ({current_degree}).", "DEBUG")
+        except (tk.TclError, ValueError):
+            # Puede pasar si el widget está siendo creado o el valor es temporalmente inválido
+            pass
+
 
     def apply_configurations(self):
         self.app_instance.log("Aplicando configuraciones detalladas de covariables...", "INFO")
@@ -1316,7 +1343,9 @@ class CoxModelingApp(ttk.Frame):
         # NUEVO: Spinbox para grado del B-spline en el panel simple
         ttk.Label(subframe_spline_detalles, text="  Grado (B-spline):").pack(side=tk.LEFT, padx=(15, 5))
         self.var_degree_spline_seleccionada = IntVar(value=3) # Default cúbico
-        self.spinbox_degree_spline = ttk.Spinbox(subframe_spline_detalles, from_=1, to=5, textvariable=self.var_degree_spline_seleccionada, width=5, state="disabled")
+        self.spinbox_degree_spline = ttk.Spinbox(subframe_spline_detalles, from_=1, to=5,
+                                                 textvariable=self.var_degree_spline_seleccionada, width=5,
+                                                 state="disabled", command=self._validate_df_vs_degree_simple)
         self.spinbox_degree_spline.pack(side=tk.LEFT, padx=5)
 
         # Botón para aplicar configuración de covariables
@@ -1709,6 +1738,26 @@ class CoxModelingApp(ttk.Frame):
              # Si es Natural Spline, el grado no es aplicable, resetear/fijar a 3 (aunque no se use directamente)
             self.var_degree_spline_seleccionada.set(3)
 
+        self._validate_df_vs_degree_simple()
+
+    def _validate_df_vs_degree_simple(self):
+        """Valida que df > degree en el panel de configuración simple."""
+        if not all(hasattr(self, attr) for attr in ['var_df_spline_seleccionada', 'var_degree_spline_seleccionada', 'spinbox_df_spline']):
+            return # Widgets no listos
+
+        try:
+            current_degree = self.var_degree_spline_seleccionada.get()
+            current_df = self.var_df_spline_seleccionada.get()
+
+            # Actualizar el rango mínimo del spinbox de df
+            self.spinbox_df_spline.config(from_=current_degree + 1)
+
+            if current_df <= current_degree:
+                self.var_df_spline_seleccionada.set(current_degree + 1)
+                self.log(f"UI INFO: Se ajustó 'df' a {current_degree + 1} porque debe ser mayor que 'degree' ({current_degree}).", "DEBUG")
+        except (tk.TclError, ValueError):
+            # Esto puede pasar si el widget está siendo creado o el valor es temporalmente inválido
+            pass
 
     def apply_covariate_config_to_selected(self):
         """Aplica la configuración de tipo, spline o categoría de referencia a las covariables seleccionadas."""
@@ -2336,14 +2385,12 @@ class CoxModelingApp(ttk.Frame):
                     elif spline_type == 'B-spline':
                         patsy_func_bd = 'bs'
                         spline_degree = spl_cfg_bd.get('degree', 3)
-                        # Check for df > degree, which is a requirement for patsy's bs when df is used to determine knots.
-                        # If df <= degree, patsy would raise an error.
-                        # A simple adjustment if invalid: make df = degree + 1, or log error and skip spline.
+                        # Validate that df > degree for B-splines
                         if spline_df <= spline_degree:
-                            self.log(f"WARN: B-spline df ({spline_df}) must be greater than degree ({spline_degree}) for variable '{orig_cov_name_bd}'. Adjusting df to {spline_degree + 1}.", "WARN")
-                            spline_df = spline_degree + 1
+                            raise ValueError(f"Configuración de B-spline inválida para '{orig_cov_name_bd}': "
+                                             f"'df' ({spline_df}) debe ser estrictamente mayor que 'degree' ({spline_degree}).")
                         term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
-                    else: # Fallback for unknown spline type, treat as quantitative without spline
+                    else: # Fallback for unknown spline type
                         term_syntax_bd = f"Q('{orig_cov_name_bd}')"
                         self.log(f"WARN: Tipo de spline desconocido '{spline_type}' para '{orig_cov_name_bd}'. Tratada como cuantitativa normal.", "WARN")
                 else: # No spline config for this quantitative var
