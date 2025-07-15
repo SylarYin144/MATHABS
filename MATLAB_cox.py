@@ -2356,10 +2356,6 @@ class CoxModelingApp(ttk.Frame):
                     elif spline_type == 'B-spline':
                         patsy_func_bd = 'bs'
                         spline_degree = spl_cfg_bd.get('degree', 3)
-                        # Validate that df > degree for B-splines
-                        if spline_df <= spline_degree:
-                            raise ValueError(f"Configuración de B-spline inválida para '{orig_cov_name_bd}': "
-                                             f"'df' ({spline_df}) debe ser estrictamente mayor que 'degree' ({spline_degree}).")
                         term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
                     else: # Fallback for unknown spline type
                         term_syntax_bd = f"Q('{orig_cov_name_bd}')"
@@ -2683,28 +2679,25 @@ class CoxModelingApp(ttk.Frame):
                             # A common interpretation: df = number of knots (including boundary) + degree - 1
                             # Or, if df is number of basis functions, number of knots = df - degree + 1 (for B-splines, including boundary knots)
                             # Patsy's `df` for `bs` means "produce a basis matrix with this many columns".
-                            # The number of interior knots is `df - degree - 1`. Must be >= 0.
+                            # The number of interior knots is `df - degree - 1`.
                             num_interior_knots = df - degree - 1
 
                             knots = []
-                            if num_interior_knots >= 0: # If 0, only boundary knots are used by patsy if knots=[]
-                                # Define percentiles for interior knots
-                                # np.linspace(0, 100, num_interior_knots + 2) gives num_interior_knots+2 points, e.g., [0, 50, 100] for 1 knot
-                                # [1:-1] slices off 0 and 100 for interior knots
+                            if num_interior_knots >= 0:
+                                # Define percentiles for interior knots if num_interior_knots > 0
                                 if num_interior_knots > 0:
                                     percentiles = np.linspace(0, 100, num_interior_knots + 2)[1:-1]
                                     knots = np.percentile(data_series, percentiles).tolist()
                                     self.log(f"CV C-Index: Calculated {len(knots)} interior knots for '{var_name}' (df={df}, degree={degree}): {knots}", "DEBUG")
                                 else: # num_interior_knots == 0
-                                     self.log(f"CV C-Index: Using boundary knots only for '{var_name}' (df={df}, degree={degree}, num_interior_knots=0).", "DEBUG")
-                                     knots = [] # Patsy will use boundary knots
+                                    self.log(f"CV C-Index: Using boundary knots only for '{var_name}' (df={df}, degree={degree}, num_interior_knots=0).", "DEBUG")
+                                    knots = [] # Patsy will use boundary knots
 
                                 # Construct new bs term with explicit knots
-                                # include_intercept=False is patsy's default for bs when used in formulas like "0 + ..."
                                 new_bs_term = f"bs(Q('{var_name}'), knots={knots}, degree={degree}, include_intercept=False)"
                                 modified_bs_terms[original_term] = new_bs_term
-                            else: # df <= degree, this configuration is problematic for bs
-                                self.log(f"CV C-Index: Configuration for bs(Q('{var_name}'), df={df}, degree={degree}) is invalid (df must be > degree). Skipping explicit knot generation for this term in CV formula. This might lead to errors in folds if patsy also rejects it.", "WARN")
+                            else: # df <= degree
+                                self.log(f"CV C-Index: Configuration for bs(Q('{var_name}'), df={df}, degree={degree}) has df <= degree. Skipping explicit knot generation. Patsy will handle it.", "WARN")
                         else:
                             self.log(f"CV C-Index: Variable '{var_name}' for B-spline not found in df_lifelines_rm. Cannot calculate knots.", "WARN")
 
