@@ -1246,13 +1246,13 @@ class RegresionesTab(ttk.Frame):
             except Exception as e_corr: self.log_message(f"Error calculando correlación global: {e_corr}")
 
         if show_info:
-            n_tot_plot = len(overall_scatter_x) 
-            filtros_usados = []
-            for cmb_w, entry_w in [(self.cmb_filter1, self.entry_filter1), (self.cmb_filter2, self.entry_filter2), 
-                                   (self.cmb_filter_qual1, self.entry_filter_qual1), (self.cmb_filter_qual2, self.entry_filter_qual2)]:
-                if cmb_w.get() and entry_w.get(): filtros_usados.append(f"{cmb_w.get()}: {entry_w.get()}")
+            n_tot_plot = len(overall_scatter_x)
             info_str = f"n (puntos graficados) = {n_tot_plot}"
-            if filtros_usados: info_str += "\nFiltros: " + "; ".join(filtros_usados)
+            # La obtención de filtros se hará con el nuevo componente
+            if hasattr(self, 'filter_component') and self.filter_component:
+                active_filters_desc = self.filter_component.get_active_filters_description()
+                if active_filters_desc:
+                    info_str += "\nFiltros: " + active_filters_desc
             ax.annotate(info_str, xy=(0.98, 0.98), xycoords="axes fraction", fontsize=max(6,txt_size-2), ha="right", va="top", bbox=dict(boxstyle="round,pad=0.3", fc="aliceblue", alpha=0.7))
 
         handles, labels = ax.get_legend_handles_labels()

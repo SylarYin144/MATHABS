@@ -442,6 +442,43 @@ class FilterComponent(ttk.Frame):
 
         return df_filtered
 
+    def get_active_filters_description(self):
+        """
+        Retorna una cadena de texto describiendo los filtros activos.
+        """
+        active_filters_summary = []
+        for widgets in self.filter_conditions:
+            col_name = widgets["col_combo"].get()
+            controls = widgets["specific_controls"]
+            if not col_name or not controls:
+                continue
+
+            control_type = controls.get("type")
+            summary_parts = []
+
+            if control_type == "categorical":
+                selected_indices = controls["listbox"].curselection()
+                if selected_indices:
+                    selected_values = [controls["listbox"].get(i) for i in selected_indices]
+                    summary_parts.append(f"IN ({','.join(selected_values)})")
+            elif control_type == "numeric" or control_type == "date":
+                val_from_str = controls["from"].get().strip()
+                val_to_str = controls["to"].get().strip()
+                if val_from_str: summary_parts.append(f">= {val_from_str}")
+                if val_to_str: summary_parts.append(f"<= {val_to_str}")
+            elif control_type == "text":
+                operator = controls["op_combo"].get()
+                value_str = controls["value_entry"].get()
+                if operator in ["es vacío", "no es vacío"]:
+                    summary_parts.append(operator)
+                elif value_str:
+                    summary_parts.append(f"{operator} '{value_str}'")
+
+            if summary_parts:
+                active_filters_summary.append(f"{col_name}: {' y '.join(summary_parts)}")
+
+        return "; ".join(active_filters_summary)
+
     def log(self, message, level="INFO"):
         """Placeholder para logging. Integrar con sistema de log principal si existe."""
         print(f"[{level}] FilterComponent: {message}")
