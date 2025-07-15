@@ -1067,7 +1067,7 @@ class RegresionesTab(ttk.Frame):
             return
 
         title_text = self.entry_title.get().strip() or f"Regresión de {dep_display} sobre Variables Seleccionadas"
-        xlabel_text_base = self.entry_xlabel.get().strip() 
+        xlabel_text = self.entry_xlabel.get().strip()
         ylabel_text = self.entry_ylabel.get().strip() or dep_display
         title_sz = int(self.entry_title_size.get())
         # title_col = self.entry_title_color.get().strip() # No existe este widget en la UI actual
