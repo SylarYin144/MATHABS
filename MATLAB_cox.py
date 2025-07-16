@@ -4732,53 +4732,122 @@ class CoxModelingApp(ttk.Frame):
             vif_data["VIF"] = [variance_inflation_factor(X_design.values, i) for i in range(X_design.shape[1])]
             vif_data.sort_values("VIF", ascending=False, inplace=True)
             self.log(f"VIF calculado para {len(vif_data)} características.", "DEBUG")
+
+            # Calcular matrices de correlación
+            pearson_corr = X_design.corr(method='pearson')
+            spearman_corr = X_design.corr(method='spearman')
+            self.log("Matrices de correlación de Pearson y Spearman calculadas.", "DEBUG")
+
         except Exception as e:
-            self.log(f"Error calculando VIF: {e}", "ERROR")
-            messagebox.showerror("Error de Cálculo", f"No se pudo calcular el VIF:\n{e}", parent=self.parent_for_dialogs)
+            self.log(f"Error calculando diagnósticos de colinealidad: {e}", "ERROR")
+            messagebox.showerror("Error de Cálculo", f"No se pudo completar el diagnóstico de colinealidad:\n{e}", parent=self.parent_for_dialogs)
             return
 
         # Crear ventana emergente para mostrar los resultados
         popup = Toplevel(self.parent_for_dialogs)
-        popup.title(f"Diagnóstico de Colinealidad (VIF) - {model_name}")
-        popup.geometry("550x450")
+        popup.title(f"Diagnóstico de Colinealidad - {model_name}")
+        popup.geometry("700x550")
         popup.transient(self.parent_for_dialogs)
         popup.grab_set()
 
-        main_frame = ttk.Frame(popup, padding="10")
-        main_frame.pack(fill="both", expand=True)
+        # Crear Notebook para las pestañas
+        notebook = ttk.Notebook(popup)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Explicación
+        # --- Pestaña VIF ---
+        vif_tab = ttk.Frame(notebook)
+        notebook.add(vif_tab, text="VIF")
+
+        # Explicación VIF
         explanation_text = ("El Factor de Inflación de la Varianza (VIF) mide la multicolinealidad entre las variables predictoras en un modelo de regresión.\n\n"
                             "Interpretación general:\n"
                             " • VIF = 1: No hay correlación.\n"
                             " • 1 < VIF < 5: Correlación moderada.\n"
                             " • VIF > 5 ó 10: Correlación alta, puede ser problemática.")
-        ttk.Label(main_frame, text=explanation_text, wraplength=500, justify="left").pack(pady=(0, 10), anchor="w")
+        ttk.Label(vif_tab, text=explanation_text, wraplength=650, justify="left").pack(pady=10, padx=10, anchor="w")
 
-        # Tabla de resultados
-        tree_frame = ttk.Frame(main_frame)
-        tree_frame.pack(fill="both", expand=True)
+        # Tabla VIF
+        vif_tree_frame = ttk.Frame(vif_tab)
+        vif_tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        cols = ("Variable", "VIF")
-        tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        tree.heading("Variable", text="Variable del Modelo")
-        tree.heading("VIF", text="Valor VIF")
-        tree.column("Variable", width=350)
-        tree.column("VIF", width=100, anchor="e")
+        vif_cols = ("Variable", "VIF")
+        vif_tree = ttk.Treeview(vif_tree_frame, columns=vif_cols, show="headings")
+        vif_tree.heading("Variable", text="Variable del Modelo")
+        vif_tree.heading("VIF", text="Valor VIF")
+        vif_tree.column("Variable", width=400)
+        vif_tree.column("VIF", width=100, anchor="e")
+
+        vif_tree.tag_configure('high_corr', background='salmon')
+        vif_tree.tag_configure('mod_corr', background='khaki')
 
         for index, row in vif_data.iterrows():
             vif_value = f"{row['VIF']:.3f}"
-            tree.insert("", "end", values=(row["feature"], vif_value))
+            tags = ()
+            if row['VIF'] > 10:
+                tags = ('high_corr',)
+            elif row['VIF'] > 5:
+                tags = ('mod_corr',)
+            vif_tree.insert("", "end", values=(row["feature"], vif_value), tags=tags)
+
+        vif_ysb = ttk.Scrollbar(vif_tree_frame, orient="vertical", command=vif_tree.yview)
+        vif_xsb = ttk.Scrollbar(vif_tree_frame, orient="horizontal", command=vif_tree.xview)
+        vif_tree.configure(yscrollcommand=vif_ysb.set, xscrollcommand=vif_xsb.set)
+        vif_ysb.pack(side="right", fill="y")
+        vif_xsb.pack(side="bottom", fill="x")
+        vif_tree.pack(fill="both", expand=True)
+
+        # --- Pestaña Correlación Pearson ---
+        pearson_tab = ttk.Frame(notebook)
+        notebook.add(pearson_tab, text="Correlación Pearson")
+
+        # --- Pestaña Correlación Pearson ---
+        pearson_tab = ttk.Frame(notebook)
+        notebook.add(pearson_tab, text="Correlación Pearson")
+        self._populate_correlation_matrix_tab(pearson_tab, pearson_corr, "Pearson")
+
+        # --- Pestaña Correlación Spearman ---
+        spearman_tab = ttk.Frame(notebook)
+        notebook.add(spearman_tab, text="Correlación Spearman")
+        self._populate_correlation_matrix_tab(spearman_tab, spearman_corr, "Spearman")
+
+
+        ttk.Button(popup, text="Cerrar", command=popup.destroy).pack(pady=10)
+
+    def _populate_correlation_matrix_tab(self, tab, corr_matrix, corr_type):
+        """Crea y llena un Treeview para una matriz de correlación en una pestaña dada."""
+        label = ttk.Label(tab, text=f"Matriz de Correlación de {corr_type}. Valores |r| > 0.7 resaltados.", wraplength=650)
+        label.pack(pady=10, padx=10)
+
+        tree_frame = ttk.Frame(tab)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        columns = ["Variable"] + list(corr_matrix.columns)
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+
+        tree.heading("Variable", text="Variable")
+        tree.column("Variable", width=120, anchor="w", stretch=False)
+        for col in corr_matrix.columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=80, anchor="e", stretch=True)
+
+        # Tags para coloreado
+        tree.tag_configure('high_corr', background='salmon')
+        tree.tag_configure('perfect_corr', background='lightgrey')
+
+        for index, row in corr_matrix.iterrows():
+            values = [index] + [f"{val:.3f}" for val in row]
+            # Determinar si alguna correlación en la fila es alta (excluyendo la diagonal)
+            has_high_corr = any(abs(val) > 0.7 and abs(val) < 1.0 for val in row)
+            tags = ('high_corr',) if has_high_corr else ()
+            tree.insert("", "end", values=values, tags=tags)
 
         ysb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         xsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
-
         ysb.pack(side="right", fill="y")
         xsb.pack(side="bottom", fill="x")
         tree.pack(fill="both", expand=True)
 
-        ttk.Button(main_frame, text="Cerrar", command=popup.destroy).pack(pady=(10,0))
 
     def _generate_univariate_forest_plot(self, univariate_models_data):
         """Genera un Forest Plot a partir de una lista de modelos univariados."""
