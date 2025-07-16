@@ -36,6 +36,7 @@ matplotlib.use('TkAgg')  # Backend para Tkinter
 
 # --- Importaciones de Lifelines ---
 from lifelines.exceptions import ConvergenceError
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 # check_assumptions lo reemplaza en gran medida
 
 try:
@@ -1102,6 +1103,7 @@ class CoxModelingApp(ttk.Frame):
         # Diccionario del modelo seleccionado en la Treeview
         self.selected_model_in_treeview = None
         self.btn_oos_calibration = None
+        self.btn_collinearity_diag = None # <-- NUEVO
         self.entry_custom_model_name = None # Placeholder for custom name Entry
         self.text_custom_model_notes = None # Placeholder for custom notes Text
 
@@ -2096,7 +2098,8 @@ class CoxModelingApp(ttk.Frame):
         acciones_config_btns = [
             ("Ver Resumen", self.show_selected_model_summary),
             ("Generar Gráficos Cox", self.open_graph_selection_dialog),
-            ("Calibración OOS (CV)", self.show_new_calibration_plots), # New OOS Calibration button
+            ("Calibración OOS (CV)", self.show_new_calibration_plots),
+            ("Diagnóstico de Colinealidad", self._calculate_and_show_vif), # <-- NUEVO
             ("Predicción", self.realizar_prediccion),
             ("Exportar Resumen", self.export_model_summary),
             ("Guardar Modelo", self.save_model),
@@ -2105,7 +2108,7 @@ class CoxModelingApp(ttk.Frame):
         ]
         
         # Layout dinámico para botones de acción
-        max_btns_per_row = 6 # Adjust as needed, maybe 4 or 5 now with more buttons
+        max_btns_per_row = 5 # Ajustado para mejor layout
         current_row_frame_acciones = None
         for i, (text, cmd) in enumerate(acciones_config_btns):
             if i % max_btns_per_row == 0:
@@ -2117,9 +2120,13 @@ class CoxModelingApp(ttk.Frame):
 
             if text == "Calibración OOS (CV)":
                 self.btn_oos_calibration = button_widget
+            elif text == "Diagnóstico de Colinealidad": # <-- NUEVO
+                self.btn_collinearity_diag = button_widget
 
         if self.btn_oos_calibration:
             self.btn_oos_calibration.config(state=tk.DISABLED)
+        if self.btn_collinearity_diag: # <-- NUEVO
+            self.btn_collinearity_diag.config(state=tk.DISABLED)
 
         # Add the new button row for clear models
         clear_models_frame = ttk.Frame(frame_acciones)
@@ -3255,6 +3262,14 @@ class CoxModelingApp(ttk.Frame):
                 self.btn_oos_calibration.config(state=tk.NORMAL)
             else:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
+
+        if self.btn_collinearity_diag: # <-- NUEVO
+            can_run_vif = False
+            if self.selected_model_in_treeview:
+                x_design = self.selected_model_in_treeview.get("X_design_used_for_fit")
+                if x_design is not None and isinstance(x_design, pd.DataFrame) and x_design.shape[1] > 1:
+                    can_run_vif = True
+            self.btn_collinearity_diag.config(state=tk.NORMAL if can_run_vif else tk.DISABLED)
 
         self._update_results_buttons_state()
 
@@ -4691,6 +4706,79 @@ class CoxModelingApp(ttk.Frame):
         report_full += "5. Conclusión General (Placeholder):\n   [Interprete hallazgos en contexto.]\n"
         ModelSummaryWindow(self.parent_for_dialogs, f"Reporte Metodológico: {name_rep}", report_full)
         self.log(f"Mostrando reporte metodológico para '{name_rep}'.", "INFO")
+
+    def _calculate_and_show_vif(self):
+        """Calcula y muestra el Factor de Inflación de Varianza (VIF) para el modelo seleccionado."""
+        if not self._check_model_selected_and_valid():
+            return
+
+        model_dict = self.selected_model_in_treeview
+        model_name = model_dict.get('model_name', 'N/A')
+        self.log(f"Iniciando cálculo de VIF para modelo: '{model_name}'", "INFO")
+
+        X_design = model_dict.get("X_design_used_for_fit")
+
+        if X_design is None or not isinstance(X_design, pd.DataFrame) or X_design.shape[1] <= 1:
+            messagebox.showinfo("No Aplicable",
+                                "El diagnóstico de colinealidad (VIF) solo es aplicable a modelos multivariados con más de una variable.",
+                                parent=self.parent_for_dialogs)
+            self.log("Cálculo de VIF no aplicable (no es multivariado > 1 var).", "INFO")
+            return
+
+        # Calcular VIF
+        try:
+            vif_data = pd.DataFrame()
+            vif_data["feature"] = X_design.columns
+            vif_data["VIF"] = [variance_inflation_factor(X_design.values, i) for i in range(X_design.shape[1])]
+            vif_data.sort_values("VIF", ascending=False, inplace=True)
+            self.log(f"VIF calculado para {len(vif_data)} características.", "DEBUG")
+        except Exception as e:
+            self.log(f"Error calculando VIF: {e}", "ERROR")
+            messagebox.showerror("Error de Cálculo", f"No se pudo calcular el VIF:\n{e}", parent=self.parent_for_dialogs)
+            return
+
+        # Crear ventana emergente para mostrar los resultados
+        popup = Toplevel(self.parent_for_dialogs)
+        popup.title(f"Diagnóstico de Colinealidad (VIF) - {model_name}")
+        popup.geometry("550x450")
+        popup.transient(self.parent_for_dialogs)
+        popup.grab_set()
+
+        main_frame = ttk.Frame(popup, padding="10")
+        main_frame.pack(fill="both", expand=True)
+
+        # Explicación
+        explanation_text = ("El Factor de Inflación de la Varianza (VIF) mide la multicolinealidad entre las variables predictoras en un modelo de regresión.\n\n"
+                            "Interpretación general:\n"
+                            " • VIF = 1: No hay correlación.\n"
+                            " • 1 < VIF < 5: Correlación moderada.\n"
+                            " • VIF > 5 ó 10: Correlación alta, puede ser problemática.")
+        ttk.Label(main_frame, text=explanation_text, wraplength=500, justify="left").pack(pady=(0, 10), anchor="w")
+
+        # Tabla de resultados
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill="both", expand=True)
+
+        cols = ("Variable", "VIF")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
+        tree.heading("Variable", text="Variable del Modelo")
+        tree.heading("VIF", text="Valor VIF")
+        tree.column("Variable", width=350)
+        tree.column("VIF", width=100, anchor="e")
+
+        for index, row in vif_data.iterrows():
+            vif_value = f"{row['VIF']:.3f}"
+            tree.insert("", "end", values=(row["feature"], vif_value))
+
+        ysb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        xsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+
+        ysb.pack(side="right", fill="y")
+        xsb.pack(side="bottom", fill="x")
+        tree.pack(fill="both", expand=True)
+
+        ttk.Button(main_frame, text="Cerrar", command=popup.destroy).pack(pady=(10,0))
 
     def _generate_univariate_forest_plot(self, univariate_models_data):
         """Genera un Forest Plot a partir de una lista de modelos univariados."""
