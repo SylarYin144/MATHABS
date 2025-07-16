@@ -29,6 +29,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox # Añadir messagebox
 import shutil
 import traceback # Añadido para logging
+from patsy import dmatrix
 
 # Importar el componente de filtro
 try:
@@ -793,6 +794,8 @@ class RegresionesTab(ttk.Frame):
         self.var_power = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Potencia", variable=self.var_power).grid(row=0, column=3, padx=2, pady=2, sticky="w")
         self.var_log = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Logarítmica", variable=self.var_log).grid(row=0, column=4, padx=2, pady=2, sticky="w")
         self.var_loess = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="LOESS", variable=self.var_loess).grid(row=0, column=5, padx=2, pady=2, sticky="w")
+        self.var_inverse = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Inversa (1/X)", variable=self.var_inverse).grid(row=1, column=0, padx=2, pady=2, sticky="w")
+        self.var_rcs = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Splines (RCS)", variable=self.var_rcs).grid(row=1, column=1, padx=2, pady=2, sticky="w")
         
         frm_otros = ttk.LabelFrame(container, text="Otros Modelos (Solo Resumen)")
         frm_otros.pack(fill="x", padx=10, pady=5)
@@ -1173,6 +1176,47 @@ class RegresionesTab(ttk.Frame):
                     self.log_message(f"plot_regression: Modelo LOESS para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e: self.log_message(f"Error LOESS ({indep_display}): {e}", "ERROR")
             
+            if self.var_inverse.get():
+                self.log_message(f"plot_regression: Intentando modelo Inverso para VI '{indep_display}'.", "DEBUG")
+                mask_i = x != 0
+                if mask_i.sum() > 2:
+                    xi, yi = x[mask_i], y[mask_i]
+                    try:
+                        X_inv = sm.add_constant(1 / xi)
+                        mod_inv = sm.OLS(yi, X_inv).fit()
+                        a_inv, b_inv = mod_inv.params
+                        yhat_inv = mod_inv.predict(X_inv)
+                        p_inv, pp_inv = safe_pearson(yi, yhat_inv)
+                        s_inv, ps_inv = safe_spearman(yi, yhat_inv)
+                        r2_inv = mod_inv.rsquared
+                        results_list.append({"model": "Inverso", "var": indep_display, "dep_var": dep_display, "r": p_inv, "r2": r2_inv, "formula": f"{dep_display}={a_inv:.2f}+{b_inv:.2f}/({indep_display})\nP:{p_inv:.3f}(p={fmt_p(pp_inv)}) S:{s_inv:.3f}(p={fmt_p(ps_inv)})"})
+                        x_sorted_inv = np.sort(xi)
+                        ax.plot(x_sorted_inv, a_inv + b_inv / x_sorted_inv, linestyle="-", color=current_color, label=f"{indep_display} Inv (R²={r2_inv:.3f})")
+                        self.log_message(f"plot_regression: Modelo Inverso para VI '{indep_display}' ajustado.", "DEBUG")
+                    except Exception as e_inv: self.log_message(f"Error Inverso ({indep_display}): {e_inv}", "ERROR")
+                else:
+                    self.log_message(f"plot_regression: No suficientes datos (x!=0) para modelo Inverso VI '{indep_display}'.", "WARN")
+
+            if self.var_rcs.get():
+                self.log_message(f"plot_regression: Intentando modelo Splines (RCS) para VI '{indep_display}'.", "DEBUG")
+                try:
+                    # Usar 4 nudos por defecto, que es un buen punto de partida.
+                    # dmatrix creará una matriz de diseño con la base del spline.
+                    X_rcs = dmatrix(f"cr(x, df=4)", {"x": x}, return_type='dataframe')
+                    mod_rcs = sm.OLS(y, X_rcs).fit()
+                    yhat_rcs = mod_rcs.predict(dmatrix(f"cr(x_sorted, df=4)", {"x_sorted": x_sorted}, return_type='dataframe'))
+
+                    p_rcs, pp_rcs = safe_pearson(y, mod_rcs.predict(X_rcs))
+                    s_rcs, ps_rcs = safe_spearman(y, mod_rcs.predict(X_rcs))
+                    r2_rcs = mod_rcs.rsquared_adj # Usar R^2 ajustado para splines es a menudo mejor
+
+                    results_list.append({"model": "Spline (RCS, df=4)", "var": indep_display, "dep_var": dep_display, "r": p_rcs, "r2": r2_rcs, "formula": f"Spline Cúbico Restringido (df=4)\nP:{p_rcs:.3f}(p={fmt_p(pp_rcs)}) S:{s_rcs:.3f}(p={fmt_p(ps_rcs)})"})
+                    ax.plot(x_sorted, yhat_rcs, linestyle="--", color=current_color, label=f"{indep_display} RCS (R²adj={r2_rcs:.3f})")
+                    self.log_message(f"plot_regression: Modelo Spline (RCS) para VI '{indep_display}' ajustado.", "DEBUG")
+                except Exception as e_rcs:
+                    self.log_message(f"Error en modelo Spline (RCS) ({indep_display}): {e_rcs}", "ERROR")
+                    traceback.print_exc(limit=2)
+
             other_models_to_fit = []
             if self.var_exp1.get(): other_models_to_fit.append(("Exp (a+b^x)", exp_model1))
             if self.var_exp2.get(): other_models_to_fit.append(("Exp (a+x^b)", exp_model2))
