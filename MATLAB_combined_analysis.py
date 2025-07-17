@@ -621,7 +621,13 @@ class CombinedAnalysisTab(ttk.Frame):
             'xtick.color': font_color,
             'ytick.color': font_color,
             'axes.edgecolor': font_color, 
-            'axes.titlecolor': font_color 
+            'axes.titlecolor': font_color,
+            'axes.labelsize': font_size,
+            'axes.titlesize': font_size,
+            'xtick.labelsize': font_size,
+            'ytick.labelsize': font_size,
+            'legend.fontsize': font_size,
+            'figure.titlesize': font_size
         })
 
         fig, ax = plt.subplots(figsize=(fig_width_in, fig_height_in), dpi=dpi)
