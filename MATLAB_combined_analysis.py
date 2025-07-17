@@ -191,7 +191,7 @@ class CombinedAnalysisTab(ttk.Frame):
         current_row += 2 # 2 filas para los labels
 
         # Fuente
-        self.cmb_font_color, self.entry_font_size = self._add_font_controls(self.chart_specific_params_frame, start_row=current_row)
+        self.cmb_font_color, self.entry_font_size, self.cmb_font_family = self._add_font_controls(self.chart_specific_params_frame, start_row=current_row)
         current_row += 1
 
         # Controles específicos para ciertos tipos de gráficos (de GeneralChartsApp)
@@ -297,7 +297,13 @@ class CombinedAnalysisTab(ttk.Frame):
         entry_font_size = ttk.Entry(parent, width=5)
         entry_font_size.grid(row=start_row, column=3, padx=5, pady=5, sticky="w")
         entry_font_size.insert(0, "10")
-        return cmb_font_color, entry_font_size
+
+        ttk.Label(parent, text="Fuente:").grid(row=start_row, column=4, padx=5, pady=5, sticky="w")
+        font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
+        cmb_font_family = ttk.Combobox(parent, values=font_families, state="readonly", width=15)
+        cmb_font_family.grid(row=start_row, column=5, padx=5, pady=5, sticky="w")
+        cmb_font_family.set("sans-serif")
+        return cmb_font_color, entry_font_size, cmb_font_family
 
     def _build_display_area(self):
         # Área de texto para estadísticas y log
