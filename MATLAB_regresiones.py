@@ -816,6 +816,11 @@ class RegresionesTab(ttk.Frame):
         btn_save = ttk.Button(frm_buttons_bottom, text="Guardar Gráfica", command=self.save_graph_directly)
         btn_save.pack(side="left", padx=5, expand=True, fill="x")
 
+    def update_font_styles(self, font_family, font_size):
+        """Actualiza la fuente en los widgets de texto de esta pestaña."""
+        if hasattr(self, 'txt_results'):
+            self.txt_results.config(font=(font_family, font_size))
+
     def log_message(self, msg, level="INFO"): # Añadido nivel por defecto
         # Actualizar la etiqueta en la GUI
         if hasattr(self, 'msg_label') and self.msg_label:

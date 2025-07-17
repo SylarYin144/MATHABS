@@ -6,6 +6,7 @@ import os
 import tkinter as tk
 from tkinter import ttk
 import json
+import matplotlib.pyplot as plt
 
 # Asegurarse de que el directorio actual esté en el PYTHONPATH
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -103,10 +104,28 @@ class MainApp(tk.Tk):
         about_label.pack(anchor="nw", padx=10, pady=10)
 
     def update_global_styles(self, font_family, font_size, font_color):
-        """Aplica los estilos de fuente y color a todos los widgets ttk."""
+        """Aplica los estilos de fuente y color a todos los widgets ttk y a matplotlib."""
+        # Aplicar a widgets ttk
         self.style.configure('.', font=(font_family, font_size), foreground=font_color)
         self.style.configure('TNotebook.Tab', font=(font_family, font_size + 1, 'bold'), padding=[5, 2])
         self.style.configure('TLabelframe.Label', font=(font_family, font_size, 'bold'), foreground=font_color)
+
+        # Aplicar solo la familia de fuente a Matplotlib
+        try:
+            plt.rcParams['font.family'] = font_family
+        except Exception as e:
+            print(f"Error al aplicar la fuente '{font_family}' a matplotlib: {e}")
+
+        # Estilo para Treeview
+        self.style.configure('Treeview', font=(font_family, font_size))
+        self.style.configure('Treeview.Heading', font=(font_family, font_size, 'bold'))
+
+        # Actualizar fuentes en widgets no-ttk
+        if hasattr(self, 'cox_tab') and hasattr(self.cox_tab, 'update_font_styles'):
+            self.cox_tab.update_font_styles(font_family, font_size)
+        if hasattr(self, 'regresiones_tab') and hasattr(self.regresiones_tab, 'update_font_styles'):
+            self.regresiones_tab.update_font_styles(font_family, font_size)
+
         self.title(f"Proyecto FEP v2.01.02 - {font_family}")
         self.save_config(font_family, font_size, font_color)
 

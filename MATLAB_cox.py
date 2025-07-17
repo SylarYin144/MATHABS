@@ -4593,6 +4593,13 @@ class CoxModelingApp(ttk.Frame):
         ttk.Label(self.results_display_area_rc, text="Seleccione modelo en Pestaña 2 y use botones de acción para ver resultados.", wraplength=600, justify=tk.CENTER, font=("TkDefaultFont",10,"italic")).pack(pady=20,padx=10)
         self.log("Controles Resultados creados.", "DEBUG")
 
+    def update_font_styles(self, font_family, font_size):
+        """Actualiza la fuente en los widgets de texto de esta pestaña."""
+        if hasattr(self, 'log_text_widget'):
+            self.log_text_widget.config(font=(font_family, font_size))
+        if hasattr(self, 'text_custom_model_notes'):
+            self.text_custom_model_notes.config(font=(font_family, font_size))
+
     def open_detailed_configuration_dialog(self):
         selected_indices = self.listbox_covariables_disponibles.curselection()
         if not selected_indices:

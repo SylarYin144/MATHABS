@@ -22,7 +22,11 @@ class AppearanceTab(ttk.Frame):
         ttk.Label(font_frame, text="Familia de Fuente:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
 
         # Fuentes comunes y seguras
-        self.font_families = ["Palatino Linotype", "Arial", "Helvetica", "Times New Roman", "Courier New", "Verdana", "Tahoma"]
+        self.font_families = sorted([
+            "Palatino Linotype", "Georgia", "Garamond", "Times New Roman", # Serif
+            "Arial", "Helvetica", "Calibri", "Verdana", "Tahoma", "Trebuchet MS", # Sans-Serif
+            "Courier New", "Consolas" # Monospace
+        ])
         self.font_var = tk.StringVar()
         self.font_combo = ttk.Combobox(font_frame, textvariable=self.font_var, values=self.font_families, state="readonly", width=30)
         self.font_combo.grid(row=0, column=1, padx=5, pady=5)
