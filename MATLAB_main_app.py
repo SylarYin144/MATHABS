@@ -5,6 +5,7 @@ import sys
 import os
 import tkinter as tk
 from tkinter import ttk
+import json
 
 # Asegurarse de que el directorio actual esté en el PYTHONPATH
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +28,7 @@ try:
     from MATLAB_combined_analysis import CombinedAnalysisTab
     from MATLAB_sample_size_calculator import SampleSizeCalculatorTab
     from scientific_calculator import ScientificCalculatorTab # Nueva importación
+    from MATLAB_appearance import AppearanceTab
 except ImportError as e:
     print("Error al importar uno o más módulos:", e)
     sys.exit(1)
@@ -37,10 +39,12 @@ class MainApp(tk.Tk):
         self.title("Proyecto FEP v2.01.02")
         self.geometry("1200x800")
 
-        style = ttk.Style(self)
-        available_themes = style.theme_names()
+        self.style = ttk.Style(self)
+        available_themes = self.style.theme_names()
         if 'clam' in available_themes:
-            style.theme_use('clam')
+            self.style.theme_use('clam')
+
+        self.load_config()
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
@@ -89,10 +93,50 @@ class MainApp(tk.Tk):
         self.sample_size_calculator_tab = SampleSizeCalculatorTab(self.notebook, main_app_instance=self)
         self.notebook.add(self.sample_size_calculator_tab, text="Cálculo de Muestra")
 
+        # Pestaña de Apariencia
+        self.appearance_tab = AppearanceTab(self.notebook, self)
+        self.notebook.add(self.appearance_tab, text="Apariencia")
+
         self.about_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.about_tab, text="About")
         about_label = ttk.Label(self.about_tab, text="Desarrollado por: César Misael Cerecedo Zapata\nVersión: 2.01.02", justify=tk.LEFT, padding=(10, 10))
         about_label.pack(anchor="nw", padx=10, pady=10)
+
+    def update_global_styles(self, font_family, font_size, font_color):
+        """Aplica los estilos de fuente y color a todos los widgets ttk."""
+        self.style.configure('.', font=(font_family, font_size), foreground=font_color)
+        self.style.configure('TNotebook.Tab', font=(font_family, font_size + 1, 'bold'), padding=[5, 2])
+        self.style.configure('TLabelframe.Label', font=(font_family, font_size, 'bold'), foreground=font_color)
+        self.title(f"Proyecto FEP v2.01.02 - {font_family}")
+        self.save_config(font_family, font_size, font_color)
+
+    def save_config(self, font_family, font_size, font_color):
+        """Guarda la configuración de apariencia en un archivo JSON."""
+        config = {
+            "font_family": font_family,
+            "font_size": font_size,
+            "font_color": font_color
+        }
+        try:
+            with open("config.json", "w") as f:
+                json.dump(config, f)
+        except Exception as e:
+            print(f"Error guardando configuración: {e}")
+
+    def load_config(self):
+        """Carga la configuración de apariencia desde un archivo JSON."""
+        try:
+            with open("config.json", "r") as f:
+                config = json.load(f)
+                font_family = config.get("font_family", "Palatino Linotype")
+                font_size = config.get("font_size", 10)
+                font_color = config.get("font_color", "black")
+                self.update_global_styles(font_family, font_size, font_color)
+        except FileNotFoundError:
+            # Si no hay archivo de config, usa los valores por defecto.
+            pass
+        except Exception as e:
+            print(f"Error cargando configuración: {e}")
 
 
 if __name__ == "__main__":
