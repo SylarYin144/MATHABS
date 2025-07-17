@@ -4587,11 +4587,42 @@ class CoxModelingApp(ttk.Frame):
         frame_opts_plot_global = ttk.LabelFrame(r_content_rc, text="Opciones Globales de Gráficos")
         frame_opts_plot_global.pack(fill=tk.X, padx=10, pady=10, ipady=5)
         ttk.Button(frame_opts_plot_global, text="Configurar Opciones Gráfico Predeterminadas...", command=self._open_global_plot_options_dialog).pack(side=tk.LEFT, padx=10, pady=5)
+
+        # Controles de fuente
+        ttk.Label(frame_opts_plot_global, text="Fuente:").pack(side=tk.LEFT, padx=(20, 5), pady=5)
+        self.font_family_var = StringVar(value="sans-serif")
+        font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
+        self.font_family_combo = ttk.Combobox(frame_opts_plot_global, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
+        self.font_family_combo.pack(side=tk.LEFT, padx=5, pady=5)
+        self.font_family_combo.bind("<<ComboboxSelected>>", self.on_font_change)
+
+        ttk.Label(frame_opts_plot_global, text="Tamaño:").pack(side=tk.LEFT, padx=(10, 5), pady=5)
+        self.font_size_var = IntVar(value=10)
+        self.font_size_spinbox = ttk.Spinbox(frame_opts_plot_global, from_=6, to=20, textvariable=self.font_size_var, width=5, command=self.on_font_change)
+        self.font_size_spinbox.pack(side=tk.LEFT, padx=5, pady=5)
         
         self.results_display_area_rc = ttk.Frame(r_content_rc, padding=10)
         self.results_display_area_rc.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         ttk.Label(self.results_display_area_rc, text="Seleccione modelo en Pestaña 2 y use botones de acción para ver resultados.", wraplength=600, justify=tk.CENTER, font=("TkDefaultFont",10,"italic")).pack(pady=20,padx=10)
         self.log("Controles Resultados creados.", "DEBUG")
+
+    def on_font_change(self, event=None):
+        """Se llama cuando la fuente o el tamaño de la fuente cambian."""
+        font_family = self.font_family_var.get()
+        font_size = self.font_size_var.get()
+
+        # Actualizar la configuración global de matplotlib
+        plt.rcParams.update({
+            'font.family': font_family,
+            'font.size': font_size,
+            'axes.titlesize': font_size + 2,
+            'axes.labelsize': font_size,
+            'xtick.labelsize': font_size,
+            'ytick.labelsize': font_size,
+            'legend.fontsize': font_size,
+            'figure.titlesize': font_size + 4
+        })
+        self.log(f"Fuente global de gráficos actualizada a: {font_family}, Tamaño: {font_size}", "CONFIG")
 
     def update_font_styles(self, font_family, font_size):
         """Actualiza la fuente en los widgets de texto de esta pestaña."""
