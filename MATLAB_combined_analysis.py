@@ -615,7 +615,12 @@ class CombinedAnalysisTab(ttk.Frame):
         font_size = int(self.entry_font_size.get())
 
         plt.style.use('seaborn-v0_8-whitegrid' if show_grid else 'seaborn-v0_8-white') 
+
+        # Obtener la familia de fuentes seleccionada
+        font_family = self.cmb_font_family.get()
+
         plt.rcParams.update({
+            'font.family': font_family, # Aplicar la familia de fuentes
             'font.size': font_size,
             'axes.labelcolor': font_color,
             'xtick.color': font_color,
