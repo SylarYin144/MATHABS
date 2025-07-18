@@ -692,7 +692,7 @@ class RegresionesTab(ttk.Frame):
 
 
         # --- Selección de Variables para Regresión ---
-        frm_vars = ttk.LabelFrame(container, text="Selección de Variables (Formato: nombre_original o nombre_original:NuevoNombre)")
+        frm_vars = ttk.LabelFrame(container, text="Selección de Variables")
         frm_vars.pack(fill="x", padx=10, pady=5)
         
         dep_var_frame = ttk.Frame(frm_vars)
@@ -717,6 +717,13 @@ class RegresionesTab(ttk.Frame):
         indep_vars_h_scrollbar.pack(side="bottom", fill="x")
         self.listbox_indep_vars_spec.pack(side="left", fill="both", expand=True, padx=5, pady=(0,5))
         
+        rename_vars_frame = ttk.Frame(frm_vars)
+        rename_vars_frame.pack(fill="x", pady=5)
+        ttk.Label(rename_vars_frame, text="Renombrar variable (opcional):").pack(side="left", padx=5)
+        self.rename_var_entry = ttk.Entry(rename_vars_frame, width=20)
+        self.rename_var_entry.pack(side="left", padx=5)
+        ttk.Button(rename_vars_frame, text="Renombrar", command=self.rename_variable).pack(side="left", padx=5)
+
         # --- Parámetros Gráficos ---
         frm_params = ttk.LabelFrame(container, text="Parámetros Gráficos")
         frm_params.pack(fill="x", padx=10, pady=5)
@@ -790,6 +797,9 @@ class RegresionesTab(ttk.Frame):
         self.var_plot_corr = tk.BooleanVar(value=False)
         ttk.Checkbutton(param_grid_frame, text="Anotar Correl.", variable=self.var_plot_corr).grid(row=7, column=2, sticky="w", padx=5)
 
+        self.var_hide_points_labels = tk.BooleanVar(value=False)
+        ttk.Checkbutton(param_grid_frame, text="Ocultar etiquetas de puntos", variable=self.var_hide_points_labels).grid(row=7, column=3, sticky="w", padx=5)
+
 
         # --- Modelos de Regresión ---
         frm_models = ttk.LabelFrame(container, text="Modelos de Regresión a Aplicar")
@@ -824,6 +834,35 @@ class RegresionesTab(ttk.Frame):
 
         btn_edit_results = ttk.Button(frm_buttons_bottom, text="Editar y Formatear Resultados", command=self.open_results_editor)
         btn_edit_results.pack(side="left", padx=5, expand=True, fill="x")
+
+    def rename_variable(self):
+        selected_indices = self.listbox_indep_vars_spec.curselection()
+        if not selected_indices:
+            messagebox.showwarning("Sin Selección", "Seleccione una variable de la lista para renombrar.")
+            return
+
+        if len(selected_indices) > 1:
+            messagebox.showwarning("Múltiples Selecciones", "Por favor, seleccione solo una variable para renombrar a la vez.")
+            return
+
+        original_name = self.listbox_indep_vars_spec.get(selected_indices[0])
+        new_name = self.rename_var_entry.get().strip()
+
+        if not new_name:
+            messagebox.showwarning("Nombre Vacío", "Por favor, ingrese un nuevo nombre para la variable.")
+            return
+
+        if new_name in self.data.columns and new_name != original_name:
+            messagebox.showerror("Nombre Duplicado", f"El nombre '{new_name}' ya existe en el conjunto de datos.")
+            return
+
+        # Renombrar en el DataFrame
+        self.data.rename(columns={original_name: new_name}, inplace=True)
+        self.log_message(f"Variable '{original_name}' renombrada a '{new_name}'.")
+
+        # Actualizar todas las listas de variables en la UI
+        self._update_variable_selectors()
+        self.rename_var_entry.delete(0, tk.END)
 
     def open_results_editor(self):
         if not self.results_text_content:
@@ -1157,7 +1196,8 @@ class RegresionesTab(ttk.Frame):
             y = temp_df[dep_original].values
             
             current_color = self.default_colors[idx % len(self.default_colors)]
-            ax.scatter(x, y, color=current_color, s=pt_size, alpha=0.6, label=f"{indep_display} (datos)")
+            scatter_label = f"{indep_display} (datos)" if not self.var_hide_points_labels.get() else None
+            ax.scatter(x, y, color=current_color, s=pt_size, alpha=0.6, label=scatter_label)
             overall_scatter_x.extend(x)
             overall_scatter_y.extend(y)
 
@@ -1178,7 +1218,7 @@ class RegresionesTab(ttk.Frame):
                 try:
                     c = np.polyfit(x,y,2); yhat=np.polyval(c,x); p,pp=safe_pearson(y,yhat); s,ps=safe_spearman(y,yhat); r2=p**2 if not np.isnan(p) else np.nan
                     results_list.append({"model":"Cuadrático", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {c[0]:.2f}x² + {c[1]:.2f}x + {c[2]:.2f}"})
-                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=current_color, label=f"y = {c[0]:.2f}x² + ... (R²={r2:.3f})")
+                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=current_color, label=f"y = {c[0]:.2f}x² + {c[1]:.2f}x + {c[2]:.2f} (R²={r2:.3f})")
                     self.log_message(f"plot_regression: Modelo cuadrático para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e: self.log_message(f"Error Cuad ({indep_display}): {e}", "ERROR")
             if self.var_cubic.get() and len(x) >= 4:
@@ -1186,7 +1226,7 @@ class RegresionesTab(ttk.Frame):
                 try:
                     c = np.polyfit(x,y,3); yhat=np.polyval(c,x); p,pp=safe_pearson(y,yhat); s,ps=safe_spearman(y,yhat); r2=p**2 if not np.isnan(p) else np.nan
                     results_list.append({"model":"Cúbico", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {c[0]:.2f}x³ + {c[1]:.2f}x² + {c[2]:.2f}x + {c[3]:.2f}"})
-                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=current_color, label=f"y = {c[0]:.2f}x³ + ... (R²={r2:.3f})")
+                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=current_color, label=f"y = {c[0]:.2f}x³ + {c[1]:.2f}x² + {c[2]:.2f}x + {c[3]:.2f} (R²={r2:.3f})")
                     self.log_message(f"plot_regression: Modelo cúbico para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e: self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
             if self.var_power.get():
