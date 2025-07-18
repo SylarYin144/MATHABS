@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import sys
@@ -724,26 +724,6 @@ class RegresionesTab(ttk.Frame):
         self.rename_var_entry.pack(side="left", padx=5)
         ttk.Button(rename_vars_frame, text="Renombrar", command=self.rename_variable).pack(side="left", padx=5)
 
-    def _update_indep_vars_listbox(self, current_indep_vars=None):
-        if not hasattr(self, 'data') or self.data is None:
-            return
-
-        selected_dep_var = self.combo_dep_var_spec.get()
-
-        self.listbox_indep_vars_spec.delete(0, tk.END)
-
-        all_cols = list(self.data.columns)
-        available_indep_vars = [col for col in all_cols if col != selected_dep_var]
-
-        for var_name in available_indep_vars:
-            self.listbox_indep_vars_spec.insert(tk.END, var_name)
-            if current_indep_vars and var_name in current_indep_vars:
-                try:
-                    idx = available_indep_vars.index(var_name)
-                    self.listbox_indep_vars_spec.selection_set(idx)
-                except ValueError:
-                    pass
-
         # --- Parámetros Gráficos ---
         frm_params = ttk.LabelFrame(container, text="Parámetros Gráficos")
         frm_params.pack(fill="x", padx=10, pady=5)
@@ -1203,9 +1183,9 @@ class RegresionesTab(ttk.Frame):
             messagebox.showerror("Error de Parámetros", f"Error en los valores de DPI o tamaño de gráfico:\n{e_params}", parent=self)
             return
 
-        title_text = self.entry_title.get() or f"Regresión de {dep_display} sobre Variables Seleccionadas"
-        xlabel_text = self.entry_xlabel.get()
-        ylabel_text = self.entry_ylabel.get() or dep_display
+        title_text = self.entry_title.get().strip() or f"Regresión de {dep_display} sobre Variables Seleccionadas"
+        xlabel_text = self.entry_xlabel.get().strip()
+        ylabel_text = self.entry_ylabel.get().strip() or dep_display
         title_sz = int(self.entry_title_size.get())
 
         xlim_raw    = self.entry_xlim.get().strip()
@@ -1265,8 +1245,7 @@ class RegresionesTab(ttk.Frame):
             x = temp_df[indep_original].values
             y = temp_df[dep_original].values
             
-
-            current_color = self.cmb_pt_color.get()
+            current_color = self.default_colors[idx % len(self.default_colors)]
             scatter_label = f"{indep_display} (datos)" if not self.var_hide_points_labels.get() else None
             ax.scatter(x, y, color=current_color, s=pt_size, alpha=0.6, label=scatter_label)
             overall_scatter_x.extend(x)
