@@ -822,6 +822,30 @@ class RegresionesTab(ttk.Frame):
         btn_save = ttk.Button(frm_buttons_bottom, text="Guardar Gráfica", command=self.save_graph_directly)
         btn_save.pack(side="left", padx=5, expand=True, fill="x")
 
+        btn_edit_results = ttk.Button(frm_buttons_bottom, text="Editar y Formatear Resultados", command=self.open_results_editor)
+        btn_edit_results.pack(side="left", padx=5, expand=True, fill="x")
+
+    def open_results_editor(self):
+        if not self.results_text_content:
+            messagebox.showinfo("Sin Resultados", "Primero genere un análisis para ver y editar los resultados.")
+            return
+
+        editor_window = tk.Toplevel(self)
+        editor_window.title("Editar Texto de Resultados")
+        editor_window.geometry("600x500")
+
+        text_widget = scrolledtext.ScrolledText(editor_window, wrap="word", font=("Courier New", 10))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", self.results_text_content)
+
+        def apply_and_close():
+            self.results_text_content = text_widget.get("1.0", tk.END)
+            self.show_results_tab()
+            editor_window.destroy()
+
+        btn_apply = ttk.Button(editor_window, text="Aplicar y Cerrar", command=apply_and_close)
+        btn_apply.pack(pady=10)
+
     def update_font_styles(self, font_family, font_size):
         """Actualiza la fuente en los widgets de texto de esta pestaña."""
         if hasattr(self, 'txt_results'):
