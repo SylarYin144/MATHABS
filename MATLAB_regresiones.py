@@ -807,6 +807,9 @@ class RegresionesTab(ttk.Frame):
         self.sci_notation_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(param_grid_frame, text="Notación científica", variable=self.sci_notation_var).grid(row=9, column=2, sticky="w", padx=5)
 
+        self.sci_notation_conditional_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(param_grid_frame, text="Notación científica (solo si aplica)", variable=self.sci_notation_conditional_var).grid(row=9, column=3, sticky="w", padx=5)
+
 
         # --- Modelos de Regresión ---
         frm_models = ttk.LabelFrame(container, text="Modelos de Regresión a Aplicar")
@@ -1198,10 +1201,16 @@ class RegresionesTab(ttk.Frame):
         font_size = int(self.entry_text_size.get())
         decimals = self.decimals_var.get()
         use_sci_notation = self.sci_notation_var.get()
+        use_sci_notation_conditional = self.sci_notation_conditional_var.get()
 
         def format_number(num):
             if use_sci_notation:
                 return f"{num:.{decimals}e}"
+            elif use_sci_notation_conditional:
+                if abs(num) < 10**(-decimals):
+                    return f"{num:.{decimals}e}"
+                else:
+                    return f"{num:.{decimals}f}"
             else:
                 return f"{num:.{decimals}f}"
 
