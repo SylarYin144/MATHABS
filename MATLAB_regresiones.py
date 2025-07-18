@@ -755,7 +755,13 @@ class RegresionesTab(ttk.Frame):
         ttk.Label(param_grid_frame, text="Tamaño Título:").grid(row=2, column=3, sticky="w", padx=5) 
         self.entry_title_size = ttk.Entry(param_grid_frame, width=5)
         self.entry_title_size.insert(0, "14")
-        self.entry_title_size.grid(row=2, column=4, sticky="w", padx=5) 
+        self.entry_title_size.grid(row=2, column=4, sticky="w", padx=5)
+
+        ttk.Label(param_grid_frame, text="Fuente:").grid(row=8, column=0, sticky="w", padx=5, pady=2)
+        self.font_family_var = tk.StringVar(value="sans-serif")
+        font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
+        self.font_family_combo = ttk.Combobox(param_grid_frame, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
+        self.font_family_combo.grid(row=8, column=1, columnspan=2, sticky="we", padx=5)
 
         ttk.Label(param_grid_frame, text="Etiqueta Eje X:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
         self.entry_xlabel = ttk.Entry(param_grid_frame, width=20)
@@ -1092,6 +1098,19 @@ class RegresionesTab(ttk.Frame):
         show_info   = self.var_show_info.get()
         plot_corr   = self.var_plot_corr.get()
         
+        # Aplicar estilo de fuente
+        font_family = self.font_family_var.get()
+        font_size = int(self.entry_text_size.get())
+        plt.rcParams.update({
+            'font.family': font_family,
+            'font.size': font_size,
+            'axes.titlesize': int(self.entry_title_size.get()),
+            'axes.labelsize': font_size,
+            'xtick.labelsize': font_size,
+            'ytick.labelsize': font_size,
+            'legend.fontsize': font_size
+        })
+
         fig, ax = plt.subplots(figsize=(w_in, h_in), dpi=dpi)
         results_list = []
         overall_scatter_x = []

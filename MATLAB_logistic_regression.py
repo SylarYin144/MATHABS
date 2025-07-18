@@ -143,6 +143,21 @@ class LogisticRegressionTab(ttk.Frame):
         # Pestaña para Gráfico ROC (se añadirá dinámicamente)
         self.roc_plot_frame = None # Se creará al generar el gráfico
 
+        # Controles de fuente para gráficos
+        font_frame = ttk.LabelFrame(controls_frame, text="5. Opciones de Gráfico")
+        font_frame.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(font_frame, text="Fuente:").pack(side="left", padx=(5, 2))
+        self.font_family_var = tk.StringVar(value="sans-serif")
+        font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
+        self.font_family_combo = ttk.Combobox(font_frame, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
+        self.font_family_combo.pack(side="left", padx=2)
+
+        ttk.Label(font_frame, text="Tamaño:").pack(side="left", padx=(10, 2))
+        self.font_size_var = tk.IntVar(value=10)
+        self.font_size_spinbox = ttk.Spinbox(font_frame, from_=6, to=20, textvariable=self.font_size_var, width=5)
+        self.font_size_spinbox.pack(side="left", padx=2)
+
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
         filepath = filedialog.askopenfilename(
