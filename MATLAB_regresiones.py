@@ -1473,10 +1473,16 @@ class RegresionesTab(ttk.Frame):
         summary = f"Resumen de Modelos para VD: {dep_display}\n" + ("-" * 70) + "\n"
         for r_item in results_list:
             summary += f"Modelo: {r_item['model']} | VI: {r_item['var']}\n"
-            summary += f"{r_item['formula']}\n"
-            summary += f"  R² = {r_item.get('r2', np.nan):.3f}\n"
+
+            # Añadir p-valor general
             if 'p_general' in r_item:
                 summary += f"  P-valor (general) = {fmt_p(r_item['p_general'])}\n"
+
+            # Añadir fórmula/coeficientes con sus p-valores
+            summary += f"  Formula/Coeficientes:\n"
+            summary += f"    {r_item['formula']}\n" # La fórmula ya contiene los p-valores de los coeficientes
+
+            summary += f"  R² = {r_item.get('r2', np.nan):.3f}\n"
             summary += ("-" * 70) + "\n"
         self.results_text_content = summary
         self.show_results_tab()
