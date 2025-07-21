@@ -4689,8 +4689,7 @@ class CoxModelingApp(ttk.Frame):
         # Define graph names and their corresponding methods
         # Using the user-approved names where applicable
         graph_callbacks = {
-            "Riesgo Base h₀(t)": self.show_baseline_hazard,
-            "Riesgo Acumulado Base H₀(t)": self.show_baseline_cumulative_hazard,
+            "Riesgo Acumulado Base H₀(t)": self.show_cumulative_baseline_hazard,
             "Gráf. Schoenfeld": self.show_schoenfeld,
             "Incidencia Acumulada Base F₀(t)": self.show_baseline_cumulative_incidence, # New entry
             "Forest Plot (HRs)": self.generar_forest_plot,
