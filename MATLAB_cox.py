@@ -2533,20 +2533,56 @@ class CoxModelingApp(ttk.Frame):
                 self.log(f"FALLO DE AJUSTE DEL MODELO (ConvergenceError): '{model_name_rm}'", "ERROR")
                 self.log(f"  Error específico: {e_conv}", "ERROR")
                 self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+
+                # Check for low variance in the design matrix
+                if X_design_rm is not None and not X_design_rm.empty:
+                    low_variance_cols = [col for col in X_design_rm.columns if X_design_rm[col].var() < 1e-5]
+                    if low_variance_cols:
+                        self.log("  POSIBLE CAUSA: Se detectaron variables con varianza muy baja (casi constantes) en la matriz de diseño:", "WARN")
+                        self.log(f"    - {', '.join(low_variance_cols)}", "WARN")
+                        self.log("    - Esto puede causar inestabilidad numérica. Considere revisar o eliminar estas variables.", "WARN")
+
                 if "cr(" in actual_formula_for_fit:
                     self.log("  ADVERTENCIA ADICIONAL: El modelo incluía splines naturales (cr()). Estos pueden ser numéricamente inestables. Considere usar B-splines (bs()) o reducir los grados de libertad (df).", "WARN")
+
+                messagebox.showerror("Error de Convergencia",
+                                     f"El modelo '{model_name_rm}' no pudo converger.\n\n"
+                                     "Posibles Causas:\n"
+                                     "1. Colinealidad Alta: Dos o más variables están altamente correlacionadas.\n"
+                                     "2. Varianza Cero/Baja: Una variable tiene el mismo valor (o casi) para todos los sujetos.\n"
+                                     "3. Separación de Datos: Una variable predice perfectamente el resultado en un subgrupo.\n\n"
+                                     "Sugerencias:\n"
+                                     "- Use el 'Diagnóstico de Colinealidad' en el modelo anterior si es posible.\n"
+                                     "- Revise las variables en el modelo, especialmente las categóricas con pocos casos en algún nivel.\n"
+                                     "- Si usa splines, intente con menos grados de libertad (df) o use B-splines en lugar de Natural.\n"
+                                     "- Considere aplicar regularización (L1 o L2).",
+                                     parent=self.parent_for_dialogs)
                 traceback.print_exc(limit=2)
-                # model_data_rm["model"] remains None
             except np.linalg.LinAlgError as e_linalg:
                 num_obs_fail = df_for_fit_main.shape[0]
                 num_events_fail = df_for_fit_main[event_col_rm].sum() if event_col_rm in df_for_fit_main.columns else 'N/A'
                 self.log(f"FALLO DE AJUSTE DEL MODELO (LinAlgError - ej. Matriz Singular): '{model_name_rm}'", "ERROR")
                 self.log(f"  Error específico: {e_linalg}", "ERROR")
                 self.log(f"  Observaciones usadas: {num_obs_fail}, Eventos: {num_events_fail}", "ERROR")
+
+                if X_design_rm is not None and not X_design_rm.empty:
+                    low_variance_cols = [col for col in X_design_rm.columns if X_design_rm[col].var() < 1e-5]
+                    if low_variance_cols:
+                        self.log("  POSIBLE CAUSA: Se detectaron variables con varianza muy baja (casi constantes) en la matriz de diseño:", "WARN")
+                        self.log(f"    - {', '.join(low_variance_cols)}", "WARN")
+
                 if "cr(" in actual_formula_for_fit:
                     self.log("  ADVERTENCIA ADICIONAL: El modelo incluía splines naturales (cr()). Estos pueden causar problemas de colinealidad. Considere usar B-splines (bs()) o reducir los grados de libertad (df).", "WARN")
+
+                messagebox.showerror("Error de Álgebra Lineal (Matriz Singular)",
+                                     f"El modelo '{model_name_rm}' falló debido a un problema numérico (a menudo una 'matriz singular').\n\n"
+                                     "Esto es frecuentemente causado por colinealidad perfecta o cuasi-perfecta.\n\n"
+                                     "Sugerencias:\n"
+                                     "- Revise si una variable categórica tiene un nivel con cero (o muy pocos) eventos.\n"
+                                     "- Verifique si una variable es una combinación lineal de otras (ej: var3 = var1 + var2).\n"
+                                     "- Use el 'Diagnóstico de Colinealidad' para investigar.",
+                                     parent=self.parent_for_dialogs)
                 traceback.print_exc(limit=2)
-                # model_data_rm["model"] remains None
             except Exception as e_fit_main:
                 num_obs_fail = df_for_fit_main.shape[0] if isinstance(df_for_fit_main, pd.DataFrame) else 'N/A'
                 num_events_fail = (df_for_fit_main[event_col_rm].sum() if isinstance(df_for_fit_main, pd.DataFrame) and event_col_rm in df_for_fit_main.columns else 'N/A')
@@ -3474,7 +3510,8 @@ class CoxModelingApp(ttk.Frame):
         if not self._check_model_selected_and_valid(): return
         md_bs = self.selected_model_in_treeview; cph_bs = md_bs.get('model'); name_bs = md_bs.get('model_name', 'N/A')
         try:
-            fig_bs, ax_bs = plt.subplots(figsize=(10,6)); cph_bs.baseline_survival_.plot(ax=ax_bs, legend=False)
+            fig_bs, ax_bs = plt.subplots(figsize=(10,6));
+            cph_bs.baseline_survival_.plot(ax=ax_bs, legend=False, drawstyle='steps-post')
             opts_bs = self.current_plot_options.copy()
             opts_bs['title'] = opts_bs.get('title') or f"Supervivencia Base S0(t) ({name_bs})"
             opts_bs['xlabel'] = opts_bs.get('xlabel') or f"Tiempo ({md_bs.get('time_col_for_model','T')})"
@@ -3487,7 +3524,8 @@ class CoxModelingApp(ttk.Frame):
         if not self._check_model_selected_and_valid(): return
         md_bh = self.selected_model_in_treeview; cph_bh = md_bh.get('model'); name_bh = md_bh.get('model_name', 'N/A')
         try:
-            fig_bh, ax_bh = plt.subplots(figsize=(10,6)); cph_bh.baseline_hazard_.plot(ax=ax_bh, legend=False)
+            fig_bh, ax_bh = plt.subplots(figsize=(10,6));
+            cph_bh.baseline_hazard_.plot(ax=ax_bh, legend=False, drawstyle='steps-post')
             opts_bh = self.current_plot_options.copy()
             opts_bh['title'] = opts_bh.get('title') or f"Riesgo Acumulado Base H0(t) ({name_bh})"
             opts_bh['xlabel'] = opts_bh.get('xlabel') or f"Tiempo ({md_bh.get('time_col_for_model','T')})"
@@ -3686,20 +3724,20 @@ class CoxModelingApp(ttk.Frame):
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
             if type_ui_pred == "Supervivencia":
                 pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
-                pred_df.plot(ax=ax_curve_pred, legend=False)
+                pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("S(t|X)")
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
                 label_prefix = "S"
             elif type_ui_pred == "Riesgo":
                 pred_df = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
-                pred_df.plot(ax=ax_curve_pred, legend=False)
+                pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("H(t|X)")
                 title_curve_pred = f"Pred. Riesgo Acumulado ({name_for_pred})"
                 label_prefix = "H"
             elif type_ui_pred == "ProbEventoAcum":
                 surv_df_temp = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
                 pred_df = 1 - surv_df_temp
-                pred_df.plot(ax=ax_curve_pred, legend=False)
+                pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
                 title_curve_pred = f"Pred. Prob. Evento Acumulado (1-S(t)) ({name_for_pred})"
                 label_prefix = "1-S"
