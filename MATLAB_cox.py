@@ -3511,7 +3511,7 @@ class CoxModelingApp(ttk.Frame):
         md_bs = self.selected_model_in_treeview; cph_bs = md_bs.get('model'); name_bs = md_bs.get('model_name', 'N/A')
         try:
             fig_bs, ax_bs = plt.subplots(figsize=(10,6));
-            cph_bs.baseline_survival_.plot(ax=ax_bs, legend=False, drawstyle='steps-post')
+            cph_bs.baseline_survival_.plot(ax=ax_bs, legend=False)
             opts_bs = self.current_plot_options.copy()
             opts_bs['title'] = opts_bs.get('title') or f"Supervivencia Base S0(t) ({name_bs})"
             opts_bs['xlabel'] = opts_bs.get('xlabel') or f"Tiempo ({md_bs.get('time_col_for_model','T')})"
@@ -3525,7 +3525,7 @@ class CoxModelingApp(ttk.Frame):
         md_bh = self.selected_model_in_treeview; cph_bh = md_bh.get('model'); name_bh = md_bh.get('model_name', 'N/A')
         try:
             fig_bh, ax_bh = plt.subplots(figsize=(10,6));
-            cph_bh.baseline_hazard_.plot(ax=ax_bh, legend=False, drawstyle='steps-post')
+            cph_bh.baseline_hazard_.plot(ax=ax_bh, legend=False)
             opts_bh = self.current_plot_options.copy()
             opts_bh['title'] = opts_bh.get('title') or f"Riesgo Acumulado Base H0(t) ({name_bh})"
             opts_bh['xlabel'] = opts_bh.get('xlabel') or f"Tiempo ({md_bh.get('time_col_for_model','T')})"
