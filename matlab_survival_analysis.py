@@ -831,19 +831,19 @@ class SurvivalAnalysisTab(ttk.Frame):
                             pass
             elif graph_type == "1 - Supervivencia":
                 y_vals = 1 - kmf.survival_function_.values.flatten()
-                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                ax.step(kmf.timeline, y_vals, where='post', label=str(catv), color=color, lw=self.linewidth.get())
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
                         lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
                                                                              timeline, self.bootstrap_iterations.get(),
                                                                              self.random_seed.get())
-                        ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3)
+                        ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
                     else:
                         try:
                             lower = kmf.confidence_interval_.iloc[:, 0].values
                             upper = kmf.confidence_interval_.iloc[:, 1].values
-                            ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3)
+                            ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3, step='post')
                         except Exception:
                             pass
             elif graph_type == "Riesgo Acumulado":
