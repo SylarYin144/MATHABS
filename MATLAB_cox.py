@@ -3506,33 +3506,19 @@ class CoxModelingApp(ttk.Frame):
                                f"No se pudo generar el gráfico de residuos de Schoenfeld:\n{e_plot}",
                                parent=self.parent_for_dialogs)
 
-    def show_baseline_survival(self):
-        if not self._check_model_selected_and_valid(): return
-        md_bs = self.selected_model_in_treeview; cph_bs = md_bs.get('model'); name_bs = md_bs.get('model_name', 'N/A')
-        try:
-            fig_bs, ax_bs = plt.subplots(figsize=(10,6));
-            cph_bs.baseline_survival_.plot(ax=ax_bs, legend=False)
-            opts_bs = self.current_plot_options.copy()
-            opts_bs['title'] = opts_bs.get('title') or f"Supervivencia Base S0(t) ({name_bs})"
-            opts_bs['xlabel'] = opts_bs.get('xlabel') or f"Tiempo ({md_bs.get('time_col_for_model','T')})"
-            opts_bs['ylabel'] = opts_bs.get('ylabel') or "S0(t)"
-            apply_plot_options(ax_bs, opts_bs, self.log)
-            self._create_plot_window(fig_bs, f"Sup. Base: {name_bs}")
-        except Exception as e_bs: self.log(f"Error Sup.Base '{name_bs}': {e_bs}", "ERROR"); messagebox.showerror("Error Gráfico", f"Error Sup.Base:\n{e_bs}", parent=self.parent_for_dialogs)
-
-    def show_baseline_hazard(self):
+    def show_cumulative_baseline_hazard(self):
         if not self._check_model_selected_and_valid(): return
         md_bh = self.selected_model_in_treeview; cph_bh = md_bh.get('model'); name_bh = md_bh.get('model_name', 'N/A')
         try:
             fig_bh, ax_bh = plt.subplots(figsize=(10,6));
-            cph_bh.baseline_hazard_.plot(ax=ax_bh, legend=False)
+            cph_bh.baseline_cumulative_hazard_.plot(ax=ax_bh, legend=False)
             opts_bh = self.current_plot_options.copy()
             opts_bh['title'] = opts_bh.get('title') or f"Riesgo Acumulado Base H0(t) ({name_bh})"
             opts_bh['xlabel'] = opts_bh.get('xlabel') or f"Tiempo ({md_bh.get('time_col_for_model','T')})"
             opts_bh['ylabel'] = opts_bh.get('ylabel') or "H0(t)"
             apply_plot_options(ax_bh, opts_bh, self.log)
             self._create_plot_window(fig_bh, f"Riesgo Acum. Base: {name_bh}")
-        except Exception as e_bh: self.log(f"Error Riesgo Acum.Base '{name_bh}': {e_bh}", "ERROR"); messagebox.showerror("Error Gráfico", f"Error Riesgo Acum.Base:\n{e_bh}", parent=self.parent_for_dialogs)
+        except Exception as e_bh: self.log(f"Error Riesgo Acum. Base '{name_bh}': {e_bh}", "ERROR"); messagebox.showerror("Error Gráfico", f"Error Riesgo Acum. Base:\n{e_bh}", parent=self.parent_for_dialogs)
 
     def show_baseline_cumulative_incidence(self):
         if not self._check_model_selected_and_valid():
@@ -4703,9 +4689,9 @@ class CoxModelingApp(ttk.Frame):
         # Define graph names and their corresponding methods
         # Using the user-approved names where applicable
         graph_callbacks = {
-            "Riesgo Acumulado Base H₀(t)": self.show_baseline_hazard,
+            "Riesgo Base h₀(t)": self.show_baseline_hazard,
+            "Riesgo Acumulado Base H₀(t)": self.show_baseline_cumulative_hazard,
             "Gráf. Schoenfeld": self.show_schoenfeld,
-            "Supervivencia Base S₀(t)": self.show_baseline_survival,
             "Incidencia Acumulada Base F₀(t)": self.show_baseline_cumulative_incidence, # New entry
             "Forest Plot (HRs)": self.generar_forest_plot,
             "Gráf. Calibración": self.generate_calibration_plot,
