@@ -1429,12 +1429,12 @@ class RegresionesTab(ttk.Frame):
                 except RuntimeError: self.log_message(f"plot_regression: No se pudo ajustar {model_name} para {indep_display} (RuntimeError).", "WARN")
                 except Exception as e_other_model: self.log_message(f"plot_regression: Error en {model_name} para {indep_display}: {e_other_model}", "ERROR")
                     p_values_cubic = mod_cubic.pvalues
-                    formula_cubic = f"y = {format_number(c0)} (p={fmt_p(p_values_cubic[0])}) + {format_number(c1)}x (p={fmt_p(p_values_cubic[1])}) + {format_number(c2)}x² (p={fmt_p(p_values_cubic[2])}) + {format_number(c3)}x³ (p={fmt_p(p_values_cubic[3])})"
+                    formula_cubic = f"y = {format_number(mod_cubic.params[0])} (p={fmt_p(p_values_cubic[0])}) + {format_number(mod_cubic.params[1])}x (p={fmt_p(p_values_cubic[1])}) + {format_number(mod_cubic.params[2])}x² (p={fmt_p(p_values_cubic[2])}) + {format_number(mod_cubic.params[3])}x³ (p={fmt_p(p_values_cubic[3])})"
                     yhat_cubic = mod_cubic.predict(X_cubic)
                     p_cubic, _ = safe_pearson(y, yhat_cubic)
                     r2_cubic = p_cubic**2 if not np.isnan(p_cubic) else np.nan
                     results_list.append({"model": "Cúbico", "var": indep_display, "dep_var": dep_display, "r": p_cubic, "r2": r2_cubic, "formula": formula_cubic, "p_general": mod_cubic.f_pvalue})
-                    ax.plot(x_sorted, np.polyval(mod_cubic.params[::-1], x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=line_color, label=f"y = {format_number(c3)}x³ + {format_number(c2)}x² + {format_number(c1)}x + {format_number(c0)} (R²={format_number(r2_cubic)})")
+                    ax.plot(x_sorted, np.polyval(mod_cubic.params[::-1], x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(mod_cubic.params[3])}x³ + {format_number(mod_cubic.params[2])}x² + {format_number(mod_cubic.params[1])}x + {format_number(mod_cubic.params[0])} (R²={format_number(r2_cubic)})")
                     self.log_message(f"plot_regression: Modelo cúbico para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e:
                     self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
