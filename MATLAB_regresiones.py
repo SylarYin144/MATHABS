@@ -747,9 +747,13 @@ class RegresionesTab(ttk.Frame):
         self.cmb_pt_color = ttk.Combobox(param_grid_frame, values=self.color_options, state="readonly", width=10)
         self.cmb_pt_color.grid(row=1, column=1, padx=5, pady=2, sticky="w")
         self.cmb_pt_color.set("blue")
-        ttk.Label(param_grid_frame, text="Tamaño Puntos:").grid(row=1, column=2, padx=5, pady=2, sticky="w")
+        ttk.Label(param_grid_frame, text="Color Líneas:").grid(row=1, column=2, padx=5, pady=2, sticky="w")
+        self.cmb_line_color = ttk.Combobox(param_grid_frame, values=self.color_options, state="readonly", width=10)
+        self.cmb_line_color.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        self.cmb_line_color.set("red")
+        ttk.Label(param_grid_frame, text="Tamaño Puntos:").grid(row=1, column=4, padx=5, pady=2, sticky="w")
         self.entry_pt_size = ttk.Entry(param_grid_frame, width=7)
-        self.entry_pt_size.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        self.entry_pt_size.grid(row=1, column=5, padx=5, pady=2, sticky="w")
         self.entry_pt_size.insert(0, "50")
         ttk.Label(param_grid_frame, text="Tamaño Texto Ejes:").grid(row=1, column=4, padx=5, pady=2, sticky="w")
         self.entry_text_size = ttk.Entry(param_grid_frame, width=7)
@@ -830,6 +834,19 @@ class RegresionesTab(ttk.Frame):
         self.var_exp3 = tk.BooleanVar(value=False); ttk.Checkbutton(frm_otros, text="Exp (A*B^x)", variable=self.var_exp3).grid(row=0, column=2, padx=2, pady=2, sticky="w")
         self.var_sigmoid = tk.BooleanVar(value=False); ttk.Checkbutton(frm_otros, text="Sigmoide", variable=self.var_sigmoid).grid(row=0, column=3, padx=2, pady=2, sticky="w")
         self.var_exp_decay = tk.BooleanVar(value=False); ttk.Checkbutton(frm_otros, text="Exp Decreciente", variable=self.var_exp_decay).grid(row=0, column=4, padx=2, pady=2, sticky="w")
+
+        frm_line_options = ttk.LabelFrame(container, text="Opciones de Línea de Regresión")
+        frm_line_options.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frm_line_options, text="Color Líneas:").grid(row=0, column=0, padx=5, pady=2, sticky="w")
+        self.cmb_line_color = ttk.Combobox(frm_line_options, values=self.color_options, state="readonly", width=10)
+        self.cmb_line_color.grid(row=0, column=1, padx=5, pady=2, sticky="w")
+        self.cmb_line_color.set("red")
+
+        ttk.Label(frm_line_options, text="Grosor Líneas:").grid(row=0, column=2, padx=5, pady=2, sticky="w")
+        self.entry_line_width = ttk.Entry(frm_line_options, width=7)
+        self.entry_line_width.grid(row=0, column=3, padx=5, pady=2, sticky="w")
+        self.entry_line_width.insert(0, "2")
 
 
         # --- Botones de Acción Finales ---
@@ -1245,6 +1262,8 @@ class RegresionesTab(ttk.Frame):
             x = temp_df[indep_original].values
             y = temp_df[dep_original].values
             
+            line_color = self.cmb_line_color.get()
+            line_width = float(self.entry_line_width.get())
             current_color = self.default_colors[idx % len(self.default_colors)]
             scatter_label = f"{indep_display} (datos)" if not self.var_hide_points_labels.get() else None
             ax.scatter(x, y, color=current_color, s=pt_size, alpha=0.6, label=scatter_label)
@@ -1257,28 +1276,50 @@ class RegresionesTab(ttk.Frame):
             if self.var_linear.get():
                 self.log_message(f"plot_regression: Intentando modelo lineal para VI '{indep_display}'.", "DEBUG")
                 try:
-                    X_lin = sm.add_constant(x); mod = sm.OLS(y, X_lin).fit(); a,b = mod.params; yhat = mod.predict(X_lin)
-                    p,pp = safe_pearson(y,yhat); s,ps = safe_spearman(y,yhat); r2=mod.rsquared if not np.isnan(p) else np.nan
-                    results_list.append({"model":"Lineal", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(a)} + {format_number(b)}x"})
-                    ax.plot(x_sorted, mod.predict(sm.add_constant(x_sorted)), linestyle=self.model_styles["Lineal"]["linestyle"], color=current_color, label=f"y = {format_number(a)} + {format_number(b)}x (R²={r2:.3f})")
+                    X_lin = sm.add_constant(x)
+                    mod = sm.OLS(y, X_lin).fit()
+                    a, b = mod.params
+                    p_values = mod.pvalues
+                    formula = f"y = {format_number(a)} (p={fmt_p(p_values[0])}) + {format_number(b)}x (p={fmt_p(p_values[1])})"
+                    yhat = mod.predict(X_lin)
+                    p, pp = safe_pearson(y, yhat)
+                    s, ps = safe_spearman(y, yhat)
+                    r2 = mod.rsquared if not np.isnan(p) else np.nan
+                    results_list.append({"model": "Lineal", "var": indep_display, "dep_var": dep_display, "r": p, "r2": r2, "formula": formula, "p_general": mod.f_pvalue, "p_values": p_values})
+                    ax.plot(x_sorted, mod.predict(sm.add_constant(x_sorted)), linestyle=self.model_styles["Lineal"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(a)} + {format_number(b)}x (R²={format_number(r2)})")
                     self.log_message(f"plot_regression: Modelo lineal para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e_lin: self.log_message(f"Error en modelo Lineal ({indep_display}): {e_lin}", "ERROR")
-            if self.var_quadratic.get() and len(x) >=3:
+            if self.var_quadratic.get() and len(x) >= 3:
                 self.log_message(f"plot_regression: Intentando modelo cuadrático para VI '{indep_display}'.", "DEBUG")
                 try:
-                    c = np.polyfit(x,y,2); yhat=np.polyval(c,x); p,pp=safe_pearson(y,yhat); s,ps=safe_spearman(y,yhat); r2=p**2 if not np.isnan(p) else np.nan
-                    results_list.append({"model":"Cuadrático", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(c[0])}x² + {format_number(c[1])}x + {format_number(c[2])}"})
-                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=current_color, label=f"y = {format_number(c[0])}x² + {format_number(c[1])}x + {format_number(c[2])} (R²={r2:.3f})")
+                    X_quad = sm.add_constant(np.column_stack((x, x**2)))
+                    mod_quad = sm.OLS(y, X_quad).fit()
+                    c2, c1, c0 = mod_quad.params
+                    p_values_quad = mod_quad.pvalues
+                    formula_quad = f"y = {format_number(c0)} (p={fmt_p(p_values_quad[0])}) + {format_number(c1)}x (p={fmt_p(p_values_quad[1])}) + {format_number(c2)}x² (p={fmt_p(p_values_quad[2])})"
+                    yhat_quad = mod_quad.predict(X_quad)
+                    p_quad, _ = safe_pearson(y, yhat_quad)
+                    r2_quad = p_quad**2 if not np.isnan(p_quad) else np.nan
+                    results_list.append({"model": "Cuadrático", "var": indep_display, "dep_var": dep_display, "r": p_quad, "r2": r2_quad, "formula": formula_quad, "p_general": mod_quad.f_pvalue, "p_values": p_values_quad})
+                    ax.plot(x_sorted, np.polyval(mod_quad.params[::-1], x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(c2)}x² + {format_number(c1)}x + {format_number(c0)} (R²={format_number(r2_quad)})")
                     self.log_message(f"plot_regression: Modelo cuadrático para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e: self.log_message(f"Error Cuad ({indep_display}): {e}", "ERROR")
+                except Exception as e:
+                    self.log_message(f"Error Cuad ({indep_display}): {e}", "ERROR")
             if self.var_cubic.get() and len(x) >= 4:
                 self.log_message(f"plot_regression: Intentando modelo cúbico para VI '{indep_display}'.", "DEBUG")
                 try:
-                    c = np.polyfit(x,y,3); yhat=np.polyval(c,x); p,pp=safe_pearson(y,yhat); s,ps=safe_spearman(y,yhat); r2=p**2 if not np.isnan(p) else np.nan
-                    results_list.append({"model":"Cúbico", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(c[0])}x³ + {format_number(c[1])}x² + {format_number(c[2])}x + {format_number(c[3])}"})
-                    ax.plot(x_sorted, np.polyval(c,x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=current_color, label=f"y = {format_number(c[0])}x³ + {format_number(c[1])}x² + {format_number(c[2])}x + {format_number(c[3])} (R²={r2:.3f})")
+                    X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
+                    mod_cubic = sm.OLS(y, X_cubic).fit()
+                    p_values_cubic = mod_cubic.pvalues
+                    formula_cubic = f"y = {format_number(mod_cubic.params[0])} (p={fmt_p(p_values_cubic[0])}) + {format_number(mod_cubic.params[1])}x (p={fmt_p(p_values_cubic[1])}) + {format_number(mod_cubic.params[2])}x² (p={fmt_p(p_values_cubic[2])}) + {format_number(mod_cubic.params[3])}x³ (p={fmt_p(p_values_cubic[3])})"
+                    yhat_cubic = mod_cubic.predict(X_cubic)
+                    p_cubic, _ = safe_pearson(y, yhat_cubic)
+                    r2_cubic = p_cubic**2 if not np.isnan(p_cubic) else np.nan
+                    results_list.append({"model": "Cúbico", "var": indep_display, "dep_var": dep_display, "r": p_cubic, "r2": r2_cubic, "formula": formula_cubic, "p_general": mod_cubic.f_pvalue, "p_values": p_values_cubic})
+                    ax.plot(x_sorted, np.polyval(mod_cubic.params[::-1], x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(mod_cubic.params[3])}x³ + {format_number(mod_cubic.params[2])}x² + {format_number(mod_cubic.params[1])}x + {format_number(mod_cubic.params[0])} (R²={format_number(r2_cubic)})")
                     self.log_message(f"plot_regression: Modelo cúbico para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e: self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
+                except Exception as e:
+                    self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
             if self.var_power.get():
                 self.log_message(f"plot_regression: Intentando modelo potencia para VI '{indep_display}'.", "DEBUG")
                 mask_p = (x > 0) & (y > 0)
@@ -1288,7 +1329,7 @@ class RegresionesTab(ttk.Frame):
                         sl,it,_,_,_ = stats.linregress(np.log(xp),np.log(yp)); a,b=np.exp(it),sl; yhat=a*(xp**b)
                         p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
                         results_list.append({"model":"Potencia", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(a)}x^{format_number(b)}"})
-                        ax.plot(np.sort(xp), a*np.power(np.sort(xp),b), linestyle=self.model_styles["Potencia"]["linestyle"], color=current_color, label=f"y = {format_number(a)}x^{format_number(b)} (R²={r2:.3f})")
+                        ax.plot(np.sort(xp), a*np.power(np.sort(xp),b), linestyle=self.model_styles["Potencia"]["linestyle"], color=line_color, label=f"y = {format_number(a)}x^{format_number(b)} (R²={format_number(r2)})")
                         self.log_message(f"plot_regression: Modelo potencia para VI '{indep_display}' ajustado.", "DEBUG")
                     except Exception as e: self.log_message(f"Error Potencia ({indep_display}): {e}", "ERROR")
                 else: self.log_message(f"plot_regression: No suficientes datos positivos para modelo Potencia VI '{indep_display}'.", "WARN")
@@ -1301,7 +1342,7 @@ class RegresionesTab(ttk.Frame):
                         pop, _ = curve_fit(lambda z,a,b:a+b*np.log(z),xp,yp,maxfev=10000); yhat=pop[0]+pop[1]*np.log(xp)
                         p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
                         results_list.append({"model":"Logarítmico", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(pop[0])} + {format_number(pop[1])}ln(x)"})
-                        ax.plot(np.sort(xp), pop[0]+pop[1]*np.log(np.sort(xp)), linestyle=self.model_styles["Logarítmico"]["linestyle"], color=current_color, label=f"y = {format_number(pop[0])} + {format_number(pop[1])}ln(x) (R²={r2:.3f})")
+                        ax.plot(np.sort(xp), pop[0]+pop[1]*np.log(np.sort(xp)), linestyle=self.model_styles["Logarítmico"]["linestyle"], color=line_color, label=f"y = {format_number(pop[0])} + {format_number(pop[1])}ln(x) (R²={format_number(r2)})")
                         self.log_message(f"plot_regression: Modelo logarítmico para VI '{indep_display}' ajustado.", "DEBUG")
                     except Exception as e: self.log_message(f"Error Log ({indep_display}): {e}", "ERROR")
                 else: self.log_message(f"plot_regression: No suficientes datos x>0 para modelo Logarítmico VI '{indep_display}'.", "WARN")
@@ -1310,7 +1351,7 @@ class RegresionesTab(ttk.Frame):
                 try:
                     lo=lowess(y,x,frac=0.3); xs,ys=lo[:,0],lo[:,1]; acme_x,acme_y=compute_acme(lambda z:np.interp(z,xs,ys),np.linspace(xs.min(),xs.max(),200))
                     results_list.append({"model":"LOESS", "var":indep_display, "dep_var":dep_display, "r":np.nan, "r2":np.nan, "formula":f"LOESS para {indep_display}: acme en x={acme_x:.2f}, y={acme_y:.2f}"})
-                    ax.plot(xs,ys, linestyle=self.model_styles["LOESS"]["linestyle"], color=current_color, label=f"{indep_display} LOESS")
+                    ax.plot(xs,ys, linestyle=self.model_styles["LOESS"]["linestyle"], color=line_color, label=f"{indep_display} LOESS")
                     self.log_message(f"plot_regression: Modelo LOESS para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e: self.log_message(f"Error LOESS ({indep_display}): {e}", "ERROR")
             
@@ -1329,7 +1370,7 @@ class RegresionesTab(ttk.Frame):
                         r2_inv = mod_inv.rsquared
                         results_list.append({"model": "Inverso", "var": indep_display, "dep_var": dep_display, "r": p_inv, "r2": r2_inv, "formula": f"{dep_display}={a_inv:.2f}+{b_inv:.2f}/({indep_display})\nP:{p_inv:.3f}(p={fmt_p(pp_inv)}) S:{s_inv:.3f}(p={fmt_p(ps_inv)})"})
                         x_sorted_inv = np.sort(xi)
-                        ax.plot(x_sorted_inv, a_inv + b_inv / x_sorted_inv, linestyle="-", color=current_color, label=f"{indep_display} Inv (R²={r2_inv:.3f})")
+                        ax.plot(x_sorted_inv, a_inv + b_inv / x_sorted_inv, linestyle="-", color=line_color, label=f"{indep_display} Inv (R²={format_number(r2_inv)})")
                         self.log_message(f"plot_regression: Modelo Inverso para VI '{indep_display}' ajustado.", "DEBUG")
                     except Exception as e_inv: self.log_message(f"Error Inverso ({indep_display}): {e_inv}", "ERROR")
                 else:
@@ -1349,7 +1390,7 @@ class RegresionesTab(ttk.Frame):
                     r2_rcs = mod_rcs.rsquared_adj # Usar R^2 ajustado para splines es a menudo mejor
 
                     results_list.append({"model": "Spline (RCS, df=4)", "var": indep_display, "dep_var": dep_display, "r": p_rcs, "r2": r2_rcs, "formula": f"Spline Cúbico Restringido (df=4)\nP:{p_rcs:.3f}(p={fmt_p(pp_rcs)}) S:{s_rcs:.3f}(p={fmt_p(ps_rcs)})"})
-                    ax.plot(x_sorted, yhat_rcs, linestyle="--", color=current_color, label=f"{indep_display} RCS (R²adj={r2_rcs:.3f})")
+                    ax.plot(x_sorted, yhat_rcs, linestyle="--", color=line_color, label=f"{indep_display} RCS (R²adj={format_number(r2_rcs)})")
                     self.log_message(f"plot_regression: Modelo Spline (RCS) para VI '{indep_display}' ajustado.", "DEBUG")
                 except Exception as e_rcs:
                     self.log_message(f"Error en modelo Spline (RCS) ({indep_display}): {e_rcs}", "ERROR")
@@ -1382,7 +1423,7 @@ class RegresionesTab(ttk.Frame):
                     elif model_name == "Exp Decreciente": formula_str_other += f"A={popt_other[0]:.2f},B={popt_other[1]:.2f}"
                     
                     results_list.append({"model":model_name,"var":indep_display, "dep_var":dep_display, "r":pear_other,"r2":r2_other, "formula":formula_str_other + f"\nP:{pear_other:.3f}(p={fmt_p(p_pear_other)}) S:{spear_other:.3f}(p={fmt_p(p_spear_other)})"})
-                    ax.plot(x_sorted, model_func(x_sorted, *popt_other), linestyle=self.model_styles[model_name]["linestyle"], color=current_color, label=f"{indep_display} {model_name.split(' ')[0]} (R²={r2_other:.3f})")
+                    ax.plot(x_sorted, model_func(x_sorted, *popt_other), linestyle=self.model_styles[model_name]["linestyle"], color=line_color, label=f"{indep_display} {model_name.split(' ')[0]} (R²={format_number(r2_other)})")
                     self.log_message(f"plot_regression: Modelo {model_name} para VI '{indep_display}' ajustado.", "DEBUG")
                 except RuntimeError: self.log_message(f"plot_regression: No se pudo ajustar {model_name} para {indep_display} (RuntimeError).", "WARN")
                 except Exception as e_other_model: self.log_message(f"plot_regression: Error en {model_name} para {indep_display}: {e_other_model}", "ERROR")
@@ -1447,11 +1488,18 @@ class RegresionesTab(ttk.Frame):
         self.log_message(f"plot_regression: Gráfico guardado en {self.graph_path}.", "INFO")
 
         results_list.sort(key=lambda x: x.get("r2", -1), reverse=True)
-        summary = f"Resumen de Modelos para VD: {dep_display}\n" + ("-"*70) + "\n"
-        for r_item in results_list: # Renombrado r a r_item para evitar conflicto con r de pearson
-            summary += (f"Modelo: {r_item['model']} | VI: {r_item['var']}\n"
-                        f"{r_item['formula']}\n"
-                        f"  R² = {r_item.get('r2', np.nan):.3f}\n" + ("-"*70) + "\n")
+        summary = f"Resumen de Modelos para VD: {dep_display}\n" + ("-" * 70) + "\n"
+        for r_item in results_list:
+            summary += f"Modelo: {r_item['model']} | VI: {r_item['var']}\n"
+            summary += f"Formula: {r_item['formula']}\n"
+            summary += f"  R² = {r_item.get('r2', np.nan):.3f}\n"
+            if 'p_general' in r_item and r_item['p_general'] is not None:
+                summary += f"  P-valor (general) = {fmt_p(r_item['p_general'])}\n"
+            if 'p_values' in r_item:
+                summary += "  P-valores de coeficientes:\n"
+                for i, p_val in enumerate(r_item['p_values']):
+                    summary += f"    Coef {i}: {fmt_p(p_val)}\n"
+            summary += ("-" * 70) + "\n"
         self.results_text_content = summary
         self.show_results_tab()
         self.log_message("plot_regression: Gráfica y resumen generados.", "INFO")
