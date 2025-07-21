@@ -747,19 +747,17 @@ class RegresionesTab(ttk.Frame):
         self.cmb_pt_color = ttk.Combobox(param_grid_frame, values=self.color_options, state="readonly", width=10)
         self.cmb_pt_color.grid(row=1, column=1, padx=5, pady=2, sticky="w")
         self.cmb_pt_color.set("blue")
-        ttk.Label(param_grid_frame, text="Color Líneas:").grid(row=1, column=2, padx=5, pady=2, sticky="w")
-        self.cmb_line_color = ttk.Combobox(param_grid_frame, values=self.color_options, state="readonly", width=10)
-        self.cmb_line_color.grid(row=1, column=3, padx=5, pady=2, sticky="w")
-        self.cmb_line_color.set("red")
-        ttk.Label(param_grid_frame, text="Tamaño Puntos:").grid(row=1, column=4, padx=5, pady=2, sticky="w")
+
+        ttk.Label(param_grid_frame, text="Tamaño Puntos:").grid(row=1, column=2, padx=5, pady=2, sticky="w")
         self.entry_pt_size = ttk.Entry(param_grid_frame, width=7)
-        self.entry_pt_size.grid(row=1, column=5, padx=5, pady=2, sticky="w")
-        self.entry_pt_size.insert(0, "50")
+        self.entry_pt_size.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        self.entry_pt_size.insert(0, "20") # Valor por defecto para el tamaño de puntos
+
         ttk.Label(param_grid_frame, text="Tamaño Texto Ejes:").grid(row=1, column=4, padx=5, pady=2, sticky="w")
         self.entry_text_size = ttk.Entry(param_grid_frame, width=7)
         self.entry_text_size.grid(row=1, column=5, padx=5, pady=2, sticky="w")
         self.entry_text_size.insert(0, "10")
-        
+
         ttk.Label(param_grid_frame, text="Título Gráfica:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
         self.entry_title = ttk.Entry(param_grid_frame, width=20)
         self.entry_title.grid(row=2, column=1, columnspan=2, sticky="we", padx=5)
@@ -1430,7 +1428,7 @@ class RegresionesTab(ttk.Frame):
         
         self.log_message("plot_regression: Fin del bucle de procesamiento de VIs y modelos.", "DEBUG")
 
-        ax.set_xlabel(xlabel_text or (parsed_indep_specs[0][1] if len(parsed_indep_specs)==1 else "Variables Independientes"), fontsize=txt_size) # Usar txt_size para ejes
+        ax.set_xlabel(xlabel_text or (parsed_indep_specs[0][1] if len(parsed_indep_specs)==1 else "Variables Independientes"), fontsize=txt_size)
         ax.set_ylabel(ylabel_text or dep_display, fontsize=txt_size)
         ax.set_title(title_text or f"Regresión de {dep_display}", fontsize=title_sz) # Usar title_sz para título
 
