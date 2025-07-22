@@ -1138,10 +1138,20 @@ class SurvivalAnalysisTab(ttk.Frame):
             f"{'p97':<10}", f"{'SE p97':<8}", f"{'IC p97':<18}"
         ]
 
+        # Determinar el tipo de tabla a mostrar
+        graph_type = self.cmb_graph_type.get()
+        table_header_text = "Tabla Supervivencia"
+        if graph_type == "Log de Supervivencia":
+            table_header_text = "Tabla Log-Supervivencia"
+        elif graph_type == "1 - Supervivencia":
+            table_header_text = "Tabla 1-Supervivencia"
+        elif graph_type == "Riesgo Acumulado":
+            table_header_text = "Tabla Riesgo Acumulado"
+
         # Añadir la tabla de supervivencia si la opción está activa
         show_survival_table = self.show_censors_on_tables.get()
         if show_survival_table:
-            header_parts.append(f"{'Tabla Supervivencia (Tiempo, Prob, Censura)':<50}")
+            header_parts.append(f"{table_header_text} (Tiempo, Valor, Censura)")
 
         header = " | ".join(header_parts) + "\n"
         separator = "-" * (len(header) + 20) + "\n"
@@ -1199,26 +1209,34 @@ class SurvivalAnalysisTab(ttk.Frame):
                 cat_var = self.cmb_cat.get()
 
                 if cat_var and cat_var in self.km_results_df.columns:
-                    if catv == "Global":
-                        sub_df = self.km_results_df
-                    else:
-                        sub_df = self.km_results_df[self.km_results_df[cat_var] == catv]
+                    sub_df = self.km_results_df[self.km_results_df[cat_var] == catv] if catv != "Global" else self.km_results_df
                 else:
                     sub_df = self.km_results_df
 
                 kmf = KaplanMeierFitter()
                 kmf.fit(sub_df[time_col], sub_df[event_col])
 
-                survival_table_str = "T:Prob(Censura)\n"
-                # Corregido: kmf.event_observed indica si el evento fue observado (0) o censurado (1)
-                # La lógica original era al revés. El evento observado es 1, censurado es 0.
-                # El atributo correcto es event_observed, no censored. Y el evento de censura es 0.
-                for time, prob, observed in zip(kmf.timeline, kmf.survival_function_.values.flatten(), kmf.event_observed):
-                    censura_char = "C" if observed == 0 else ""
-                    survival_table_str += f"{time}:{prob:.2f}({censura_char}) "
+                table_str = f"{table_header_text}:\n"
 
-                line_parts.append(f"{survival_table_str:<50}")
-                excel_row["Tabla Supervivencia"] = survival_table_str.replace("\n", " ")
+                # Obtener los datos de la curva según el tipo de gráfico
+                if graph_type == "KM":
+                    y_values = kmf.survival_function_.values.flatten()
+                elif graph_type == "Log de Supervivencia":
+                    y_values = np.log(np.clip(kmf.survival_function_.values.flatten(), 1e-10, None))
+                elif graph_type == "1 - Supervivencia":
+                    y_values = 1 - kmf.survival_function_.values.flatten()
+                elif graph_type == "Riesgo Acumulado":
+                    y_values = kmf.cumulative_hazard_.values.flatten()
+
+                # Crear un diccionario de tiempos de censura para búsqueda rápida
+                censored_times = set(kmf.event_table.loc[kmf.event_table['censored'] > 0].index)
+
+                for time, value in zip(kmf.timeline, y_values):
+                    censura_char = "C" if time in censored_times else ""
+                    table_str += f"{time}:{value:.2f}({censura_char}) "
+
+                line_parts.append(f"{table_str:<50}")
+                excel_row[table_header_text] = table_str.replace("\n", " ")
 
             txt.insert(tk.END, " | ".join(line_parts) + "\n")
             summary_data.append(excel_row)
