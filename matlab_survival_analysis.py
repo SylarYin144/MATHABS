@@ -1532,7 +1532,7 @@ class dummy_class:
 def print_long_dummy_text():
     dummy_text = """
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum in porttitor urna.
-Suspendisse potenti. Aliquam erat volutpat. Integer in volutpat libero. Proin ac massa rutrum,
+Suspendisse potenti. Alam erat volutpat. Integer in volutpat libero. Proin ac massa rutrum,
 maximus sapien eget, mollis leo. Donec suscipit massa ut elit interdum, at dignissim magna facilisis.
 Nullam sit amet lacus sed dui cursus blandit. Fusce eget dui ut enim aliquet volutpat.
 Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae;
