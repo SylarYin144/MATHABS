@@ -1262,9 +1262,9 @@ class RegresionesTab(ttk.Frame):
             
             line_color = self.cmb_line_color.get()
             line_width = float(self.entry_line_width.get())
-            current_color = self.default_colors[idx % len(self.default_colors)]
+            point_color = self.cmb_pt_color.get()
             scatter_label = f"{indep_display} (datos)" if not self.var_hide_points_labels.get() else None
-            ax.scatter(x, y, color=current_color, s=pt_size, alpha=0.6, label=scatter_label)
+            ax.scatter(x, y, color=point_color, s=pt_size, alpha=0.6, label=scatter_label)
             overall_scatter_x.extend(x)
             overall_scatter_y.extend(y)
 
