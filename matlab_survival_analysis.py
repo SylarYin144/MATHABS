@@ -800,21 +800,14 @@ class SurvivalAnalysisTab(ttk.Frame):
 
             # Gráfica según el tipo seleccionado:
             if graph_type == "KM":
-                if self.show_ci.get():
-                    if self.use_bootstrap.get():
-                        kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                   color=color, lw=self.linewidth.get())
-                        timeline = kmf.timeline
-                        lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
-                                                                             timeline, self.bootstrap_iterations.get(),
-                                                                             self.random_seed.get())
-                        ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
-                    else:
-                        kmf.plot_survival_function(ax=ax, ci_show=True, show_censors=self.show_censors.get(),
-                                                   color=color, lw=self.linewidth.get())
-                else:
-                    kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                               color=color, lw=self.linewidth.get())
+                kmf.plot_survival_function(ax=ax, ci_show=self.show_ci.get(), show_censors=self.show_censors.get(),
+                                           color=color, lw=self.linewidth.get())
+                if self.show_ci.get() and self.use_bootstrap.get():
+                    timeline = kmf.timeline
+                    lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
+                                                                         timeline, self.bootstrap_iterations.get(),
+                                                                         self.random_seed.get())
+                    ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
             elif graph_type == "Log de Supervivencia":
                 y_vals = np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
                 ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
@@ -920,21 +913,14 @@ class SurvivalAnalysisTab(ttk.Frame):
                     kmf.fit(durations=df_final_for_analysis[time_col], event_observed=df_final_for_analysis[event_col], label="Global")
                     color = base_colors[color_idx % len(base_colors)]
                     if graph_type == "KM":
-                        if self.show_ci.get():
-                            if self.use_bootstrap.get():
-                                kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                           color=color, lw=self.linewidth.get())
-                                timeline = kmf.timeline
-                                lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
-                                                                                     timeline, self.bootstrap_iterations.get(),
-                                                                                     self.random_seed.get())
-                                ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
-                            else:
-                                kmf.plot_survival_function(ax=ax, ci_show=True, show_censors=self.show_censors.get(),
-                                                           color=color, lw=self.linewidth.get())
-                        else:
-                            kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                       color=color, lw=self.linewidth.get())
+                        kmf.plot_survival_function(ax=ax, ci_show=self.show_ci.get(), show_censors=self.show_censors.get(),
+                                                   color=color, lw=self.linewidth.get())
+                        if self.show_ci.get() and self.use_bootstrap.get():
+                            timeline = kmf.timeline
+                            lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
+                                                                                 timeline, self.bootstrap_iterations.get(),
+                                                                                 self.random_seed.get())
+                            ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
                     elif graph_type == "Log de Supervivencia":
                         y_vals = np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
                         ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get())
