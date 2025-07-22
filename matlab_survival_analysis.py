@@ -812,7 +812,7 @@ class SurvivalAnalysisTab(ttk.Frame):
 
             elif graph_type == "Log de Supervivencia":
                 y_vals = np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
@@ -820,12 +820,12 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                              timeline, self.bootstrap_iterations.get(),
                                                                              self.random_seed.get())
                         ax.fill_between(timeline, np.log(np.clip(lower_bound, 1e-10, None)), np.log(np.clip(upper_bound, 1e-10, None)),
-                                        color=color, alpha=0.3)
+                                        color=color, alpha=0.3, step='post')
                     else:
                         try:
                             lower = np.log(np.clip(kmf.confidence_interval_.iloc[:, 0].values, 1e-10, None))
                             upper = np.log(np.clip(kmf.confidence_interval_.iloc[:, 1].values, 1e-10, None))
-                            ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3)
+                            ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3, step='post')
                         except Exception:
                             pass
                 if show_c:
@@ -840,7 +840,7 @@ class SurvivalAnalysisTab(ttk.Frame):
                 # La función plot_survival_function con invert_y_axis=True no soporta show_censors
                 # Se debe plotear manualmente
                 y_vals = 1 - kmf.survival_function_.values.flatten()
-                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
@@ -863,7 +863,7 @@ class SurvivalAnalysisTab(ttk.Frame):
             elif graph_type == "Riesgo Acumulado":
                 if hasattr(kmf, "cumulative_hazard_"):
                     y_vals = kmf.cumulative_hazard_.values.flatten()
-                    ax.plot(kmf.cumulative_hazard_.index, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                    ax.plot(kmf.cumulative_hazard_.index, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                     if self.show_ci.get():
                         if self.use_bootstrap.get():
                             timeline = kmf.timeline
@@ -871,17 +871,17 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                  timeline, self.bootstrap_iterations.get(),
                                                                                  self.random_seed.get())
                             ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)), -np.log(np.clip(lower_bound,1e-10,None)),
-                                            color=color, alpha=0.3)
+                                            color=color, alpha=0.3, step='post')
                         else:
                             try:
                                 lower = kmf.confidence_interval_cumulative_hazard_.iloc[:, 0].values
                                 upper = kmf.confidence_interval_cumulative_hazard_.iloc[:, 1].values
-                                ax.fill_between(kmf.cumulative_hazard_.index, lower, upper, color=color, alpha=0.3)
+                                ax.fill_between(kmf.cumulative_hazard_.index, lower, upper, color=color, alpha=0.3, step='post')
                             except Exception:
                                 pass
                 else: # Fallback por si no existe cumulative_hazard_
                     y_vals = -np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                    ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                    ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                     if self.show_ci.get():
                         if self.use_bootstrap.get():
                             timeline = kmf.timeline
@@ -889,13 +889,13 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                  timeline, self.bootstrap_iterations.get(),
                                                                                  self.random_seed.get())
                             ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)), -np.log(np.clip(lower_bound,1e-10,None)),
-                                            color=color, alpha=0.3)
+                                            color=color, alpha=0.3, step='post')
                         else:
                             try:
                                 lower = kmf.confidence_interval_.iloc[:, 0].values
                                 upper = kmf.confidence_interval_.iloc[:, 1].values
                                 ax.fill_between(kmf.timeline, -np.log(np.clip(upper,1e-10,None)), -np.log(np.clip(lower,1e-10,None)),
-                                                color=color, alpha=0.3)
+                                                color=color, alpha=0.3, step='post')
                             except Exception:
                                 pass
                 if show_c:
