@@ -827,29 +827,14 @@ class SurvivalAnalysisTab(ttk.Frame):
                         except Exception:
                             pass
             elif graph_type == "1 - Supervivencia":
-                y_vals = 1 - kmf.survival_function_.values.flatten()
-                ax.step(kmf.timeline, y_vals, where='post', label=str(catv), color=color, lw=self.linewidth.get())
-                if self.show_censors.get():
-                    censored_times = sub[sub[event_col] == 0][time_col]
-                    if not censored_times.empty:
-                        # Interpolar el valor de 1 - supervivencia para los tiempos censurados
-                        censored_y = np.interp(censored_times, kmf.timeline, y_vals, left=0, right=y_vals[-1])
-                        ax.plot(censored_times, censored_y, '+', color=color, markersize=8, label=f'_censored_{catv}')
-
-                if self.show_ci.get():
-                    if self.use_bootstrap.get():
-                        timeline = kmf.timeline
-                        lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
-                                                                             timeline, self.bootstrap_iterations.get(),
-                                                                             self.random_seed.get())
-                        ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
-                    else:
-                        try:
-                            lower = kmf.confidence_interval_.iloc[:, 0].values
-                            upper = kmf.confidence_interval_.iloc[:, 1].values
-                            ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3, step='post')
-                        except Exception:
-                            pass
+                kmf.plot_survival_function(ax=ax, invert_y_axis=True, ci_show=self.show_ci.get(), show_censors=self.show_censors.get(),
+                                           color=color, lw=self.linewidth.get())
+                if self.show_ci.get() and self.use_bootstrap.get():
+                    timeline = kmf.timeline
+                    lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
+                                                                         timeline, self.bootstrap_iterations.get(),
+                                                                         self.random_seed.get())
+                    ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
             elif graph_type == "Riesgo Acumulado":
                 if hasattr(kmf, "cumulative_hazard_"):
                     y_vals = kmf.cumulative_hazard_.values.flatten()
@@ -940,28 +925,14 @@ class SurvivalAnalysisTab(ttk.Frame):
                                 except Exception:
                                     pass
                     elif graph_type == "1 - Supervivencia":
-                        y_vals = 1 - kmf.survival_function_.values.flatten()
-                        ax.step(kmf.timeline, y_vals, where='post', label="Global", color=color, lw=self.linewidth.get())
-                        if self.show_censors.get():
-                            censored_times = df_final_for_analysis[df_final_for_analysis[event_col] == 0][time_col]
-                            if not censored_times.empty:
-                                censored_y = np.interp(censored_times, kmf.timeline, y_vals, left=0, right=y_vals[-1])
-                                ax.plot(censored_times, censored_y, '+', color=color, markersize=8, label='_censored_global')
-
-                        if self.show_ci.get():
-                            if self.use_bootstrap.get():
-                                timeline = kmf.timeline
-                                lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
-                                                                                     timeline, self.bootstrap_iterations.get(),
-                                                                                     self.random_seed.get())
-                                ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
-                            else:
-                                try:
-                                    lower = kmf.confidence_interval_.iloc[:, 0].values
-                                    upper = kmf.confidence_interval_.iloc[:, 1].values
-                                    ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3, step='post')
-                                except Exception:
-                                    pass
+                        kmf.plot_survival_function(ax=ax, invert_y_axis=True, ci_show=self.show_ci.get(), show_censors=self.show_censors.get(),
+                                                   color=color, lw=self.linewidth.get())
+                        if self.show_ci.get() and self.use_bootstrap.get():
+                            timeline = kmf.timeline
+                            lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
+                                                                                 timeline, self.bootstrap_iterations.get(),
+                                                                                 self.random_seed.get())
+                            ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
                     elif graph_type == "Riesgo Acumulado":
                         if hasattr(kmf, "cumulative_hazard_"):
                             y_vals = kmf.cumulative_hazard_.values.flatten()
