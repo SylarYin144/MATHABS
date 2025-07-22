@@ -15,8 +15,11 @@ from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_rep
 from statsmodels.graphics.gofplots import ProbPlot # Para Hosmer-Lemeshow gráfico si es necesario, o usar cálculo manual.
 # Considerar una función directa para Hosmer-Lemeshow si existe o implementarla.
 
-# FilterComponent ha sido eliminado.
-FilterComponent = None # Mantener para evitar errores si alguna lógica residual lo verifica.
+try:
+    from MATLAB_filter_component import FilterComponent
+except ImportError:
+    messagebox.showerror("Error de Importación", "No se pudo importar FilterComponent.")
+    FilterComponent = None
 
 class LogisticRegressionTab(ttk.Frame):
     """
@@ -33,18 +36,8 @@ class LogisticRegressionTab(ttk.Frame):
         self.dependent_var = tk.StringVar()
         self.independent_vars = [] # Lista de nombres de variables independientes seleccionadas
 
-        # Variables para Filtros Generales (hasta 2 filtros) - AÑADIDO
-        self.filter_active_1_var = tk.BooleanVar(value=False)
-        self.filter_col_1_var = tk.StringVar()
-        self.filter_op_1_var = tk.StringVar()
-        self.filter_val_1_var = tk.StringVar()
-
-        self.filter_active_2_var = tk.BooleanVar(value=False)
-        self.filter_col_2_var = tk.StringVar()
-        self.filter_op_2_var = tk.StringVar()
-        self.filter_val_2_var = tk.StringVar()
-        
-        self.general_filter_operators = ["==", "!=", ">", "<", ">=", "<=", "contiene", "no contiene", "es NaN", "no es NaN"]
+        # Integración del componente de filtro
+        self.filter_component = None
 
         self._build_ui()
 
@@ -74,31 +67,10 @@ class LogisticRegressionTab(ttk.Frame):
         ttk.Entry(path_frame, textvariable=self.filepath_var, width=40, state="readonly").pack(side="left", padx=5, expand=True, fill="x")
         ttk.Button(path_frame, text="Buscar", command=self._load_file).pack(side="left", padx=5)
 
-        # 2. Filtros Generales (Implementación directa)
-        frm_filters_general = ttk.LabelFrame(controls_frame, text="2. Filtros Generales (Opcional)")
-        frm_filters_general.pack(fill="x", padx=5, pady=5)
-
-        # Filtro 1
-        f1_frame = ttk.Frame(frm_filters_general)
-        f1_frame.pack(fill="x", pady=2)
-        ttk.Checkbutton(f1_frame, text="Activar Filtro 1:", variable=self.filter_active_1_var).grid(row=0, column=0, padx=2, sticky="w")
-        self.filter_col_1_combo = ttk.Combobox(f1_frame, textvariable=self.filter_col_1_var, state="readonly", width=15)
-        self.filter_col_1_combo.grid(row=0, column=1, padx=2)
-        self.filter_op_1_combo = ttk.Combobox(f1_frame, textvariable=self.filter_op_1_var, values=self.general_filter_operators, state="readonly", width=10)
-        self.filter_op_1_combo.grid(row=0, column=2, padx=2)
-        self.filter_op_1_combo.set("==")
-        ttk.Entry(f1_frame, textvariable=self.filter_val_1_var, width=15).grid(row=0, column=3, padx=2)
-        
-        # Filtro 2
-        f2_frame = ttk.Frame(frm_filters_general)
-        f2_frame.pack(fill="x", pady=2)
-        ttk.Checkbutton(f2_frame, text="Activar Filtro 2:", variable=self.filter_active_2_var).grid(row=0, column=0, padx=2, sticky="w")
-        self.filter_col_2_combo = ttk.Combobox(f2_frame, textvariable=self.filter_col_2_var, state="readonly", width=15)
-        self.filter_col_2_combo.grid(row=0, column=1, padx=2)
-        self.filter_op_2_combo = ttk.Combobox(f2_frame, textvariable=self.filter_op_2_var, values=self.general_filter_operators, state="readonly", width=10)
-        self.filter_op_2_combo.grid(row=0, column=2, padx=2)
-        self.filter_op_2_combo.set("==")
-        ttk.Entry(f2_frame, textvariable=self.filter_val_2_var, width=15).grid(row=0, column=3, padx=2)
+        # 2. Filtros
+        if FilterComponent:
+            self.filter_component = FilterComponent(controls_frame, self.df_original, title="2. Filtros (Opcional)")
+            self.filter_component.pack(fill="x", padx=5, pady=5)
 
         # 3. Selección de Variables
         vars_frame = ttk.LabelFrame(controls_frame, text="3. Selección de Variables")
@@ -174,27 +146,17 @@ class LogisticRegressionTab(ttk.Frame):
 
             self.filepath_var.set(filepath)
             self._update_variable_selectors()
-            # FilterComponent removido.
-            # Actualizar combos de filtros generales
-            cols = self.df_original.columns.tolist() if self.df_original is not None else []
-            filter_cols_options = [''] + cols
-            if hasattr(self, 'filter_col_1_combo'): # Verificar si los widgets ya existen
-                self.filter_col_1_combo['values'] = filter_cols_options
-                if not self.filter_col_1_var.get() and cols: self.filter_col_1_var.set('')
-            if hasattr(self, 'filter_col_2_combo'):
-                self.filter_col_2_combo['values'] = filter_cols_options
-                if not self.filter_col_2_var.get() and cols: self.filter_col_2_var.set('')
-            
+            if self.filter_component:
+                self.filter_component.set_dataframe(self.df_original)
+
             messagebox.showinfo("Archivo Cargado", f"Archivo '{os.path.basename(filepath)}' cargado.")
             self.log(f"Datos cargados: {self.df_original.shape}", "INFO")
 
         except Exception as e:
             messagebox.showerror("Error al Leer Archivo", f"No se pudo leer el archivo:\n{e}")
             self.df_original = None; self.filepath_var.set(""); self._update_variable_selectors()
-            # FilterComponent removido.
-            # Limpiar combos de filtros generales en caso de error
-            if hasattr(self, 'filter_col_1_combo'): self.filter_col_1_combo['values'] = ['']
-            if hasattr(self, 'filter_col_2_combo'): self.filter_col_2_combo['values'] = ['']
+            if self.filter_component:
+                self.filter_component.set_dataframe(None)
             self.log(f"Error cargando archivo: {e}", "ERROR")
 
     def _update_variable_selectors(self):
@@ -241,22 +203,28 @@ class LogisticRegressionTab(ttk.Frame):
         self.results_text.delete("1.0", tk.END)
         self.log("Iniciando análisis de Regresión Logística...", "INFO")
 
-        # 1. FilterComponent ha sido removido. Se trabaja directamente con una copia de self.df_original.
-        if self.df_original is not None:
-            df_initial = self.df_original.copy()
-            self.log("Usando DataFrame original para regresión logística (antes de filtros generales).", "INFO")
+        if self.df_original is None:
+            self.log("No hay datos cargados.", "ERROR")
+            messagebox.showerror("Error", "No hay datos cargados para analizar.")
+            self.results_text.config(state="disabled")
+            return
 
-            # Aplicar filtros generales definidos en la UI
-            self.df_filtered = self._apply_general_filters(df_initial)
-
-            if self.df_filtered is None or self.df_filtered.empty:
-                self.log("DataFrame vacío después de aplicar filtros generales.", "WARN")
-                self.results_text.insert(tk.END, "DataFrame vacío después de aplicar filtros generales.")
+        # Aplicar filtros
+        if self.filter_component:
+            try:
+                self.df_filtered = self.filter_component.apply_filters()
+                self.log(f"Datos filtrados: {self.df_filtered.shape}", "INFO")
+            except Exception as e:
+                self.log(f"Error al aplicar filtros: {e}", "ERROR")
+                messagebox.showerror("Error de Filtro", f"Error al aplicar filtros:\n{e}")
                 self.results_text.config(state="disabled")
                 return
         else:
-            self.log("No hay datos cargados.", "ERROR")
-            self.results_text.insert(tk.END, "No hay datos cargados.")
+            self.df_filtered = self.df_original.copy()
+
+        if self.df_filtered.empty:
+            self.log("DataFrame vacío después de aplicar filtros.", "WARN")
+            messagebox.showwarning("Datos Vacíos", "El DataFrame está vacío después de aplicar los filtros.")
             self.results_text.config(state="disabled")
             return
 
@@ -425,7 +393,7 @@ class LogisticRegressionTab(ttk.Frame):
 
         # Crear grupos
         groups = np.array_split(np.arange(len(y_true_sorted)), g)
-        
+
         observed_1 = []
         expected_1 = []
         observed_0 = []
@@ -435,13 +403,13 @@ class LogisticRegressionTab(ttk.Frame):
         for group_indices in groups:
             if len(group_indices) == 0:
                 continue
-            
+
             obs_1_g = np.sum(y_true_sorted[group_indices])
             exp_1_g = np.sum(y_pred_prob_sorted[group_indices])
-            
+
             obs_0_g = len(group_indices) - obs_1_g
             exp_0_g = len(group_indices) - exp_1_g
-            
+
             # Evitar división por cero si un grupo esperado es 0 (aunque raro con probs)
             if exp_1_g == 0 and obs_1_g != 0: exp_1_g = 1e-9 # Pequeño valor para evitar error
             if exp_0_g == 0 and obs_0_g != 0: exp_0_g = 1e-9
@@ -459,7 +427,7 @@ class LogisticRegressionTab(ttk.Frame):
                  hl_stat += ((observed_1[i] - expected_1[i])**2) / expected_1[i]
             if expected_0[i] > 0: # Evitar división por cero
                  hl_stat += ((observed_0[i] - expected_0[i])**2) / expected_0[i]
-        
+
         # Grados de libertad (g - 2 es común, pero puede variar)
         # Para una prueba más robusta, se podría usar g - k donde k es el número de
         # patrones de covarianza distintos si se agrupa por ellos, o g-2 si se agrupa por deciles de riesgo.
@@ -493,7 +461,7 @@ class LogisticRegressionTab(ttk.Frame):
         canvas = FigureCanvasTkAgg(fig, master=self.roc_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
+
         # Asegurarse de que la pestaña ROC sea visible
         try:
             self.results_notebook.select(self.roc_plot_frame)
