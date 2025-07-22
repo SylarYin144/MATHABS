@@ -116,6 +116,7 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # Opciones de gráfica
         self.show_censors = tk.BooleanVar(value=True)
+        self.show_censors_on_tables = tk.BooleanVar(value=False)
         self.linewidth = tk.DoubleVar(value=2.0)
         self.color_scheme = tk.StringVar(value="tab10")
 
@@ -263,8 +264,10 @@ class SurvivalAnalysisTab(ttk.Frame):
         # 6. Opciones de Gráfico
         frm_graph_opts = ttk.LabelFrame(self.scrollable_controls, text="Opciones de Gráfico")
         frm_graph_opts.pack(fill=tk.X, padx=5, pady=5)
-        self.chk_censors = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras", variable=self.show_censors)
+        self.chk_censors = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras en gráfica", variable=self.show_censors)
         self.chk_censors.pack(anchor=tk.W, padx=5, pady=2)
+        self.chk_censors_tables = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras en tablas", variable=self.show_censors_on_tables)
+        self.chk_censors_tables.pack(anchor=tk.W, padx=5, pady=2)
         ttk.Label(frm_graph_opts, text="Esquema de colores:").pack(anchor=tk.W, padx=5, pady=2)
         self.cmb_color_scheme = ttk.Combobox(frm_graph_opts,
                                              values=["tab10", "Set1", "Set2", "Set3", "Dark2", "Accent",
@@ -722,6 +725,7 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # 4. Eliminar NaNs en columnas de tiempo y evento (crucial antes de análisis)
         df_final_for_analysis = df_final_for_analysis.dropna(subset=[time_col, event_col])
+        self.km_results_df = df_final_for_analysis.copy()
 
         # 5. Verificar si quedan datos
         if df_final_for_analysis.empty:
@@ -832,6 +836,13 @@ class SurvivalAnalysisTab(ttk.Frame):
             elif graph_type == "1 - Supervivencia":
                 y_vals = 1 - kmf.survival_function_.values.flatten()
                 ax.step(kmf.timeline, y_vals, where='post', label=str(catv), color=color, lw=self.linewidth.get())
+                if self.show_censors.get():
+                    censored_times = sub[sub[event_col] == 0][time_col]
+                    if not censored_times.empty:
+                        # Interpolar el valor de 1 - supervivencia para los tiempos censurados
+                        censored_y = np.interp(censored_times, kmf.timeline, y_vals, left=0, right=y_vals[-1])
+                        ax.plot(censored_times, censored_y, '+', color=color, markersize=8, label=f'_censored_{catv}')
+
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
@@ -944,19 +955,25 @@ class SurvivalAnalysisTab(ttk.Frame):
                                     pass
                     elif graph_type == "1 - Supervivencia":
                         y_vals = 1 - kmf.survival_function_.values.flatten()
-                        ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get())
+                        ax.step(kmf.timeline, y_vals, where='post', label="Global", color=color, lw=self.linewidth.get())
+                        if self.show_censors.get():
+                            censored_times = df_final_for_analysis[df_final_for_analysis[event_col] == 0][time_col]
+                            if not censored_times.empty:
+                                censored_y = np.interp(censored_times, kmf.timeline, y_vals, left=0, right=y_vals[-1])
+                                ax.plot(censored_times, censored_y, '+', color=color, markersize=8, label='_censored_global')
+
                         if self.show_ci.get():
                             if self.use_bootstrap.get():
                                 timeline = kmf.timeline
                                 lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
                                                                                      timeline, self.bootstrap_iterations.get(),
                                                                                      self.random_seed.get())
-                                ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3)
+                                ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
                             else:
                                 try:
                                     lower = kmf.confidence_interval_.iloc[:, 0].values
                                     upper = kmf.confidence_interval_.iloc[:, 1].values
-                                    ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3)
+                                    ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3, step='post')
                                 except Exception:
                                     pass
                     elif graph_type == "Riesgo Acumulado":
@@ -1087,96 +1104,120 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         popup = tk.Toplevel(self)
         popup.title("Resumen de Estadísticos de Supervivencia")
-        txt = tk.Text(popup, wrap="none", width=140, height=30)
-        vsb = ttk.Scrollbar(popup, orient="vertical", command=txt.yview)
-        hsb = ttk.Scrollbar(popup, orient="horizontal", command=txt.xview)
+
+        # Crear un frame para el texto y las barras de scroll
+        text_frame = ttk.Frame(popup)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        txt = tk.Text(text_frame, wrap="none", width=140, height=30)
+        vsb = ttk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
+        hsb = ttk.Scrollbar(text_frame, orient="horizontal", command=txt.xview)
         txt.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
         txt.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
-        popup.rowconfigure(0, weight=1)
-        popup.columnconfigure(0, weight=1)
-        header = (
-            f"{'Categoría':<20} | {'N casos':<8} | {'N censurados':<12} | "
-            f"{'Mediana':<10} | {'SE med.':<8} | {'IC med.':<18} | "
-            f"{'p25':<10} | {'SE p25':<8} | {'IC p25':<18} | "
-            f"{'p75':<10} | {'SE p75':<8} | {'IC p75':<18} | "
-            f"{'p3':<10} | {'SE p3':<8} | {'IC p3':<18} | "
-            f"{'p97':<10} | {'SE p97':<8} | {'IC p97':<18}\n"
-        )
-        separator = "-" * 160 + "\n"
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+
+        # Botón de exportación
+        btn_excel = ttk.Button(popup, text="Exportar a Excel", command=lambda: self.export_summary_to_excel(summary_data))
+        btn_excel.pack(pady=5)
+
+        # Cabecera base
+        header_parts = [
+            f"{'Categoría':<20}", f"{'N casos':<8}", f"{'N censurados':<12}",
+            f"{'Mediana':<10}", f"{'SE med.':<8}", f"{'IC med.':<18}",
+            f"{'p25':<10}", f"{'SE p25':<8}", f"{'IC p25':<18}",
+            f"{'p75':<10}", f"{'SE p75':<8}", f"{'IC p75':<18}",
+            f"{'p3':<10}", f"{'SE p3':<8}", f"{'IC p3':<18}",
+            f"{'p97':<10}", f"{'SE p97':<8}", f"{'IC p97':<18}"
+        ]
+
+        # Añadir la tabla de supervivencia si la opción está activa
+        show_survival_table = self.show_censors_on_tables.get()
+        if show_survival_table:
+            header_parts.append(f"{'Tabla Supervivencia (Tiempo, Prob, Censura)':<50}")
+
+        header = " | ".join(header_parts) + "\n"
+        separator = "-" * (len(header) + 20) + "\n"
         txt.insert(tk.END, header)
         txt.insert(tk.END, separator)
+
         summary_data = []
+
         for (catv, stats, bs_stats, n_used, n_censored) in self.km_results:
+            line_parts = []
+            excel_row = {}
+
+            # Datos estadísticos
             if bs_stats:
-                med = bs_stats["median"]
-                p25 = bs_stats["p25"]
-                p75 = bs_stats["p75"]
-                p3 = bs_stats["p3"]
-                p97 = bs_stats["p97"]
-                line = (
-                    f"{catv:<20} | {n_used:<8} | {n_censored:<12} | "
-                    f"{format_value(med['estimate']):<10} | {format_value(med['se']):<8} | ({format_value(med['ci'][0])}, {format_value(med['ci'][1])})  | "
-                    f"{format_value(p25['estimate']):<10} | {format_value(p25['se']):<8} | ({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})  | "
-                    f"{format_value(p75['estimate']):<10} | {format_value(p75['se']):<8} | ({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})  | "
-                    f"{format_value(p3['estimate']):<10} | {format_value(p3['se']):<8} | ({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})  | "
-                    f"{format_value(p97['estimate']):<10} | {format_value(p97['se']):<8} | ({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
-                )
-                # Preparar diccionario para exportar a Excel
-                summary_data.append({
-                    "Categoría": catv,
-                    "N casos": n_used,
-                    "N censurados": n_censored,
-                    "Mediana": format_value(med['estimate']),
-                    "SE med.": format_value(med['se']),
-                    "IC med.": f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
-                    "p25": format_value(p25['estimate']),
-                    "SE p25": format_value(p25['se']),
-                    "IC p25": f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
-                    "p75": format_value(p75['estimate']),
-                    "SE p75": format_value(p75['se']),
-                    "IC p75": f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
-                    "p3": format_value(p3['estimate']),
-                    "SE p3": format_value(p3['se']),
-                    "IC p3": f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
-                    "p97": format_value(p97['estimate']),
-                    "SE p97": format_value(p97['se']),
-                    "IC p97": f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
-                })
-            else:
-                med_val = stats.get("median")
-                p25_val = stats.get("p25")
-                p75_val = stats.get("p75")
-                line = (
-                    f"{catv:<20} | {n_used:<8} | {n_censored:<12} | "
-                    f"{(format_value(med_val) if med_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{(format_value(p25_val) if p25_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{(format_value(p75_val) if p75_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{'N/A':<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{'N/A':<10} | {'N/A':<8} | {'N/A':<18}"
-                )
-                summary_data.append({
-                    "Categoría": catv,
-                    "N casos": n_used,
-                    "N censurados": n_censored,
-                    "Mediana": (format_value(med_val) if med_val is not None else 'N/A'),
-                    "SE med.": "N/A",
-                    "IC med.": "N/A",
-                    "p25": (format_value(p25_val) if p25_val is not None else 'N/A'),
-                    "SE p25": "N/A",
-                    "IC p25": "N/A",
-                    "p75": (format_value(p75_val) if p75_val is not None else 'N/A'),
-                    "SE p75": "N/A",
-                    "IC p75": "N/A",
-                    "p3": "N/A",
-                    "SE p3": "N/A",
-                    "IC p3": "N/A",
-                    "p97": "N/A",
-                    "SE p97": "N/A",
-                    "IC p97": "N/A"
-                })
-            txt.insert(tk.END, line + "\n")
+                med, p25, p75, p3, p97 = (bs_stats["median"], bs_stats["p25"], bs_stats["p75"], bs_stats["p3"], bs_stats["p97"])
+                line_parts.extend([
+                    f"{catv:<20}", f"{n_used:<8}", f"{n_censored:<12}",
+                    f"{format_value(med['estimate']):<10}", f"{format_value(med['se']):<8}", f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
+                    f"{format_value(p25['estimate']):<10}", f"{format_value(p25['se']):<8}", f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
+                    f"{format_value(p75['estimate']):<10}", f"{format_value(p75['se']):<8}", f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
+                    f"{format_value(p3['estimate']):<10}", f"{format_value(p3['se']):<8}", f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
+                    f"{format_value(p97['estimate']):<10}", f"{format_value(p97['se']):<8}", f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
+                ])
+                excel_row = {
+                    "Categoría": catv, "N casos": n_used, "N censurados": n_censored,
+                    "Mediana": format_value(med['estimate']), "SE med.": format_value(med['se']), "IC med.": f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
+                    "p25": format_value(p25['estimate']), "SE p25": format_value(p25['se']), "IC p25": f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
+                    "p75": format_value(p75['estimate']), "SE p75": format_value(p75['se']), "IC p75": f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
+                    "p3": format_value(p3['estimate']), "SE p3": format_value(p3['se']), "IC p3": f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
+                    "p97": format_value(p97['estimate']), "SE p97": format_value(p97['se']), "IC p97": f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
+                }
+            else: # Sin bootstrap
+                med_val, p25_val, p75_val = (stats.get("median"), stats.get("p25"), stats.get("p75"))
+                line_parts.extend([
+                    f"{catv:<20}", f"{n_used:<8}", f"{n_censored:<12}",
+                    f"{(format_value(med_val) if med_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{(format_value(p25_val) if p25_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{(format_value(p75_val) if p75_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{'N/A':<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{'N/A':<10}", f"{'N/A':<8}", f"{'N/A':<18}"
+                ])
+                excel_row = {
+                    "Categoría": catv, "N casos": n_used, "N censurados": n_censored,
+                    "Mediana": (format_value(med_val) if med_val is not None else 'N/A'), "SE med.": "N/A", "IC med.": "N/A",
+                    "p25": (format_value(p25_val) if p25_val is not None else 'N/A'), "SE p25": "N/A", "IC p25": "N/A",
+                    "p75": (format_value(p75_val) if p75_val is not None else 'N/A'), "SE p75": "N/A", "IC p75": "N/A",
+                    "p3": "N/A", "SE p3": "N/A", "IC p3": "N/A",
+                    "p97": "N/A", "SE p97": "N/A", "IC p97": "N/A"
+                }
+
+            # Añadir la tabla de supervivencia si es necesario
+            if show_survival_table:
+                time_col = self.cmb_time.get()
+                event_col = self.cmb_event.get()
+                cat_var = self.cmb_cat.get()
+
+                if cat_var and cat_var in self.km_results_df.columns:
+                    if catv == "Global":
+                        sub_df = self.km_results_df
+                    else:
+                        sub_df = self.km_results_df[self.km_results_df[cat_var] == catv]
+                else:
+                    sub_df = self.km_results_df
+
+                kmf = KaplanMeierFitter()
+                kmf.fit(sub_df[time_col], sub_df[event_col])
+
+                survival_table_str = "T:Prob(Censura)\n"
+                # Corregido: kmf.event_observed indica si el evento fue observado (0) o censurado (1)
+                # La lógica original era al revés. El evento observado es 1, censurado es 0.
+                # El atributo correcto es event_observed, no censored. Y el evento de censura es 0.
+                for time, prob, observed in zip(kmf.timeline, kmf.survival_function_.values.flatten(), kmf.event_observed):
+                    censura_char = "C" if observed == 0 else ""
+                    survival_table_str += f"{time}:{prob:.2f}({censura_char}) "
+
+                line_parts.append(f"{survival_table_str:<50}")
+                excel_row["Tabla Supervivencia"] = survival_table_str.replace("\n", " ")
+
+            txt.insert(tk.END, " | ".join(line_parts) + "\n")
+            summary_data.append(excel_row)
         txt.config(state="disabled")
         btn_excel = ttk.Button(popup, text="Exportar a Excel", command=lambda: self.export_summary_to_excel(summary_data))
         btn_excel.grid(row=2, column=0, pady=5)

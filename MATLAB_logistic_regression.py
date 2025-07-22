@@ -69,7 +69,7 @@ class LogisticRegressionTab(ttk.Frame):
 
         # 2. Filtros
         if FilterComponent:
-            self.filter_component = FilterComponent(controls_frame, self.df_original, title="2. Filtros (Opcional)")
+            self.filter_component = FilterComponent(controls_frame, self.df_original)
             self.filter_component.pack(fill="x", padx=5, pady=5)
 
         # 3. Selección de Variables
