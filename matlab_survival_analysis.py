@@ -116,6 +116,7 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # Opciones de gráfica
         self.show_censors = tk.BooleanVar(value=True)
+        self.show_censors_on_tables = tk.BooleanVar(value=False)
         self.linewidth = tk.DoubleVar(value=2.0)
         self.color_scheme = tk.StringVar(value="tab10")
 
@@ -263,8 +264,10 @@ class SurvivalAnalysisTab(ttk.Frame):
         # 6. Opciones de Gráfico
         frm_graph_opts = ttk.LabelFrame(self.scrollable_controls, text="Opciones de Gráfico")
         frm_graph_opts.pack(fill=tk.X, padx=5, pady=5)
-        self.chk_censors = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras", variable=self.show_censors)
+        self.chk_censors = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras en gráfica", variable=self.show_censors)
         self.chk_censors.pack(anchor=tk.W, padx=5, pady=2)
+        self.chk_censors_tables = ttk.Checkbutton(frm_graph_opts, text="Mostrar censuras en tablas", variable=self.show_censors_on_tables)
+        self.chk_censors_tables.pack(anchor=tk.W, padx=5, pady=2)
         ttk.Label(frm_graph_opts, text="Esquema de colores:").pack(anchor=tk.W, padx=5, pady=2)
         self.cmb_color_scheme = ttk.Combobox(frm_graph_opts,
                                              values=["tab10", "Set1", "Set2", "Set3", "Dark2", "Accent",
@@ -722,6 +725,7 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # 4. Eliminar NaNs en columnas de tiempo y evento (crucial antes de análisis)
         df_final_for_analysis = df_final_for_analysis.dropna(subset=[time_col, event_col])
+        self.km_results_df = df_final_for_analysis.copy()
 
         # 5. Verificar si quedan datos
         if df_final_for_analysis.empty:
@@ -795,25 +799,20 @@ class SurvivalAnalysisTab(ttk.Frame):
             color_idx += 1
 
             # Gráfica según el tipo seleccionado:
+            show_c = self.show_censors.get()
             if graph_type == "KM":
-                if self.show_ci.get():
-                    if self.use_bootstrap.get():
-                        kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                   color=color, lw=self.linewidth.get())
-                        timeline = kmf.timeline
-                        lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
-                                                                             timeline, self.bootstrap_iterations.get(),
-                                                                             self.random_seed.get())
-                        ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
-                    else:
-                        kmf.plot_survival_function(ax=ax, ci_show=True, show_censors=self.show_censors.get(),
-                                                   color=color, lw=self.linewidth.get())
-                else:
-                    kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                               color=color, lw=self.linewidth.get())
+                kmf.plot_survival_function(ax=ax, ci_show=self.show_ci.get(), show_censors=show_c,
+                                           color=color, lw=self.linewidth.get())
+                if self.show_ci.get() and self.use_bootstrap.get():
+                    timeline = kmf.timeline
+                    lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
+                                                                         timeline, self.bootstrap_iterations.get(),
+                                                                         self.random_seed.get())
+                    ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
+
             elif graph_type == "Log de Supervivencia":
                 y_vals = np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
@@ -821,17 +820,27 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                              timeline, self.bootstrap_iterations.get(),
                                                                              self.random_seed.get())
                         ax.fill_between(timeline, np.log(np.clip(lower_bound, 1e-10, None)), np.log(np.clip(upper_bound, 1e-10, None)),
-                                        color=color, alpha=0.3)
+                                        color=color, alpha=0.3, step='post')
                     else:
                         try:
                             lower = np.log(np.clip(kmf.confidence_interval_.iloc[:, 0].values, 1e-10, None))
                             upper = np.log(np.clip(kmf.confidence_interval_.iloc[:, 1].values, 1e-10, None))
-                            ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3)
+                            ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3, step='post')
                         except Exception:
                             pass
+                if show_c:
+                    censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                    if not censored_times.empty:
+                        # Interpolar para obtener el valor de supervivencia en los tiempos de censura
+                        y_censored = np.interp(censored_times, kmf.timeline, y_vals)
+                        ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
+
+
             elif graph_type == "1 - Supervivencia":
+                # La función plot_survival_function con invert_y_axis=True no soporta show_censors
+                # Se debe plotear manualmente
                 y_vals = 1 - kmf.survival_function_.values.flatten()
-                ax.step(kmf.timeline, y_vals, where='post', label=str(catv), color=color, lw=self.linewidth.get())
+                ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                 if self.show_ci.get():
                     if self.use_bootstrap.get():
                         timeline = kmf.timeline
@@ -840,36 +849,39 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                              self.random_seed.get())
                         ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
                     else:
-                        try:
-                            lower = kmf.confidence_interval_.iloc[:, 0].values
-                            upper = kmf.confidence_interval_.iloc[:, 1].values
-                            ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3, step='post')
-                        except Exception:
-                            pass
+                        # Invertir manualmente el IC
+                        lower_ci = 1 - kmf.confidence_interval_.iloc[:, 1].values
+                        upper_ci = 1 - kmf.confidence_interval_.iloc[:, 0].values
+                        ax.fill_between(kmf.timeline, lower_ci, upper_ci, color=color, alpha=0.3, step='post')
+                if show_c:
+                    censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                    if not censored_times.empty:
+                        y_censored = np.interp(censored_times, kmf.timeline, y_vals)
+                        ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
+
+
             elif graph_type == "Riesgo Acumulado":
                 if hasattr(kmf, "cumulative_hazard_"):
                     y_vals = kmf.cumulative_hazard_.values.flatten()
-                    ax.plot(kmf.cumulative_hazard_.index, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                    ax.plot(kmf.cumulative_hazard_.index, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                     if self.show_ci.get():
                         if self.use_bootstrap.get():
                             timeline = kmf.timeline
                             lower_bound, upper_bound = self.compute_bootstrap_ci(sub, time_col, event_col,
                                                                                  timeline, self.bootstrap_iterations.get(),
                                                                                  self.random_seed.get())
-                            # Convertir IC de supervivencia en IC de riesgo acumulado: H = -log(S)
                             ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)), -np.log(np.clip(lower_bound,1e-10,None)),
-                                            color=color, alpha=0.3)
+                                            color=color, alpha=0.3, step='post')
                         else:
                             try:
-                                lower = kmf.confidence_interval_.iloc[:, 0].values
-                                upper = kmf.confidence_interval_.iloc[:, 1].values
-                                ax.fill_between(kmf.timeline, -np.log(np.clip(upper,1e-10,None)), -np.log(np.clip(lower,1e-10,None)),
-                                                color=color, alpha=0.3)
+                                lower = kmf.confidence_interval_cumulative_hazard_.iloc[:, 0].values
+                                upper = kmf.confidence_interval_cumulative_hazard_.iloc[:, 1].values
+                                ax.fill_between(kmf.cumulative_hazard_.index, lower, upper, color=color, alpha=0.3, step='post')
                             except Exception:
                                 pass
-                else:
+                else: # Fallback por si no existe cumulative_hazard_
                     y_vals = -np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                    ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get())
+                    ax.plot(kmf.timeline, y_vals, label=str(catv), color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                     if self.show_ci.get():
                         if self.use_bootstrap.get():
                             timeline = kmf.timeline
@@ -877,15 +889,20 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                  timeline, self.bootstrap_iterations.get(),
                                                                                  self.random_seed.get())
                             ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)), -np.log(np.clip(lower_bound,1e-10,None)),
-                                            color=color, alpha=0.3)
+                                            color=color, alpha=0.3, step='post')
                         else:
                             try:
                                 lower = kmf.confidence_interval_.iloc[:, 0].values
                                 upper = kmf.confidence_interval_.iloc[:, 1].values
                                 ax.fill_between(kmf.timeline, -np.log(np.clip(upper,1e-10,None)), -np.log(np.clip(lower,1e-10,None)),
-                                                color=color, alpha=0.3)
+                                                color=color, alpha=0.3, step='post')
                             except Exception:
                                 pass
+                if show_c:
+                    censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                    if not censored_times.empty:
+                        y_censored = np.interp(censored_times, kmf.timeline, y_vals if 'y_vals' in locals() else -np.log(np.clip(np.interp(censored_times, kmf.timeline, kmf.survival_function_.values.flatten()), 1e-10, None)))
+                        ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
             # Calcular estadísticas: usar bootstrap si se escogió, de lo contrario usar valores predeterminados.
             if self.use_bootstrap.get():
                 bs_stats = self.compute_bootstrap_percentile_estimates(sub, time_col, event_col)
@@ -909,24 +926,17 @@ class SurvivalAnalysisTab(ttk.Frame):
                     kmf.fit(durations=df_final_for_analysis[time_col], event_observed=df_final_for_analysis[event_col], label="Global")
                     color = base_colors[color_idx % len(base_colors)]
                     if graph_type == "KM":
-                        if self.show_ci.get():
-                            if self.use_bootstrap.get():
-                                kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                           color=color, lw=self.linewidth.get())
-                                timeline = kmf.timeline
-                                lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
-                                                                                     timeline, self.bootstrap_iterations.get(),
-                                                                                     self.random_seed.get())
-                                ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
-                            else:
-                                kmf.plot_survival_function(ax=ax, ci_show=True, show_censors=self.show_censors.get(),
-                                                           color=color, lw=self.linewidth.get())
-                        else:
-                            kmf.plot_survival_function(ax=ax, ci_show=False, show_censors=self.show_censors.get(),
-                                                       color=color, lw=self.linewidth.get())
+                        kmf.plot_survival_function(ax=ax, ci_show=self.show_ci.get(), show_censors=show_c,
+                                                   color=color, lw=self.linewidth.get())
+                        if self.show_ci.get() and self.use_bootstrap.get():
+                            timeline = kmf.timeline
+                            lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
+                                                                                 timeline, self.bootstrap_iterations.get(),
+                                                                                 self.random_seed.get())
+                            ax.fill_between(timeline, lower_bound, upper_bound, color=color, alpha=0.3)
                     elif graph_type == "Log de Supervivencia":
                         y_vals = np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                        ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get())
+                        ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                         if self.show_ci.get():
                             if self.use_bootstrap.get():
                                 timeline = kmf.timeline
@@ -934,35 +944,42 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                      timeline, self.bootstrap_iterations.get(),
                                                                                      self.random_seed.get())
                                 ax.fill_between(timeline, np.log(np.clip(lower_bound,1e-10,None)), np.log(np.clip(upper_bound,1e-10,None)),
-                                                color=color, alpha=0.3)
+                                                color=color, alpha=0.3, step='post')
                             else:
                                 try:
                                     lower = np.log(np.clip(kmf.confidence_interval_.iloc[:, 0].values,1e-10,None))
                                     upper = np.log(np.clip(kmf.confidence_interval_.iloc[:, 1].values,1e-10,None))
-                                    ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3)
+                                    ax.fill_between(kmf.timeline, lower, upper, color=color, alpha=0.3, step='post')
                                 except Exception:
                                     pass
+                        if show_c:
+                            censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                            if not censored_times.empty:
+                                y_censored = np.interp(censored_times, kmf.timeline, y_vals)
+                                ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
                     elif graph_type == "1 - Supervivencia":
                         y_vals = 1 - kmf.survival_function_.values.flatten()
-                        ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get())
+                        ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                         if self.show_ci.get():
                             if self.use_bootstrap.get():
                                 timeline = kmf.timeline
                                 lower_bound, upper_bound = self.compute_bootstrap_ci(df_final_for_analysis, time_col, event_col,
                                                                                      timeline, self.bootstrap_iterations.get(),
                                                                                      self.random_seed.get())
-                                ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3)
+                                ax.fill_between(timeline, 1 - upper_bound, 1 - lower_bound, color=color, alpha=0.3, step='post')
                             else:
-                                try:
-                                    lower = kmf.confidence_interval_.iloc[:, 0].values
-                                    upper = kmf.confidence_interval_.iloc[:, 1].values
-                                    ax.fill_between(kmf.timeline, 1 - upper, 1 - lower, color=color, alpha=0.3)
-                                except Exception:
-                                    pass
+                                lower_ci = 1 - kmf.confidence_interval_.iloc[:, 1].values
+                                upper_ci = 1 - kmf.confidence_interval_.iloc[:, 0].values
+                                ax.fill_between(kmf.timeline, lower_ci, upper_ci, color=color, alpha=0.3, step='post')
+                        if show_c:
+                            censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                            if not censored_times.empty:
+                                y_censored = np.interp(censored_times, kmf.timeline, y_vals)
+                                ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
                     elif graph_type == "Riesgo Acumulado":
                         if hasattr(kmf, "cumulative_hazard_"):
                             y_vals = kmf.cumulative_hazard_.values.flatten()
-                            ax.plot(kmf.cumulative_hazard_.index, y_vals, label="Global", color=color, lw=self.linewidth.get())
+                            ax.plot(kmf.cumulative_hazard_.index, y_vals, label="Global", color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                             if self.show_ci.get():
                                 if self.use_bootstrap.get():
                                     timeline = kmf.timeline
@@ -970,18 +987,22 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                          timeline, self.bootstrap_iterations.get(),
                                                                                          self.random_seed.get())
                                     ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)),
-                                                    -np.log(np.clip(lower_bound,1e-10,None)), color=color, alpha=0.3)
+                                                    -np.log(np.clip(lower_bound,1e-10,None)), color=color, alpha=0.3, step='post')
                                 else:
                                     try:
-                                        lower = kmf.confidence_interval_.iloc[:, 0].values
-                                        upper = kmf.confidence_interval_.iloc[:, 1].values
-                                        ax.fill_between(kmf.timeline, -np.log(np.clip(upper,1e-10,None)),
-                                                        -np.log(np.clip(lower,1e-10,None)), color=color, alpha=0.3)
+                                        lower = kmf.confidence_interval_cumulative_hazard_.iloc[:, 0].values
+                                        upper = kmf.confidence_interval_cumulative_hazard_.iloc[:, 1].values
+                                        ax.fill_between(kmf.cumulative_hazard_.index, lower, upper, color=color, alpha=0.3, step='post')
                                     except Exception:
                                         pass
+                        if show_c:
+                            censored_times = kmf.event_table.loc[kmf.event_table['censored'] > 0].index
+                            if not censored_times.empty:
+                                y_censored = np.interp(censored_times, kmf.timeline, y_vals if 'y_vals' in locals() else -np.log(np.clip(np.interp(censored_times, kmf.timeline, kmf.survival_function_.values.flatten()), 1e-10, None)))
+                                ax.scatter(censored_times, y_censored, marker='+', color=color, s=30, zorder=3)
                         else:
                             y_vals = -np.log(np.clip(kmf.survival_function_.values.flatten(), a_min=1e-10, a_max=None))
-                            ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get())
+                            ax.plot(kmf.timeline, y_vals, label="Global", color=color, lw=self.linewidth.get(), drawstyle='steps-post')
                             if self.show_ci.get():
                                 if self.use_bootstrap.get():
                                     timeline = kmf.timeline
@@ -989,13 +1010,13 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                                                          timeline, self.bootstrap_iterations.get(),
                                                                                          self.random_seed.get())
                                     ax.fill_between(timeline, -np.log(np.clip(upper_bound,1e-10,None)),
-                                                    -np.log(np.clip(lower_bound,1e-10,None)), color=color, alpha=0.3)
+                                                    -np.log(np.clip(lower_bound,1e-10,None)), color=color, alpha=0.3, step='post')
                                 else:
                                     try:
                                         lower = kmf.confidence_interval_.iloc[:, 0].values
                                         upper = kmf.confidence_interval_.iloc[:, 1].values
                                         ax.fill_between(kmf.timeline, -np.log(np.clip(upper,1e-10,None)),
-                                                        -np.log(np.clip(lower,1e-10,None)), color=color, alpha=0.3)
+                                                        -np.log(np.clip(lower,1e-10,None)), color=color, alpha=0.3, step='post')
                                     except Exception:
                                         pass
                     if self.use_bootstrap.get():
@@ -1087,96 +1108,138 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         popup = tk.Toplevel(self)
         popup.title("Resumen de Estadísticos de Supervivencia")
-        txt = tk.Text(popup, wrap="none", width=140, height=30)
-        vsb = ttk.Scrollbar(popup, orient="vertical", command=txt.yview)
-        hsb = ttk.Scrollbar(popup, orient="horizontal", command=txt.xview)
+
+        # Crear un frame para el texto y las barras de scroll
+        text_frame = ttk.Frame(popup)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        txt = tk.Text(text_frame, wrap="none", width=140, height=30)
+        vsb = ttk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
+        hsb = ttk.Scrollbar(text_frame, orient="horizontal", command=txt.xview)
         txt.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
         txt.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
-        popup.rowconfigure(0, weight=1)
-        popup.columnconfigure(0, weight=1)
-        header = (
-            f"{'Categoría':<20} | {'N casos':<8} | {'N censurados':<12} | "
-            f"{'Mediana':<10} | {'SE med.':<8} | {'IC med.':<18} | "
-            f"{'p25':<10} | {'SE p25':<8} | {'IC p25':<18} | "
-            f"{'p75':<10} | {'SE p75':<8} | {'IC p75':<18} | "
-            f"{'p3':<10} | {'SE p3':<8} | {'IC p3':<18} | "
-            f"{'p97':<10} | {'SE p97':<8} | {'IC p97':<18}\n"
-        )
-        separator = "-" * 160 + "\n"
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+
+        # Botón de exportación
+        btn_excel = ttk.Button(popup, text="Exportar a Excel", command=lambda: self.export_summary_to_excel(summary_data))
+        btn_excel.pack(pady=5)
+
+        # Cabecera base
+        header_parts = [
+            f"{'Categoría':<20}", f"{'N casos':<8}", f"{'N censurados':<12}",
+            f"{'Mediana':<10}", f"{'SE med.':<8}", f"{'IC med.':<18}",
+            f"{'p25':<10}", f"{'SE p25':<8}", f"{'IC p25':<18}",
+            f"{'p75':<10}", f"{'SE p75':<8}", f"{'IC p75':<18}",
+            f"{'p3':<10}", f"{'SE p3':<8}", f"{'IC p3':<18}",
+            f"{'p97':<10}", f"{'SE p97':<8}", f"{'IC p97':<18}"
+        ]
+
+        # Determinar el tipo de tabla a mostrar
+        graph_type = self.cmb_graph_type.get()
+        table_header_text = "Tabla Supervivencia"
+        if graph_type == "Log de Supervivencia":
+            table_header_text = "Tabla Log-Supervivencia"
+        elif graph_type == "1 - Supervivencia":
+            table_header_text = "Tabla 1-Supervivencia"
+        elif graph_type == "Riesgo Acumulado":
+            table_header_text = "Tabla Riesgo Acumulado"
+
+        # Añadir la tabla de supervivencia si la opción está activa
+        show_survival_table = self.show_censors_on_tables.get()
+        if show_survival_table:
+            header_parts.append(f"{table_header_text} (Tiempo, Valor, Censura)")
+
+        header = " | ".join(header_parts) + "\n"
+        separator = "-" * (len(header) + 20) + "\n"
         txt.insert(tk.END, header)
         txt.insert(tk.END, separator)
+
         summary_data = []
+
         for (catv, stats, bs_stats, n_used, n_censored) in self.km_results:
+            line_parts = []
+            excel_row = {}
+
+            # Datos estadísticos
             if bs_stats:
-                med = bs_stats["median"]
-                p25 = bs_stats["p25"]
-                p75 = bs_stats["p75"]
-                p3 = bs_stats["p3"]
-                p97 = bs_stats["p97"]
-                line = (
-                    f"{catv:<20} | {n_used:<8} | {n_censored:<12} | "
-                    f"{format_value(med['estimate']):<10} | {format_value(med['se']):<8} | ({format_value(med['ci'][0])}, {format_value(med['ci'][1])})  | "
-                    f"{format_value(p25['estimate']):<10} | {format_value(p25['se']):<8} | ({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})  | "
-                    f"{format_value(p75['estimate']):<10} | {format_value(p75['se']):<8} | ({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})  | "
-                    f"{format_value(p3['estimate']):<10} | {format_value(p3['se']):<8} | ({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})  | "
-                    f"{format_value(p97['estimate']):<10} | {format_value(p97['se']):<8} | ({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
-                )
-                # Preparar diccionario para exportar a Excel
-                summary_data.append({
-                    "Categoría": catv,
-                    "N casos": n_used,
-                    "N censurados": n_censored,
-                    "Mediana": format_value(med['estimate']),
-                    "SE med.": format_value(med['se']),
-                    "IC med.": f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
-                    "p25": format_value(p25['estimate']),
-                    "SE p25": format_value(p25['se']),
-                    "IC p25": f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
-                    "p75": format_value(p75['estimate']),
-                    "SE p75": format_value(p75['se']),
-                    "IC p75": f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
-                    "p3": format_value(p3['estimate']),
-                    "SE p3": format_value(p3['se']),
-                    "IC p3": f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
-                    "p97": format_value(p97['estimate']),
-                    "SE p97": format_value(p97['se']),
-                    "IC p97": f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
-                })
-            else:
-                med_val = stats.get("median")
-                p25_val = stats.get("p25")
-                p75_val = stats.get("p75")
-                line = (
-                    f"{catv:<20} | {n_used:<8} | {n_censored:<12} | "
-                    f"{(format_value(med_val) if med_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{(format_value(p25_val) if p25_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{(format_value(p75_val) if p75_val is not None else 'N/A'):<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{'N/A':<10} | {'N/A':<8} | {'N/A':<18} | "
-                    f"{'N/A':<10} | {'N/A':<8} | {'N/A':<18}"
-                )
-                summary_data.append({
-                    "Categoría": catv,
-                    "N casos": n_used,
-                    "N censurados": n_censored,
-                    "Mediana": (format_value(med_val) if med_val is not None else 'N/A'),
-                    "SE med.": "N/A",
-                    "IC med.": "N/A",
-                    "p25": (format_value(p25_val) if p25_val is not None else 'N/A'),
-                    "SE p25": "N/A",
-                    "IC p25": "N/A",
-                    "p75": (format_value(p75_val) if p75_val is not None else 'N/A'),
-                    "SE p75": "N/A",
-                    "IC p75": "N/A",
-                    "p3": "N/A",
-                    "SE p3": "N/A",
-                    "IC p3": "N/A",
-                    "p97": "N/A",
-                    "SE p97": "N/A",
-                    "IC p97": "N/A"
-                })
-            txt.insert(tk.END, line + "\n")
+                med, p25, p75, p3, p97 = (bs_stats["median"], bs_stats["p25"], bs_stats["p75"], bs_stats["p3"], bs_stats["p97"])
+                line_parts.extend([
+                    f"{catv:<20}", f"{n_used:<8}", f"{n_censored:<12}",
+                    f"{format_value(med['estimate']):<10}", f"{format_value(med['se']):<8}", f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
+                    f"{format_value(p25['estimate']):<10}", f"{format_value(p25['se']):<8}", f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
+                    f"{format_value(p75['estimate']):<10}", f"{format_value(p75['se']):<8}", f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
+                    f"{format_value(p3['estimate']):<10}", f"{format_value(p3['se']):<8}", f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
+                    f"{format_value(p97['estimate']):<10}", f"{format_value(p97['se']):<8}", f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
+                ])
+                excel_row = {
+                    "Categoría": catv, "N casos": n_used, "N censurados": n_censored,
+                    "Mediana": format_value(med['estimate']), "SE med.": format_value(med['se']), "IC med.": f"({format_value(med['ci'][0])}, {format_value(med['ci'][1])})",
+                    "p25": format_value(p25['estimate']), "SE p25": format_value(p25['se']), "IC p25": f"({format_value(p25['ci'][0])}, {format_value(p25['ci'][1])})",
+                    "p75": format_value(p75['estimate']), "SE p75": format_value(p75['se']), "IC p75": f"({format_value(p75['ci'][0])}, {format_value(p75['ci'][1])})",
+                    "p3": format_value(p3['estimate']), "SE p3": format_value(p3['se']), "IC p3": f"({format_value(p3['ci'][0])}, {format_value(p3['ci'][1])})",
+                    "p97": format_value(p97['estimate']), "SE p97": format_value(p97['se']), "IC p97": f"({format_value(p97['ci'][0])}, {format_value(p97['ci'][1])})"
+                }
+            else: # Sin bootstrap
+                med_val, p25_val, p75_val = (stats.get("median"), stats.get("p25"), stats.get("p75"))
+                line_parts.extend([
+                    f"{catv:<20}", f"{n_used:<8}", f"{n_censored:<12}",
+                    f"{(format_value(med_val) if med_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{(format_value(p25_val) if p25_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{(format_value(p75_val) if p75_val is not None else 'N/A'):<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{'N/A':<10}", f"{'N/A':<8}", f"{'N/A':<18}",
+                    f"{'N/A':<10}", f"{'N/A':<8}", f"{'N/A':<18}"
+                ])
+                excel_row = {
+                    "Categoría": catv, "N casos": n_used, "N censurados": n_censored,
+                    "Mediana": (format_value(med_val) if med_val is not None else 'N/A'), "SE med.": "N/A", "IC med.": "N/A",
+                    "p25": (format_value(p25_val) if p25_val is not None else 'N/A'), "SE p25": "N/A", "IC p25": "N/A",
+                    "p75": (format_value(p75_val) if p75_val is not None else 'N/A'), "SE p75": "N/A", "IC p75": "N/A",
+                    "p3": "N/A", "SE p3": "N/A", "IC p3": "N/A",
+                    "p97": "N/A", "SE p97": "N/A", "IC p97": "N/A"
+                }
+
+            # Añadir la tabla de supervivencia si es necesario
+            if show_survival_table:
+                time_col = self.cmb_time.get()
+                event_col = self.cmb_event.get()
+                cat_var = self.cmb_cat.get()
+
+                if cat_var and cat_var in self.km_results_df.columns:
+                    sub_df = self.km_results_df[self.km_results_df[cat_var] == catv] if catv != "Global" else self.km_results_df
+                else:
+                    sub_df = self.km_results_df
+
+                kmf = KaplanMeierFitter()
+                kmf.fit(sub_df[time_col], sub_df[event_col])
+
+                table_str = f"{table_header_text}:\n"
+
+                # Obtener los datos de la curva según el tipo de gráfico
+                if graph_type == "KM":
+                    y_values = kmf.survival_function_.values.flatten()
+                elif graph_type == "Log de Supervivencia":
+                    y_values = np.log(np.clip(kmf.survival_function_.values.flatten(), 1e-10, None))
+                elif graph_type == "1 - Supervivencia":
+                    y_values = 1 - kmf.survival_function_.values.flatten()
+                elif graph_type == "Riesgo Acumulado":
+                    y_values = kmf.cumulative_hazard_.values.flatten()
+
+                # Crear un diccionario de tiempos de censura para búsqueda rápida
+                censored_times = set(kmf.event_table.loc[kmf.event_table['censored'] > 0].index)
+
+                for time, value in zip(kmf.timeline, y_values):
+                    censura_char = "C" if time in censored_times else ""
+                    table_str += f"{time}:{value:.2f}({censura_char}) "
+
+                line_parts.append(f"{table_str:<50}")
+                excel_row[table_header_text] = table_str.replace("\n", " ")
+
+            txt.insert(tk.END, " | ".join(line_parts) + "\n")
+            summary_data.append(excel_row)
         txt.config(state="disabled")
         btn_excel = ttk.Button(popup, text="Exportar a Excel", command=lambda: self.export_summary_to_excel(summary_data))
         btn_excel.grid(row=2, column=0, pady=5)
@@ -1505,7 +1568,7 @@ class dummy_class:
 def print_long_dummy_text():
     dummy_text = """
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum in porttitor urna.
-Suspendisse potenti. Aliquam erat volutpat. Integer in volutpat libero. Proin ac massa rutrum,
+Suspendisse potenti. Alam erat volutpat. Integer in volutpat libero. Proin ac massa rutrum,
 maximus sapien eget, mollis leo. Donec suscipit massa ut elit interdum, at dignissim magna facilisis.
 Nullam sit amet lacus sed dui cursus blandit. Fusce eget dui ut enim aliquet volutpat.
 Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae;
