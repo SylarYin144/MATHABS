@@ -148,6 +148,7 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.y_label = tk.StringVar(value="Probabilidad de Supervivencia")
         self.y_color = tk.StringVar(value="black")
         self.axis_fontsize = tk.IntVar(value=10)
+        self.font_family = tk.StringVar(value="Arial")
 
         # Opciones para IC y Bootstrap
         self.show_ci = tk.BooleanVar(value=True)
@@ -393,6 +394,12 @@ class SurvivalAnalysisTab(ttk.Frame):
         ttk.Label(frm_labels, text="Tamaño Ejes:").grid(row=2, column=4, sticky="w", padx=5, pady=2)
         spin_axis_font = tk.Spinbox(frm_labels, from_=8, to=30, textvariable=self.axis_fontsize, width=5)
         spin_axis_font.grid(row=2, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(frm_labels, text="Tipo de Letra:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        font_options = ["Arial", "Times New Roman", "Courier", "Palatino Linotype", "Verdana", "Tahoma"]
+        combo_font_family = ttk.Combobox(frm_labels, values=font_options, textvariable=self.font_family, state="readonly")
+        combo_font_family.grid(row=3, column=1, sticky="w", padx=5, pady=2)
+
         frm_labels.columnconfigure(1, weight=1)
 
         # 13. NUEVA SECCIÓN: Opciones de Intervalos de Confianza (IC)
@@ -1047,20 +1054,25 @@ class SurvivalAnalysisTab(ttk.Frame):
         ax.xaxis.set_major_locator(MaxNLocator(self.num_ticks_x.get()))
         ax.yaxis.set_major_locator(MaxNLocator(self.num_ticks_y.get()))
         # Ajustar títulos y etiquetas según el tipo de gráfica
+        font_name = self.font_family.get()
         if graph_type == "KM":
-            ax.set_title(self.title_text.get() + " - Supervivencia", color=self.title_color.get(), fontsize=self.title_fontsize.get())
-            ax.set_ylabel("Supervivencia", color=self.y_color.get(), fontsize=self.axis_fontsize.get())
+            ax.set_title(self.title_text.get() if self.title_text.get().strip() else " ", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel(self.y_label.get() if self.y_label.get().strip() else " ", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "Log de Supervivencia":
-            ax.set_title("Log de Supervivencia (ln[S(t)])", color=self.title_color.get(), fontsize=self.title_fontsize.get())
-            ax.set_ylabel("ln(S(t))", color=self.y_color.get(), fontsize=self.axis_fontsize.get())
+            ax.set_title("Log de Supervivencia (ln[S(t)])", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel("ln(S(t))", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "1 - Supervivencia":
-            ax.set_title("1 - Supervivencia", color=self.title_color.get(), fontsize=self.title_fontsize.get())
-            ax.set_ylabel("1 - S(t)", color=self.y_color.get(), fontsize=self.axis_fontsize.get())
+            ax.set_title("1 - Supervivencia", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel("1 - S(t)", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "Riesgo Acumulado":
-            ax.set_title("Riesgo Acumulado", color=self.title_color.get(), fontsize=self.title_fontsize.get())
-            ax.set_ylabel("Riesgo Acumulado", color=self.y_color.get(), fontsize=self.axis_fontsize.get())
-        ax.legend()
-        ax.set_xlabel(self.x_label.get(), color=self.x_color.get(), fontsize=self.axis_fontsize.get())
+            ax.set_title("Riesgo Acumulado", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel("Riesgo Acumulado", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels)
+
+        ax.set_xlabel(self.x_label.get(), color=self.x_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         self.canvas.draw()
         self.txt_log.insert(tk.END, "Gráfica generada.\n")
         self.log_debug("Se completó el análisis Kaplan-Meier.")
