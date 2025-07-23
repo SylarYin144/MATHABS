@@ -2394,7 +2394,7 @@ class CoxModelingApp(ttk.Frame):
                     term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
             formula_parts_bd.append(term_syntax_bd)
 
-        formula_patsy_bd = "0 + " + " + ".join(formula_parts_bd) if formula_parts_bd else "0"
+        formula_patsy_bd = " + ".join(formula_parts_bd) if formula_parts_bd else "1"
         self.log(f"Fórmula Patsy generada: {formula_patsy_bd}", "DEBUG")
 
         try:
