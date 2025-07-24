@@ -3660,51 +3660,75 @@ class CoxModelingApp(ttk.Frame):
         ttk.Button(frame_btns_pred_diag,text="Cancelar",command=pred_diag.destroy).pack(side=tk.RIGHT,padx=10)
 
     def _perform_prediction_and_plot(self, dialog_pred_ref, md_dict_for_pred, entries_dict_for_pred, type_ui_pred, times_str_ui_pred):
-        cph_model_for_pred = md_dict_for_pred.get('model'); name_for_pred = md_dict_for_pred.get('model_name', 'N/A')
+        cph_model_for_pred = md_dict_for_pred.get('model')
+        name_for_pred = md_dict_for_pred.get('model_name', 'N/A')
         times_list_pred = []
+
         if times_str_ui_pred.strip():
             try:
                 times_list_pred = [float(t.strip()) for t in times_str_ui_pred.split(',') if t.strip()]
                 if any(t < 0 for t in times_list_pred): raise ValueError("Tiempos negativos no permitidos.")
                 times_list_pred = sorted(list(set(times_list_pred)))
             except ValueError:
-                messagebox.showerror("Error Tiempos","Tiempos inválidos. Ingrese números separados por comas o déjelo vacío para la curva completa.",parent=dialog_pred_ref); return
-        
+                messagebox.showerror("Error Tiempos", "Tiempos inválidos. Ingrese números separados por comas o déjelo vacío para la curva completa.", parent=dialog_pred_ref)
+                return
+
         input_data_dict_pred = {}
         for var_k, svar_obj in entries_dict_for_pred.items():
             val_entry = svar_obj.get().strip()
-            if not val_entry: messagebox.showerror("Valor Faltante",f"Valor faltante para '{var_k}'.",parent=dialog_pred_ref); return
-            try: input_data_dict_pred[var_k] = float(val_entry)
-            except ValueError: input_data_dict_pred[var_k] = str(val_entry)
-        
+            if not val_entry:
+                messagebox.showerror("Valor Faltante", f"Valor faltante para '{var_k}'.", parent=dialog_pred_ref)
+                return
+            try:
+                input_data_dict_pred[var_k] = float(val_entry)
+            except ValueError:
+                input_data_dict_pred[var_k] = str(val_entry)
+
         df_patsy_input_pred = pd.DataFrame([input_data_dict_pred]) if input_data_dict_pred else pd.DataFrame([{}])
 
-
         try:
+            # --- Lógica de Predicción Mejorada ---
             full_formula_for_transform = md_dict_for_pred.get("full_patsy_formula_for_new_data_transform")
             final_model_terms = md_dict_for_pred.get('covariates_processed', [])
+
+            # Obtener el objeto scaler si se usó
+            fitted_scaler = md_dict_for_pred.get("fitted_scaler_object")
+            scaled_columns = md_dict_for_pred.get("scaled_columns_info", [])
+
+            if fitted_scaler and scaled_columns:
+                # Aplicar la misma transformación de escalado a los datos de entrada
+                numeric_cols_in_pred_input = [col for col in scaled_columns if col in df_patsy_input_pred.columns]
+                if numeric_cols_in_pred_input:
+                    # Asegurar que los datos sean numéricos antes de transformar
+                    df_patsy_input_pred[numeric_cols_in_pred_input] = df_patsy_input_pred[numeric_cols_in_pred_input].apply(pd.to_numeric, errors='coerce')
+                    df_patsy_input_pred[numeric_cols_in_pred_input] = fitted_scaler.transform(df_patsy_input_pred[numeric_cols_in_pred_input])
+                    self.log(f"Datos de predicción escalados para las columnas: {numeric_cols_in_pred_input}", "DEBUG")
 
             X_patsy_pred_final: pd.DataFrame
 
             if not final_model_terms:
-                X_patsy_pred_final = dmatrix("0", df_patsy_input_pred, return_type="dataframe")
+                # Modelo nulo, sin covariables
+                X_patsy_pred_final = pd.DataFrame(index=df_patsy_input_pred.index)
             elif not full_formula_for_transform:
-                self.log("Error crítico: Fórmula completa de Patsy no disponible para transformar datos para predicción.", "ERROR")
-                messagebox.showerror("Error Predicción", "No se pudo determinar la fórmula de Patsy para transformar nuevos datos.", parent=dialog_pred_ref)
+                self.log("Error crítico: La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", "ERROR")
+                messagebox.showerror("Error Predicción", "La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", parent=dialog_pred_ref)
                 return
             else:
+                # Transformar los nuevos datos usando la fórmula completa original
                 X_temp_full_design = dmatrix(full_formula_for_transform, df_patsy_input_pred, return_type="dataframe")
                 
+                # Asegurar que todas las columnas del modelo final estén presentes
                 if set(final_model_terms).issubset(set(X_temp_full_design.columns)):
+                    # Seleccionar solo las columnas que el modelo final usó, en el orden correcto
                     X_patsy_pred_final = X_temp_full_design[final_model_terms]
                 else:
                     missing_terms = set(final_model_terms) - set(X_temp_full_design.columns)
-                    self.log(f"Error: Términos del modelo {missing_terms} no encontrados en X transformada para predicción.", "ERROR")
+                    self.log(f"Error: Términos del modelo {missing_terms} no encontrados en la matriz de diseño transformada.", "ERROR")
                     messagebox.showerror("Error Predicción", f"Discrepancia en términos para predicción. Faltan: {missing_terms}", parent=dialog_pred_ref)
                     return
         except Exception as e_patsy_pred_final:
-            self.log(f"Error Patsy en predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
-            messagebox.showerror("Error Patsy Pred.","Error transformando entradas para predicción.",parent=dialog_pred_ref); return
+            self.log(f"Error de Patsy al transformar los datos para predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
+            messagebox.showerror("Error de Patsy en Predicción",f"Error al transformar las entradas para la predicción:\n{e_patsy_pred_final}",parent=dialog_pred_ref); return
 
         try:
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
