@@ -2388,12 +2388,13 @@ class CoxModelingApp(ttk.Frame):
                         # If ref_cat_str_bd could be numeric, further type checking might be needed,
                         # but for now, assuming string reference categories are common.
                         # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
-                        if re.match(r"^-?\d+(\.\d+)?$", ref_cat_str_bd): # Check if it looks like a number
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
-                        else: # Assume string, enclose in quotes for Patsy
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                        # Usar comillas dobles para el valor de Treatment si es una cadena
+                        if isinstance(ref_cat_bd, str):
+                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                        else: # Para valores numéricos o de otro tipo
+                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
                     else:
-                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
+                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no está en los datos. Usando el default de Patsy.", "WARN")
                         term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
                 else:
                     term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
