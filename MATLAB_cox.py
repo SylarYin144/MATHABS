@@ -3723,13 +3723,13 @@ class CoxModelingApp(ttk.Frame):
                 X_temp_full_design = dmatrix(full_formula_for_transform, df_patsy_input_pred, return_type="dataframe")
                 
                 # Asegurar que todas las columnas del modelo final estén presentes
-                if set(final_model_terms).issubset(set(X_temp_full_design.columns)):
-                    # Seleccionar solo las columnas que el modelo final usó, en el orden correcto
+                # Reordenar y seleccionar las columnas para que coincidan exactamente con el modelo
+                try:
                     X_patsy_pred_final = X_temp_full_design[final_model_terms]
-                else:
-                    missing_terms = set(final_model_terms) - set(X_temp_full_design.columns)
-                    self.log(f"Error: Términos del modelo {missing_terms} no encontrados en la matriz de diseño transformada.", "ERROR")
-                    messagebox.showerror("Error Predicción", f"Discrepancia en términos para predicción. Faltan: {missing_terms}", parent=dialog_pred_ref)
+                except KeyError as e:
+                    missing_cols = set(final_model_terms) - set(X_temp_full_design.columns)
+                    self.log(f"Error: Las columnas del modelo {missing_cols} no se encontraron en la matriz de diseño transformada para la predicción.", "ERROR")
+                    messagebox.showerror("Error de Predicción", f"Discrepancia en las columnas para la predicción. Faltan: {missing_cols}", parent=dialog_pred_ref)
                     return
         except Exception as e_patsy_pred_final:
             self.log(f"Error de Patsy al transformar los datos para predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
