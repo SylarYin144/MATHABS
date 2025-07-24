@@ -2303,13 +2303,13 @@ class CoxModelingApp(ttk.Frame):
             self.log("No se aplicó escalado de covariables.", "INFO")
         # --- Fin Escalado ---
 
-        df_filtered_patsy, X_design_patsy, formula_patsy_gen, terms_patsy_display, design_info_patsy = self.build_design_matrix(
+        df_filtered_patsy, X_design_patsy, formula_patsy_gen, terms_patsy_display = self.build_design_matrix(
             df_model_prep, selected_covs_orig_names, final_t_col, final_e_col
         )
         self.log(f"DEBUG: df_filtered_patsy columns after build_design_matrix: {df_filtered_patsy.columns.tolist() if df_filtered_patsy is not None else 'N/A'}", "DEBUG")
 
         if X_design_patsy is None or df_filtered_patsy is None: 
-             self.log("Falló build_design_matrix.", "ERROR"); return None, None, None, None, None, None, None, "Ninguna", None, [], None
+             self.log("Falló build_design_matrix.", "ERROR"); return None, None, None, None, None, None, None, "Ninguna", None, []
         
         y_survival_patsy = df_filtered_patsy[[final_t_col, final_e_col]]
 
@@ -2320,7 +2320,7 @@ class CoxModelingApp(ttk.Frame):
         return (df_filtered_patsy, X_design_patsy, y_survival_patsy,
                 formula_patsy_gen, terms_patsy_display,
                 final_t_col, final_e_col,
-                scaling_method, fitted_scaler, scaled_column_names, design_info_patsy)
+                scaling_method, fitted_scaler, scaled_column_names)
 
 
     def _get_patsy_safe_var_name(self, var_name): # No se usa actualmente, Patsy Q() maneja nombres.
@@ -2405,7 +2405,7 @@ class CoxModelingApp(ttk.Frame):
 
         try:
             if df_for_patsy_bd.empty and formula_patsy_bd != "0": 
-                 self.log("DF entrada Patsy vacío con fórmula no nula.", "ERROR"); return None,None,None,None,None
+                 self.log("DF entrada Patsy vacío con fórmula no nula.", "ERROR"); return None,None,None,None
             
             X_design_bd = dmatrix(formula_patsy_bd, df_for_patsy_bd, return_type="dataframe")
             df_filtered_by_patsy_idx_bd = df_input_bd.loc[X_design_bd.index].copy()
@@ -2413,11 +2413,11 @@ class CoxModelingApp(ttk.Frame):
             final_terms_display_bd = list(X_design_bd.columns)
             self.log(f"Patsy: X_design ({X_design_bd.shape}), DF filtrado ({df_filtered_by_patsy_idx_bd.shape})", "INFO")
             self.log(f"Términos Patsy finales: {final_terms_display_bd}", "DEBUG")
-            return df_filtered_by_patsy_idx_bd, X_design_bd, formula_patsy_bd, final_terms_display_bd, X_design_bd.design_info
+            return df_filtered_by_patsy_idx_bd, X_design_bd, formula_patsy_bd, final_terms_display_bd
         except Exception as e_patsy_build:
             self.log(f"Error Patsy (build matriz): {e_patsy_build}", "ERROR"); traceback.print_exc(limit=5)
             messagebox.showerror("Error Patsy", f"Error construyendo matriz de diseño:\n{e_patsy_build}", parent=self.parent_for_dialogs)
-            return None, None, None, None, None
+            return None, None, None, None
 
 
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
@@ -2476,8 +2476,7 @@ class CoxModelingApp(ttk.Frame):
                                    model_type_for_fit_logic="Multivariado",
                                    scaling_method_applied="Ninguna",
                                    fitted_scaler_obj=None,
-                                   scaled_columns_info=None,
-                                   design_info_for_model=None):
+                                   scaled_columns_info=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
@@ -2502,7 +2501,7 @@ class CoxModelingApp(ttk.Frame):
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else [],
             "custom_model_name": model_name_rm, # Inicializar con el nombre generado
             "custom_model_notes": "", # Inicializar notas vacías
-            "design_info": design_info_for_model
+            "design_info": None # Placeholder for design_info
         }
 
         # 1. Fit Null Model
@@ -3132,7 +3131,7 @@ class CoxModelingApp(ttk.Frame):
         (df_init_full, X_init_full, y_init_data,
          formula_init_patsy_full, terms_init_display,
          t_col_final, e_col_final,
-         scaling_method_used, scaler_object, scaled_cols_list, design_info_init) = prep_res
+         scaling_method_used, scaler_object, scaled_cols_list) = prep_res
 
         if df_init_full is None or df_init_full.empty: # df_init_full is now df_filtered_patsy
             self.log("DF inicial (post-patsy) vacío post-preparación. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
@@ -3160,7 +3159,7 @@ class CoxModelingApp(ttk.Frame):
             else:
                 for orig_cov_uni in orig_covs_ui:
                     self.log(f"--- Univariado para: {orig_cov_uni} ---", "SUBHEADER")
-                    df_uni_f, X_uni_d, formula_uni_patsy, terms_uni, design_info_uni = self.build_design_matrix(df_init_full, [orig_cov_uni], t_col_final, e_col_final)
+                    df_uni_f, X_uni_d, formula_uni_patsy, terms_uni = self.build_design_matrix(df_init_full, [orig_cov_uni], t_col_final, e_col_final)
                     if X_uni_d is None or df_uni_f is None or df_uni_f.empty: self.log(f"Fallo build_design_matrix para '{orig_cov_uni}'.", "WARN"); continue
                     
                     y_uni_s = df_uni_f[[t_col_final, e_col_final]]
@@ -3174,8 +3173,7 @@ class CoxModelingApp(ttk.Frame):
                                                              pen_val, l1_r, model_type_for_fit_logic="Univariado",
                                                              scaling_method_applied=scaling_method_used,
                                                              fitted_scaler_obj=scaler_object,
-                                                             scaled_columns_info=scaled_cols_list,
-                                                             design_info_for_model=design_info_uni)
+                                                             scaled_columns_info=scaled_cols_list)
                     if md_uni:
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
@@ -3194,7 +3192,6 @@ class CoxModelingApp(ttk.Frame):
             X_multi_current = X_init_full
             formula_multi_current = formula_init_patsy_full 
             terms_multi_current = terms_init_display 
-            design_info_multi_current = design_info_init
 
             sel_meth_ui = self.var_selection_method_var.get(); suffix_multi = " (Todas las Variables)"
             if sel_meth_ui != "Ninguno (usar todas)":
@@ -3216,7 +3213,7 @@ class CoxModelingApp(ttk.Frame):
                     
                 # Reconstruir X_design y formula_patsy con las covariables seleccionadas
                 # df_init_full es el DataFrame original alineado y limpio
-                df_multi_current, X_multi_current, formula_multi_current, terms_multi_current, design_info_multi_current = \
+                df_multi_current, X_multi_current, formula_multi_current, terms_multi_current = \
                     self.build_design_matrix(df_init_full, selected_orig_covs_after_selection, t_col_final, e_col_final)
                 
                 if X_multi_current is None or df_multi_current is None or df_multi_current.empty:
@@ -3232,7 +3229,6 @@ class CoxModelingApp(ttk.Frame):
                 X_multi_current = X_init_full
                 formula_multi_current = formula_init_patsy_full
                 terms_multi_current = terms_init_display
-                design_info_multi_current = design_info_init
                 if sel_meth_ui != "Ninguno (usar todas)": # Si se intentó selección pero falló o resultó nula
                     suffix_multi += " (Nulo/Fallo Selección)"
                 else: # Si no se intentó selección
@@ -3249,8 +3245,7 @@ class CoxModelingApp(ttk.Frame):
                                                        pen_val, l1_r, model_type_for_fit_logic="Multivariado",
                                                        scaling_method_applied=scaling_method_used,
                                                        fitted_scaler_obj=scaler_object,
-                                                       scaled_columns_info=scaled_cols_list,
-                                                       design_info_for_model=design_info_multi_current)
+                                                       scaled_columns_info=scaled_cols_list)
             if md_multi:
                 temp_models_list_orch.append(md_multi)
                 if md_multi.get("model") is not None:
@@ -3626,18 +3621,19 @@ class CoxModelingApp(ttk.Frame):
                 messagebox.showerror("Error Predicción", "No se puede determinar qué variables originales se necesitan para la predicción sin la fórmula de Patsy completa.", parent=self.parent_for_dialogs)
                 return
         else:
-            design_info_pred = md_pred.get("design_info")
-            if design_info_pred and hasattr(design_info_pred, 'factor_infos'):
-                self.log("Extrayendo variables para predicción desde 'design_info.factor_infos'.", "INFO")
-                orig_vars_ask_pred = []
-                for factor in design_info_pred.factor_infos:
-                    for var in factor.variables:
-                        if var not in orig_vars_ask_pred:
-                            orig_vars_ask_pred.append(var)
-                orig_vars_ask_pred = sorted(orig_vars_ask_pred)
-            elif full_patsy_formula:
-                self.log("Extrayendo variables para predicción con regex desde 'full_patsy_formula' (fallback).", "WARN")
-                orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+        if full_patsy_formula:
+            # Regex to find all identifiers inside Q('') or bare identifiers
+            # It finds words inside Q('') OR words that are not known patsy operators/functions
+            patsy_funcs_and_ops = r'\b(C|cr|bs|Q|Treatment|log|exp|abs|I)\b|\+|-|\*|/|~'
+            # First, find all words
+            all_identifiers = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', full_patsy_formula)
+            # Then, filter out the known functions and operators
+            orig_vars_ask_pred = sorted([
+                var for var in all_identifiers
+                if not re.fullmatch(patsy_funcs_and_ops, var)
+                and var not in ['df', 'degree', 'knots', 'include_intercept'] # filter patsy args
+            ])
+            self.log(f"Variables para predicción extraídas de fórmula: {orig_vars_ask_pred}", "INFO")
             else:
                 orig_vars_ask_pred = []
 
