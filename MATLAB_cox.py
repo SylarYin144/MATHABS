@@ -3733,7 +3733,7 @@ class CoxModelingApp(ttk.Frame):
         try:
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
             if type_ui_pred == "Supervivencia":
-                pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
+                pred_df = cph_model_for_pred.predict_survival_function(X_patsy_pred_final)
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("S(t|X)")
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
