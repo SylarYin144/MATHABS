@@ -3629,7 +3629,12 @@ class CoxModelingApp(ttk.Frame):
             design_info_pred = md_pred.get("design_info")
             if design_info_pred and hasattr(design_info_pred, 'factor_infos'):
                 self.log("Extrayendo variables para predicción desde 'design_info.factor_infos'.", "INFO")
-                orig_vars_ask_pred = sorted(list(design_info_pred.factor_infos.keys()))
+                orig_vars_ask_pred = []
+                for factor in design_info_pred.factor_infos:
+                    for var in factor.variables:
+                        if var not in orig_vars_ask_pred:
+                            orig_vars_ask_pred.append(var)
+                orig_vars_ask_pred = sorted(orig_vars_ask_pred)
             elif full_patsy_formula:
                 self.log("Extrayendo variables para predicción con regex desde 'full_patsy_formula' (fallback).", "WARN")
                 orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
