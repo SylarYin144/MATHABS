@@ -3621,19 +3621,19 @@ class CoxModelingApp(ttk.Frame):
                 messagebox.showerror("Error Predicción", "No se puede determinar qué variables originales se necesitan para la predicción sin la fórmula de Patsy completa.", parent=self.parent_for_dialogs)
                 return
         else:
-        if full_patsy_formula:
-            # Regex to find all identifiers inside Q('') or bare identifiers
-            # It finds words inside Q('') OR words that are not known patsy operators/functions
-            patsy_funcs_and_ops = r'\b(C|cr|bs|Q|Treatment|log|exp|abs|I)\b|\+|-|\*|/|~'
-            # First, find all words
-            all_identifiers = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', full_patsy_formula)
-            # Then, filter out the known functions and operators
-            orig_vars_ask_pred = sorted([
-                var for var in all_identifiers
-                if not re.fullmatch(patsy_funcs_and_ops, var)
-                and var not in ['df', 'degree', 'knots', 'include_intercept'] # filter patsy args
-            ])
-            self.log(f"Variables para predicción extraídas de fórmula: {orig_vars_ask_pred}", "INFO")
+            if full_patsy_formula:
+                # Regex to find all identifiers inside Q('') or bare identifiers
+                # It finds words inside Q('') OR words that are not known patsy operators/functions
+                patsy_funcs_and_ops = r'\b(C|cr|bs|Q|Treatment|log|exp|abs|I)\b|\+|-|\*|/|~'
+                # First, find all words
+                all_identifiers = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', full_patsy_formula)
+                # Then, filter out the known functions and operators
+                orig_vars_ask_pred = sorted([
+                    var for var in all_identifiers
+                    if not re.fullmatch(patsy_funcs_and_ops, var)
+                    and var not in ['df', 'degree', 'knots', 'include_intercept'] # filter patsy args
+                ])
+                self.log(f"Variables para predicción extraídas de fórmula: {orig_vars_ask_pred}", "INFO")
             else:
                 orig_vars_ask_pred = []
 
