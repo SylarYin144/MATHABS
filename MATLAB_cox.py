@@ -2241,22 +2241,27 @@ class CoxModelingApp(ttk.Frame):
             return None, None, None, None, None, None, None, "Ninguna", None, []
         
         try:
-            df_model_prep[final_e_col] = pd.to_numeric(df_model_prep[final_e_col])
-            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True) # Drop NaNs in T/E cols *before* astype(int)
+            # Convertir a numérico, forzando errores a NaN
+            numeric_event_col = pd.to_numeric(df_model_prep[final_e_col], errors='coerce')
+
+            # Comprobar si todos los valores son 0, 1, o NaN
+            if not numeric_event_col.dropna().isin([0, 1]).all():
+                self.log(f"Columna Evento '{final_e_col}' contiene valores que no son 0 o 1.", "ERROR")
+                messagebox.showerror("Error de Tipo", f"La columna de Evento ('{final_e_col}') debe contener solo valores 0 y 1.", parent=self.parent_for_dialogs)
+                return None, None, None, None, None, None, None, "Ninguna", None, []
+
+            df_model_prep[final_e_col] = numeric_event_col
+            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True)
+
             if df_model_prep.empty:
-                 self.log(f"Dataset vacío después de convertir T/E a numérico y eliminar NaNs en T/E.", "ERROR")
-                 messagebox.showerror("Datos Insuficientes", "No quedan datos válidos para T/E después de la conversión a numérico y eliminación de NaNs.", parent=self.parent_for_dialogs)
-                 return None, None, None, None, None, None, None, "Ninguna", None, []
- 
-            if not df_model_prep[final_e_col].isin([0, 1]).all():
-                 num_invalid_events = df_model_prep[~df_model_prep[final_e_col].isin([0, 1])].shape[0]
-                 self.log(f"Columna Evento '{final_e_col}' tiene {num_invalid_events} valor(es) que no son 0 o 1 después de conversión y dropna.", "ERROR")
-                 messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' debe contener solo valores 0 o 1.", parent=self.parent_for_dialogs)
-                 return None, None, None, None, None, None, None, "Ninguna", None, []
+                self.log("Dataset vacío después de procesar y eliminar NaNs en columnas de Tiempo/Evento.", "ERROR")
+                messagebox.showerror("Datos Insuficientes", "No quedan datos válidos después de procesar las columnas de Tiempo y Evento.", parent=self.parent_for_dialogs)
+                return None, None, None, None, None, None, None, "Ninguna", None, []
+
             df_model_prep[final_e_col] = df_model_prep[final_e_col].astype(int)
-        except ValueError as e_e: # Si to_numeric falla completamente
-            self.log(f"Error convirtiendo columna Evento '{final_e_col}' a numérico 0/1: {e_e}", "ERROR")
-            messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' no puede ser convertida a numérica (0/1).", parent=self.parent_for_dialogs)
+        except Exception as e_e:
+            self.log(f"Error procesando la columna de Evento '{final_e_col}': {e_e}", "ERROR")
+            messagebox.showerror("Error de Tipo", f"Error al procesar la columna de Evento '{final_e_col}'. Asegúrese de que sea binaria (0/1).", parent=self.parent_for_dialogs)
             return None, None, None, None, None, None, None, "Ninguna", None, []
  
         initial_rows_prep = len(df_model_prep)
@@ -2383,12 +2388,13 @@ class CoxModelingApp(ttk.Frame):
                         # If ref_cat_str_bd could be numeric, further type checking might be needed,
                         # but for now, assuming string reference categories are common.
                         # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
-                        if re.match(r"^-?\d+(\.\d+)?$", ref_cat_str_bd): # Check if it looks like a number
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
-                        else: # Assume string, enclose in quotes for Patsy
-                             term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                        # Usar comillas dobles para el valor de Treatment si es una cadena
+                        if isinstance(ref_cat_bd, str):
+                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                        else: # Para valores numéricos o de otro tipo
+                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
                     else:
-                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no en datos. Usando default Patsy.", "WARN")
+                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no está en los datos. Usando el default de Patsy.", "WARN")
                         term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
                 else:
                     term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
@@ -2494,7 +2500,8 @@ class CoxModelingApp(ttk.Frame):
             "fitted_scaler_object": fitted_scaler_obj,
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else [],
             "custom_model_name": model_name_rm, # Inicializar con el nombre generado
-            "custom_model_notes": "" # Inicializar notas vacías
+            "custom_model_notes": "", # Inicializar notas vacías
+            "design_info": None # Placeholder for design_info
         }
 
         # 1. Fit Null Model
@@ -3613,11 +3620,16 @@ class CoxModelingApp(ttk.Frame):
             else: 
                 messagebox.showerror("Error Predicción", "No se puede determinar qué variables originales se necesitan para la predicción sin la fórmula de Patsy completa.", parent=self.parent_for_dialogs)
                 return
-        else: 
-            orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+        else:
+            if full_patsy_formula:
+                # Use a specific regex to find only the original variable names inside Q('')
+                orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+                self.log(f"Variables para predicción extraídas de Q(): {orig_vars_ask_pred}", "INFO")
+            else:
+                orig_vars_ask_pred = []
 
         if not orig_vars_ask_pred and md_pred.get('covariates_processed', []):
-            self.log("No se pudieron determinar variables originales de Q() en fórmula, pero hay covariables procesadas. UI de predicción puede ser incompleta.", "WARN")
+            self.log("No se pudieron determinar variables originales. UI de predicción puede ser incompleta o fallar.", "WARN")
 
         pred_diag = Toplevel(self.parent_for_dialogs); pred_diag.title(f"Predicción: {name_pred}"); pred_diag.transient(self.parent_for_dialogs)
         entries_pred = {}; frame_main_pred_diag = ttk.Frame(pred_diag, padding=10); frame_main_pred_diag.pack(fill=tk.BOTH, expand=True)
@@ -3660,54 +3672,55 @@ class CoxModelingApp(ttk.Frame):
         ttk.Button(frame_btns_pred_diag,text="Cancelar",command=pred_diag.destroy).pack(side=tk.RIGHT,padx=10)
 
     def _perform_prediction_and_plot(self, dialog_pred_ref, md_dict_for_pred, entries_dict_for_pred, type_ui_pred, times_str_ui_pred):
-        cph_model_for_pred = md_dict_for_pred.get('model'); name_for_pred = md_dict_for_pred.get('model_name', 'N/A')
+        cph_model_for_pred = md_dict_for_pred.get('model')
+        name_for_pred = md_dict_for_pred.get('model_name', 'N/A')
         times_list_pred = []
+
         if times_str_ui_pred.strip():
             try:
                 times_list_pred = [float(t.strip()) for t in times_str_ui_pred.split(',') if t.strip()]
                 if any(t < 0 for t in times_list_pred): raise ValueError("Tiempos negativos no permitidos.")
                 times_list_pred = sorted(list(set(times_list_pred)))
             except ValueError:
-                messagebox.showerror("Error Tiempos","Tiempos inválidos. Ingrese números separados por comas o déjelo vacío para la curva completa.",parent=dialog_pred_ref); return
-        
+                messagebox.showerror("Error Tiempos", "Tiempos inválidos. Ingrese números separados por comas o déjelo vacío para la curva completa.", parent=dialog_pred_ref)
+                return
+
         input_data_dict_pred = {}
         for var_k, svar_obj in entries_dict_for_pred.items():
             val_entry = svar_obj.get().strip()
-            if not val_entry: messagebox.showerror("Valor Faltante",f"Valor faltante para '{var_k}'.",parent=dialog_pred_ref); return
-            try: input_data_dict_pred[var_k] = float(val_entry)
-            except ValueError: input_data_dict_pred[var_k] = str(val_entry)
-        
+            if not val_entry:
+                messagebox.showerror("Valor Faltante", f"Valor faltante para '{var_k}'.", parent=dialog_pred_ref)
+                return
+            try:
+                input_data_dict_pred[var_k] = float(val_entry)
+            except ValueError:
+                input_data_dict_pred[var_k] = str(val_entry)
+
         df_patsy_input_pred = pd.DataFrame([input_data_dict_pred]) if input_data_dict_pred else pd.DataFrame([{}])
 
-
         try:
-            full_formula_for_transform = md_dict_for_pred.get("full_patsy_formula_for_new_data_transform")
-            final_model_terms = md_dict_for_pred.get('covariates_processed', [])
+            # --- Lógica de Predicción Revertida a API de Lifelines ---
+            # Se asume que `realizar_prediccion` ahora construye `df_patsy_input_pred` correctamente
+            # con todas las columnas originales necesarias por el modelo.
 
-            X_patsy_pred_final: pd.DataFrame
+            # Obtener el objeto scaler si se usó y aplicarlo
+            fitted_scaler = md_dict_for_pred.get("fitted_scaler_object")
+            scaled_columns = md_dict_for_pred.get("scaled_columns_info", [])
 
-            if not final_model_terms:
-                X_patsy_pred_final = dmatrix("0", df_patsy_input_pred, return_type="dataframe")
-            elif not full_formula_for_transform:
-                self.log("Error crítico: Fórmula completa de Patsy no disponible para transformar datos para predicción.", "ERROR")
-                messagebox.showerror("Error Predicción", "No se pudo determinar la fórmula de Patsy para transformar nuevos datos.", parent=dialog_pred_ref)
-                return
-            else:
-                X_temp_full_design = dmatrix(full_formula_for_transform, df_patsy_input_pred, return_type="dataframe")
-                
-                if set(final_model_terms).issubset(set(X_temp_full_design.columns)):
-                    X_patsy_pred_final = X_temp_full_design[final_model_terms]
-                else:
-                    missing_terms = set(final_model_terms) - set(X_temp_full_design.columns)
-                    self.log(f"Error: Términos del modelo {missing_terms} no encontrados en X transformada para predicción.", "ERROR")
-                    messagebox.showerror("Error Predicción", f"Discrepancia en términos para predicción. Faltan: {missing_terms}", parent=dialog_pred_ref)
-                    return
-        except Exception as e_patsy_pred_final:
-            self.log(f"Error Patsy en predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
-            messagebox.showerror("Error Patsy Pred.","Error transformando entradas para predicción.",parent=dialog_pred_ref); return
+            if fitted_scaler and scaled_columns:
+                numeric_cols_in_pred_input = [col for col in scaled_columns if col in df_patsy_input_pred.columns]
+                if numeric_cols_in_pred_input:
+                    df_patsy_input_pred[numeric_cols_in_pred_input] = df_patsy_input_pred[numeric_cols_in_pred_input].apply(pd.to_numeric, errors='coerce')
+                    df_patsy_input_pred[numeric_cols_in_pred_input] = fitted_scaler.transform(df_patsy_input_pred[numeric_cols_in_pred_input])
+                    self.log(f"Datos de predicción escalados para las columnas: {numeric_cols_in_pred_input}", "DEBUG")
 
-        try:
+            # --- DEBUGGING ---
+            self.log("--- DEBUG PREDICTION ---", "DEBUG")
+            self.log(f"DataFrame para predicción (df_patsy_input_pred):\n{df_patsy_input_pred.to_string()}", "DEBUG")
+            self.log("--------------------------", "DEBUG")
+
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
+
             if type_ui_pred == "Supervivencia":
                 pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
@@ -3727,7 +3740,7 @@ class CoxModelingApp(ttk.Frame):
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
                 title_curve_pred = f"Pred. Prob. Evento Acumulado (1-S(t)) ({name_for_pred})"
                 label_prefix = "1-S"
-            
+
             if times_list_pred: # Solo si se especificaron tiempos
                 for t_val in times_list_pred:
                     if t_val < pred_df.index.min() or t_val > pred_df.index.max():
@@ -3740,7 +3753,6 @@ class CoxModelingApp(ttk.Frame):
                 if results_text_pred: ax_curve_pred.legend()
             else: # Si no se especificaron tiempos, no mostrar resultados puntuales ni scatter
                 results_text_pred.append("Curva completa mostrada (no se especificaron tiempos puntuales).")
-                # ax_curve_pred.legend() # La leyenda de la curva ya se maneja por plot() si hay múltiples líneas, pero aquí solo hay una.
 
             opts_curve_pred = self.current_plot_options.copy()
             opts_curve_pred['title'] = opts_curve_pred.get('title') or title_curve_pred
