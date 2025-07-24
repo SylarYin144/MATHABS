@@ -3622,18 +3622,9 @@ class CoxModelingApp(ttk.Frame):
                 return
         else:
             if full_patsy_formula:
-                # Regex to find all identifiers inside Q('') or bare identifiers
-                # It finds words inside Q('') OR words that are not known patsy operators/functions
-                patsy_funcs_and_ops = r'\b(C|cr|bs|Q|Treatment|log|exp|abs|I)\b|\+|-|\*|/|~'
-                # First, find all words
-                all_identifiers = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', full_patsy_formula)
-                # Then, filter out the known functions and operators
-                orig_vars_ask_pred = sorted([
-                    var for var in all_identifiers
-                    if not re.fullmatch(patsy_funcs_and_ops, var)
-                    and var not in ['df', 'degree', 'knots', 'include_intercept'] # filter patsy args
-                ])
-                self.log(f"Variables para predicción extraídas de fórmula: {orig_vars_ask_pred}", "INFO")
+            # Use a specific regex to find only the original variable names inside Q('')
+            orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+            self.log(f"Variables para predicción extraídas de Q(): {orig_vars_ask_pred}", "INFO")
             else:
                 orig_vars_ask_pred = []
 
