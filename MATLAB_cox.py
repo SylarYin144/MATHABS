@@ -3625,16 +3625,16 @@ class CoxModelingApp(ttk.Frame):
             else: 
                 messagebox.showerror("Error Predicción", "No se puede determinar qué variables originales se necesitan para la predicción sin la fórmula de Patsy completa.", parent=self.parent_for_dialogs)
                 return
-        else: 
-        design_info_pred = md_pred.get("design_info")
-        if design_info_pred and hasattr(design_info_pred, 'factor_infos'):
-            self.log("Extrayendo variables para predicción desde 'design_info.factor_infos'.", "INFO")
-            orig_vars_ask_pred = sorted(list(design_info_pred.factor_infos.keys()))
-        elif full_patsy_formula:
-            self.log("Extrayendo variables para predicción con regex desde 'full_patsy_formula' (fallback).", "WARN")
-            orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
         else:
-            orig_vars_ask_pred = []
+            design_info_pred = md_pred.get("design_info")
+            if design_info_pred and hasattr(design_info_pred, 'factor_infos'):
+                self.log("Extrayendo variables para predicción desde 'design_info.factor_infos'.", "INFO")
+                orig_vars_ask_pred = sorted(list(design_info_pred.factor_infos.keys()))
+            elif full_patsy_formula:
+                self.log("Extrayendo variables para predicción con regex desde 'full_patsy_formula' (fallback).", "WARN")
+                orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+            else:
+                orig_vars_ask_pred = []
 
         if not orig_vars_ask_pred and md_pred.get('covariates_processed', []):
             self.log("No se pudieron determinar variables originales. UI de predicción puede ser incompleta o fallar.", "WARN")
