@@ -3755,31 +3755,35 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Error de Patsy en Predicción",f"Error al transformar las entradas para la predicción:\n{e_patsy_pred_final}",parent=dialog_pred_ref); return
 
         try:
+            # --- Lógica de Predicción Manual para Evitar Bugs de Lifelines ---
+            partial_hazard = cph_model_for_pred.predict_partial_hazard(X_patsy_pred_final).iloc[0]
+            baseline_cum_hazard = cph_model_for_pred.baseline_cumulative_hazard_
+
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
+
             if type_ui_pred == "Supervivencia":
-                pred_df = cph_model_for_pred.predict_survival_function(X_patsy_pred_final)
+                pred_df = np.exp(-baseline_cum_hazard * np.exp(partial_hazard))
+                pred_df.columns = ["Predicted Survival"]
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("S(t|X)")
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
                 label_prefix = "S"
             elif type_ui_pred == "Riesgo":
-                # NOTE: predict_cumulative_hazard does not take a pre-built design matrix.
-                # It expects the original dataframe format. This is a key difference in lifelines API.
-                # The logic must pass df_patsy_input_pred here, not X_patsy_pred_final.
-                pred_df = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
+                pred_df = baseline_cum_hazard * np.exp(partial_hazard)
+                pred_df.columns = ["Predicted Cumulative Hazard"]
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("H(t|X)")
                 title_curve_pred = f"Pred. Riesgo Acumulado ({name_for_pred})"
                 label_prefix = "H"
             elif type_ui_pred == "ProbEventoAcum":
-                # NOTE: predict_survival_function also takes the design matrix (X_patsy_pred_final).
-                surv_df_temp = cph_model_for_pred.predict_survival_function(X_patsy_pred_final)
+                surv_df_temp = np.exp(-baseline_cum_hazard * np.exp(partial_hazard))
                 pred_df = 1 - surv_df_temp
+                pred_df.columns = ["Predicted Cumulative Incidence"]
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
                 title_curve_pred = f"Pred. Prob. Evento Acumulado (1-S(t)) ({name_for_pred})"
                 label_prefix = "1-S"
-            
+
             if times_list_pred: # Solo si se especificaron tiempos
                 for t_val in times_list_pred:
                     if t_val < pred_df.index.min() or t_val > pred_df.index.max():
