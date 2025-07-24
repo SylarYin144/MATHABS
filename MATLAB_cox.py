@@ -2303,13 +2303,13 @@ class CoxModelingApp(ttk.Frame):
             self.log("No se aplicó escalado de covariables.", "INFO")
         # --- Fin Escalado ---
 
-        df_filtered_patsy, X_design_patsy, formula_patsy_gen, terms_patsy_display = self.build_design_matrix(
+        df_filtered_patsy, X_design_patsy, formula_patsy_gen, terms_patsy_display, design_info_patsy = self.build_design_matrix(
             df_model_prep, selected_covs_orig_names, final_t_col, final_e_col
         )
         self.log(f"DEBUG: df_filtered_patsy columns after build_design_matrix: {df_filtered_patsy.columns.tolist() if df_filtered_patsy is not None else 'N/A'}", "DEBUG")
 
         if X_design_patsy is None or df_filtered_patsy is None: 
-             self.log("Falló build_design_matrix.", "ERROR"); return None, None, None, None, None, None, None, "Ninguna", None, []
+             self.log("Falló build_design_matrix.", "ERROR"); return None, None, None, None, None, None, None, "Ninguna", None, [], None
         
         y_survival_patsy = df_filtered_patsy[[final_t_col, final_e_col]]
 
@@ -2320,7 +2320,7 @@ class CoxModelingApp(ttk.Frame):
         return (df_filtered_patsy, X_design_patsy, y_survival_patsy,
                 formula_patsy_gen, terms_patsy_display,
                 final_t_col, final_e_col,
-                scaling_method, fitted_scaler, scaled_column_names)
+                scaling_method, fitted_scaler, scaled_column_names, design_info_patsy)
 
 
     def _get_patsy_safe_var_name(self, var_name): # No se usa actualmente, Patsy Q() maneja nombres.
@@ -2405,7 +2405,7 @@ class CoxModelingApp(ttk.Frame):
 
         try:
             if df_for_patsy_bd.empty and formula_patsy_bd != "0": 
-                 self.log("DF entrada Patsy vacío con fórmula no nula.", "ERROR"); return None,None,None,None
+                 self.log("DF entrada Patsy vacío con fórmula no nula.", "ERROR"); return None,None,None,None,None
             
             X_design_bd = dmatrix(formula_patsy_bd, df_for_patsy_bd, return_type="dataframe")
             df_filtered_by_patsy_idx_bd = df_input_bd.loc[X_design_bd.index].copy()
@@ -2413,11 +2413,11 @@ class CoxModelingApp(ttk.Frame):
             final_terms_display_bd = list(X_design_bd.columns)
             self.log(f"Patsy: X_design ({X_design_bd.shape}), DF filtrado ({df_filtered_by_patsy_idx_bd.shape})", "INFO")
             self.log(f"Términos Patsy finales: {final_terms_display_bd}", "DEBUG")
-            return df_filtered_by_patsy_idx_bd, X_design_bd, formula_patsy_bd, final_terms_display_bd
+            return df_filtered_by_patsy_idx_bd, X_design_bd, formula_patsy_bd, final_terms_display_bd, X_design_bd.design_info
         except Exception as e_patsy_build:
             self.log(f"Error Patsy (build matriz): {e_patsy_build}", "ERROR"); traceback.print_exc(limit=5)
             messagebox.showerror("Error Patsy", f"Error construyendo matriz de diseño:\n{e_patsy_build}", parent=self.parent_for_dialogs)
-            return None, None, None, None
+            return None, None, None, None, None
 
 
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
@@ -2476,7 +2476,8 @@ class CoxModelingApp(ttk.Frame):
                                    model_type_for_fit_logic="Multivariado",
                                    scaling_method_applied="Ninguna",
                                    fitted_scaler_obj=None,
-                                   scaled_columns_info=None):
+                                   scaled_columns_info=None,
+                                   design_info_for_model=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
@@ -2500,7 +2501,8 @@ class CoxModelingApp(ttk.Frame):
             "fitted_scaler_object": fitted_scaler_obj,
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else [],
             "custom_model_name": model_name_rm, # Inicializar con el nombre generado
-            "custom_model_notes": "" # Inicializar notas vacías
+            "custom_model_notes": "", # Inicializar notas vacías
+            "design_info": design_info_for_model
         }
 
         # 1. Fit Null Model
@@ -3130,7 +3132,7 @@ class CoxModelingApp(ttk.Frame):
         (df_init_full, X_init_full, y_init_data,
          formula_init_patsy_full, terms_init_display,
          t_col_final, e_col_final,
-         scaling_method_used, scaler_object, scaled_cols_list) = prep_res
+         scaling_method_used, scaler_object, scaled_cols_list, design_info_init) = prep_res
 
         if df_init_full is None or df_init_full.empty: # df_init_full is now df_filtered_patsy
             self.log("DF inicial (post-patsy) vacío post-preparación. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
@@ -3158,7 +3160,7 @@ class CoxModelingApp(ttk.Frame):
             else:
                 for orig_cov_uni in orig_covs_ui:
                     self.log(f"--- Univariado para: {orig_cov_uni} ---", "SUBHEADER")
-                    df_uni_f, X_uni_d, formula_uni_patsy, terms_uni = self.build_design_matrix(df_init_full, [orig_cov_uni], t_col_final, e_col_final)
+                    df_uni_f, X_uni_d, formula_uni_patsy, terms_uni, design_info_uni = self.build_design_matrix(df_init_full, [orig_cov_uni], t_col_final, e_col_final)
                     if X_uni_d is None or df_uni_f is None or df_uni_f.empty: self.log(f"Fallo build_design_matrix para '{orig_cov_uni}'.", "WARN"); continue
                     
                     y_uni_s = df_uni_f[[t_col_final, e_col_final]]
@@ -3172,7 +3174,8 @@ class CoxModelingApp(ttk.Frame):
                                                              pen_val, l1_r, model_type_for_fit_logic="Univariado",
                                                              scaling_method_applied=scaling_method_used,
                                                              fitted_scaler_obj=scaler_object,
-                                                             scaled_columns_info=scaled_cols_list)
+                                                             scaled_columns_info=scaled_cols_list,
+                                                             design_info_for_model=design_info_uni)
                     if md_uni:
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
@@ -3191,6 +3194,7 @@ class CoxModelingApp(ttk.Frame):
             X_multi_current = X_init_full
             formula_multi_current = formula_init_patsy_full 
             terms_multi_current = terms_init_display 
+            design_info_multi_current = design_info_init
 
             sel_meth_ui = self.var_selection_method_var.get(); suffix_multi = " (Todas las Variables)"
             if sel_meth_ui != "Ninguno (usar todas)":
@@ -3212,7 +3216,7 @@ class CoxModelingApp(ttk.Frame):
                     
                 # Reconstruir X_design y formula_patsy con las covariables seleccionadas
                 # df_init_full es el DataFrame original alineado y limpio
-                df_multi_current, X_multi_current, formula_multi_current, terms_multi_current = \
+                df_multi_current, X_multi_current, formula_multi_current, terms_multi_current, design_info_multi_current = \
                     self.build_design_matrix(df_init_full, selected_orig_covs_after_selection, t_col_final, e_col_final)
                 
                 if X_multi_current is None or df_multi_current is None or df_multi_current.empty:
@@ -3228,6 +3232,7 @@ class CoxModelingApp(ttk.Frame):
                 X_multi_current = X_init_full
                 formula_multi_current = formula_init_patsy_full
                 terms_multi_current = terms_init_display
+                design_info_multi_current = design_info_init
                 if sel_meth_ui != "Ninguno (usar todas)": # Si se intentó selección pero falló o resultó nula
                     suffix_multi += " (Nulo/Fallo Selección)"
                 else: # Si no se intentó selección
@@ -3244,7 +3249,8 @@ class CoxModelingApp(ttk.Frame):
                                                        pen_val, l1_r, model_type_for_fit_logic="Multivariado",
                                                        scaling_method_applied=scaling_method_used,
                                                        fitted_scaler_obj=scaler_object,
-                                                       scaled_columns_info=scaled_cols_list)
+                                                       scaled_columns_info=scaled_cols_list,
+                                                       design_info_for_model=design_info_multi_current)
             if md_multi:
                 temp_models_list_orch.append(md_multi)
                 if md_multi.get("model") is not None:
@@ -3694,7 +3700,7 @@ class CoxModelingApp(ttk.Frame):
 
         try:
             # --- Lógica de Predicción Mejorada ---
-            full_formula_for_transform = md_dict_for_pred.get("full_patsy_formula_for_new_data_transform")
+            design_info = md_dict_for_pred.get("design_info")
             final_model_terms = md_dict_for_pred.get('covariates_processed', [])
 
             # Obtener el objeto scaler si se usó
@@ -3715,22 +3721,34 @@ class CoxModelingApp(ttk.Frame):
             if not final_model_terms:
                 # Modelo nulo, sin covariables
                 X_patsy_pred_final = pd.DataFrame(index=df_patsy_input_pred.index)
-            elif not full_formula_for_transform:
-                self.log("Error crítico: La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", "ERROR")
-                messagebox.showerror("Error Predicción", "La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", parent=dialog_pred_ref)
-                return
-            else:
-                # Transformar los nuevos datos usando la fórmula completa original
+            elif not design_info:
+                self.log("Error crítico: 'design_info' no se encontró en el objeto del modelo guardado. Recreando desde fórmula como fallback.", "ERROR")
+                # Fallback to old logic if design_info is missing
+                full_formula_for_transform = md_dict_for_pred.get("full_patsy_formula_for_new_data_transform")
+                if not full_formula_for_transform:
+                     messagebox.showerror("Error Predicción", "La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", parent=dialog_pred_ref)
+                     return
                 X_temp_full_design = dmatrix(full_formula_for_transform, df_patsy_input_pred, return_type="dataframe")
-                
-                # Asegurar que todas las columnas del modelo final estén presentes
-                # Reordenar y seleccionar las columnas para que coincidan exactamente con el modelo
                 try:
                     X_patsy_pred_final = X_temp_full_design[final_model_terms]
                 except KeyError as e:
                     missing_cols = set(final_model_terms) - set(X_temp_full_design.columns)
-                    self.log(f"Error: Las columnas del modelo {missing_cols} no se encontraron en la matriz de diseño transformada para la predicción.", "ERROR")
-                    messagebox.showerror("Error de Predicción", f"Discrepancia en las columnas para la predicción. Faltan: {missing_cols}", parent=dialog_pred_ref)
+                    self.log(f"Error (Fallback): Columnas del modelo {missing_cols} no encontradas en la matriz de diseño transformada.", "ERROR")
+                    messagebox.showerror("Error de Predicción", f"Discrepancia en las columnas para la predicción (Fallback). Faltan: {missing_cols}", parent=dialog_pred_ref)
+                    return
+            else:
+                # Nueva lógica principal: usar design_info
+                self.log("Usando 'design_info' para crear la matriz de predicción.", "INFO")
+                X_patsy_pred_final = dmatrix(design_info, df_patsy_input_pred, return_type='dataframe')
+
+                # Reordenar y seleccionar columnas para que coincidan con el modelo final (después de selección de variables)
+                # Esto es una salvaguarda importante.
+                try:
+                    X_patsy_pred_final = X_patsy_pred_final[final_model_terms]
+                except KeyError as e:
+                    missing_cols = set(final_model_terms) - set(X_patsy_pred_final.columns)
+                    self.log(f"Error: Columnas del modelo {missing_cols} no encontradas en la matriz de diseño transformada (usando design_info).", "ERROR")
+                    messagebox.showerror("Error de Predicción", f"Discrepancia en columnas de predicción (usando design_info). Faltan: {missing_cols}", parent=dialog_pred_ref)
                     return
         except Exception as e_patsy_pred_final:
             self.log(f"Error de Patsy al transformar los datos para predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
@@ -3745,13 +3763,17 @@ class CoxModelingApp(ttk.Frame):
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
                 label_prefix = "S"
             elif type_ui_pred == "Riesgo":
+                # NOTE: predict_cumulative_hazard does not take a pre-built design matrix.
+                # It expects the original dataframe format. This is a key difference in lifelines API.
+                # The logic must pass df_patsy_input_pred here, not X_patsy_pred_final.
                 pred_df = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("H(t|X)")
                 title_curve_pred = f"Pred. Riesgo Acumulado ({name_for_pred})"
                 label_prefix = "H"
             elif type_ui_pred == "ProbEventoAcum":
-                surv_df_temp = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
+                # NOTE: predict_survival_function also takes the design matrix (X_patsy_pred_final).
+                surv_df_temp = cph_model_for_pred.predict_survival_function(X_patsy_pred_final)
                 pred_df = 1 - surv_df_temp
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
@@ -3770,7 +3792,6 @@ class CoxModelingApp(ttk.Frame):
                 if results_text_pred: ax_curve_pred.legend()
             else: # Si no se especificaron tiempos, no mostrar resultados puntuales ni scatter
                 results_text_pred.append("Curva completa mostrada (no se especificaron tiempos puntuales).")
-                # ax_curve_pred.legend() # La leyenda de la curva ya se maneja por plot() si hay múltiples líneas, pero aquí solo hay una.
 
             opts_curve_pred = self.current_plot_options.copy()
             opts_curve_pred['title'] = opts_curve_pred.get('title') or title_curve_pred
