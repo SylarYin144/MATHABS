@@ -2241,22 +2241,27 @@ class CoxModelingApp(ttk.Frame):
             return None, None, None, None, None, None, None, "Ninguna", None, []
         
         try:
-            df_model_prep[final_e_col] = pd.to_numeric(df_model_prep[final_e_col])
-            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True) # Drop NaNs in T/E cols *before* astype(int)
+            # Convertir a numérico, forzando errores a NaN
+            numeric_event_col = pd.to_numeric(df_model_prep[final_e_col], errors='coerce')
+
+            # Comprobar si todos los valores son 0, 1, o NaN
+            if not numeric_event_col.dropna().isin([0, 1]).all():
+                self.log(f"Columna Evento '{final_e_col}' contiene valores que no son 0 o 1.", "ERROR")
+                messagebox.showerror("Error de Tipo", f"La columna de Evento ('{final_e_col}') debe contener solo valores 0 y 1.", parent=self.parent_for_dialogs)
+                return None, None, None, None, None, None, None, "Ninguna", None, []
+
+            df_model_prep[final_e_col] = numeric_event_col
+            df_model_prep.dropna(subset=[final_t_col, final_e_col], inplace=True)
+
             if df_model_prep.empty:
-                 self.log(f"Dataset vacío después de convertir T/E a numérico y eliminar NaNs en T/E.", "ERROR")
-                 messagebox.showerror("Datos Insuficientes", "No quedan datos válidos para T/E después de la conversión a numérico y eliminación de NaNs.", parent=self.parent_for_dialogs)
-                 return None, None, None, None, None, None, None, "Ninguna", None, []
- 
-            if not df_model_prep[final_e_col].isin([0, 1]).all():
-                 num_invalid_events = df_model_prep[~df_model_prep[final_e_col].isin([0, 1])].shape[0]
-                 self.log(f"Columna Evento '{final_e_col}' tiene {num_invalid_events} valor(es) que no son 0 o 1 después de conversión y dropna.", "ERROR")
-                 messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' debe contener solo valores 0 o 1.", parent=self.parent_for_dialogs)
-                 return None, None, None, None, None, None, None, "Ninguna", None, []
+                self.log("Dataset vacío después de procesar y eliminar NaNs en columnas de Tiempo/Evento.", "ERROR")
+                messagebox.showerror("Datos Insuficientes", "No quedan datos válidos después de procesar las columnas de Tiempo y Evento.", parent=self.parent_for_dialogs)
+                return None, None, None, None, None, None, None, "Ninguna", None, []
+
             df_model_prep[final_e_col] = df_model_prep[final_e_col].astype(int)
-        except ValueError as e_e: # Si to_numeric falla completamente
-            self.log(f"Error convirtiendo columna Evento '{final_e_col}' a numérico 0/1: {e_e}", "ERROR")
-            messagebox.showerror("Error de Tipo", f"Columna Evento '{final_e_col}' no puede ser convertida a numérica (0/1).", parent=self.parent_for_dialogs)
+        except Exception as e_e:
+            self.log(f"Error procesando la columna de Evento '{final_e_col}': {e_e}", "ERROR")
+            messagebox.showerror("Error de Tipo", f"Error al procesar la columna de Evento '{final_e_col}'. Asegúrese de que sea binaria (0/1).", parent=self.parent_for_dialogs)
             return None, None, None, None, None, None, None, "Ninguna", None, []
  
         initial_rows_prep = len(df_model_prep)
