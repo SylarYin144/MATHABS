@@ -3626,10 +3626,18 @@ class CoxModelingApp(ttk.Frame):
                 messagebox.showerror("Error Predicción", "No se puede determinar qué variables originales se necesitan para la predicción sin la fórmula de Patsy completa.", parent=self.parent_for_dialogs)
                 return
         else: 
+        design_info_pred = md_pred.get("design_info")
+        if design_info_pred and hasattr(design_info_pred, 'factor_infos'):
+            self.log("Extrayendo variables para predicción desde 'design_info.factor_infos'.", "INFO")
+            orig_vars_ask_pred = sorted(list(design_info_pred.factor_infos.keys()))
+        elif full_patsy_formula:
+            self.log("Extrayendo variables para predicción con regex desde 'full_patsy_formula' (fallback).", "WARN")
             orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+        else:
+            orig_vars_ask_pred = []
 
         if not orig_vars_ask_pred and md_pred.get('covariates_processed', []):
-            self.log("No se pudieron determinar variables originales de Q() en fórmula, pero hay covariables procesadas. UI de predicción puede ser incompleta.", "WARN")
+            self.log("No se pudieron determinar variables originales. UI de predicción puede ser incompleta o fallar.", "WARN")
 
         pred_diag = Toplevel(self.parent_for_dialogs); pred_diag.title(f"Predicción: {name_pred}"); pred_diag.transient(self.parent_for_dialogs)
         entries_pred = {}; frame_main_pred_diag = ttk.Frame(pred_diag, padding=10); frame_main_pred_diag.pack(fill=tk.BOTH, expand=True)
@@ -3699,86 +3707,43 @@ class CoxModelingApp(ttk.Frame):
         df_patsy_input_pred = pd.DataFrame([input_data_dict_pred]) if input_data_dict_pred else pd.DataFrame([{}])
 
         try:
-            # --- Lógica de Predicción Mejorada ---
-            design_info = md_dict_for_pred.get("design_info")
-            final_model_terms = md_dict_for_pred.get('covariates_processed', [])
+            # --- Lógica de Predicción Revertida a API de Lifelines ---
+            # Se asume que `realizar_prediccion` ahora construye `df_patsy_input_pred` correctamente
+            # con todas las columnas originales necesarias por el modelo.
 
-            # Obtener el objeto scaler si se usó
+            # Obtener el objeto scaler si se usó y aplicarlo
             fitted_scaler = md_dict_for_pred.get("fitted_scaler_object")
             scaled_columns = md_dict_for_pred.get("scaled_columns_info", [])
 
             if fitted_scaler and scaled_columns:
-                # Aplicar la misma transformación de escalado a los datos de entrada
                 numeric_cols_in_pred_input = [col for col in scaled_columns if col in df_patsy_input_pred.columns]
                 if numeric_cols_in_pred_input:
-                    # Asegurar que los datos sean numéricos antes de transformar
                     df_patsy_input_pred[numeric_cols_in_pred_input] = df_patsy_input_pred[numeric_cols_in_pred_input].apply(pd.to_numeric, errors='coerce')
                     df_patsy_input_pred[numeric_cols_in_pred_input] = fitted_scaler.transform(df_patsy_input_pred[numeric_cols_in_pred_input])
                     self.log(f"Datos de predicción escalados para las columnas: {numeric_cols_in_pred_input}", "DEBUG")
 
-            X_patsy_pred_final: pd.DataFrame
-
-            if not final_model_terms:
-                # Modelo nulo, sin covariables
-                X_patsy_pred_final = pd.DataFrame(index=df_patsy_input_pred.index)
-            elif not design_info:
-                self.log("Error crítico: 'design_info' no se encontró en el objeto del modelo guardado. Recreando desde fórmula como fallback.", "ERROR")
-                # Fallback to old logic if design_info is missing
-                full_formula_for_transform = md_dict_for_pred.get("full_patsy_formula_for_new_data_transform")
-                if not full_formula_for_transform:
-                     messagebox.showerror("Error Predicción", "La fórmula de Patsy o 'design_info' no se encontraron en el objeto del modelo guardado.", parent=dialog_pred_ref)
-                     return
-                X_temp_full_design = dmatrix(full_formula_for_transform, df_patsy_input_pred, return_type="dataframe")
-                try:
-                    X_patsy_pred_final = X_temp_full_design[final_model_terms]
-                except KeyError as e:
-                    missing_cols = set(final_model_terms) - set(X_temp_full_design.columns)
-                    self.log(f"Error (Fallback): Columnas del modelo {missing_cols} no encontradas en la matriz de diseño transformada.", "ERROR")
-                    messagebox.showerror("Error de Predicción", f"Discrepancia en las columnas para la predicción (Fallback). Faltan: {missing_cols}", parent=dialog_pred_ref)
-                    return
-            else:
-                # Nueva lógica principal: usar design_info
-                self.log("Usando 'design_info' para crear la matriz de predicción.", "INFO")
-                X_patsy_pred_final = dmatrix(design_info, df_patsy_input_pred, return_type='dataframe')
-
-                # Reordenar y seleccionar columnas para que coincidan con el modelo final (después de selección de variables)
-                # Esto es una salvaguarda importante.
-                try:
-                    X_patsy_pred_final = X_patsy_pred_final[final_model_terms]
-                except KeyError as e:
-                    missing_cols = set(final_model_terms) - set(X_patsy_pred_final.columns)
-                    self.log(f"Error: Columnas del modelo {missing_cols} no encontradas en la matriz de diseño transformada (usando design_info).", "ERROR")
-                    messagebox.showerror("Error de Predicción", f"Discrepancia en columnas de predicción (usando design_info). Faltan: {missing_cols}", parent=dialog_pred_ref)
-                    return
-        except Exception as e_patsy_pred_final:
-            self.log(f"Error de Patsy al transformar los datos para predicción: {e_patsy_pred_final}","ERROR"); traceback.print_exc(limit=3);
-            messagebox.showerror("Error de Patsy en Predicción",f"Error al transformar las entradas para la predicción:\n{e_patsy_pred_final}",parent=dialog_pred_ref); return
-
-        try:
-            # --- Lógica de Predicción Manual para Evitar Bugs de Lifelines ---
-            partial_hazard = cph_model_for_pred.predict_partial_hazard(X_patsy_pred_final).iloc[0]
-            baseline_cum_hazard = cph_model_for_pred.baseline_cumulative_hazard_
+            # --- DEBUGGING ---
+            self.log("--- DEBUG PREDICTION ---", "DEBUG")
+            self.log(f"DataFrame para predicción (df_patsy_input_pred):\n{df_patsy_input_pred.to_string()}", "DEBUG")
+            self.log("--------------------------", "DEBUG")
 
             fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10,6)); results_text_pred = []
 
             if type_ui_pred == "Supervivencia":
-                pred_df = np.exp(-baseline_cum_hazard * np.exp(partial_hazard))
-                pred_df.columns = ["Predicted Survival"]
+                pred_df = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("S(t|X)")
                 title_curve_pred = f"Pred. Prob. Supervivencia ({name_for_pred})"
                 label_prefix = "S"
             elif type_ui_pred == "Riesgo":
-                pred_df = baseline_cum_hazard * np.exp(partial_hazard)
-                pred_df.columns = ["Predicted Cumulative Hazard"]
+                pred_df = cph_model_for_pred.predict_cumulative_hazard(df_patsy_input_pred)
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("H(t|X)")
                 title_curve_pred = f"Pred. Riesgo Acumulado ({name_for_pred})"
                 label_prefix = "H"
             elif type_ui_pred == "ProbEventoAcum":
-                surv_df_temp = np.exp(-baseline_cum_hazard * np.exp(partial_hazard))
+                surv_df_temp = cph_model_for_pred.predict_survival_function(df_patsy_input_pred)
                 pred_df = 1 - surv_df_temp
-                pred_df.columns = ["Predicted Cumulative Incidence"]
                 pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post')
                 ax_curve_pred.set_ylabel("1 - S(t|X)")
                 title_curve_pred = f"Pred. Prob. Evento Acumulado (1-S(t)) ({name_for_pred})"
