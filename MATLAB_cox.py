@@ -3622,9 +3622,9 @@ class CoxModelingApp(ttk.Frame):
                 return
         else:
             if full_patsy_formula:
-            # Use a specific regex to find only the original variable names inside Q('')
-            orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
-            self.log(f"Variables para predicción extraídas de Q(): {orig_vars_ask_pred}", "INFO")
+                # Use a specific regex to find only the original variable names inside Q('')
+                orig_vars_ask_pred = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_patsy_formula))))
+                self.log(f"Variables para predicción extraídas de Q(): {orig_vars_ask_pred}", "INFO")
             else:
                 orig_vars_ask_pred = []
 
