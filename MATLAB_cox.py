@@ -3896,6 +3896,12 @@ class CoxModelingApp(ttk.Frame):
         results_text_pred_list = []
 
         for i, (label, pred_df) in enumerate(final_curves_to_plot_labeled.items()):
+            # Ensure pred_df is a DataFrame and has a name for the legend
+            if isinstance(pred_df, pd.Series):
+                pred_df = pred_df.to_frame(name=label)
+            elif isinstance(pred_df, pd.DataFrame) and pred_df.columns[0] != label:
+                pred_df.columns = [label]
+
             pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post', color=colors[i], label=label)
             if times_list_pred:
                 label_prefix = {"Supervivencia": "S", "Riesgo": "H", "ProbEventoAcum": "1-S"}[type_ui_pred]
@@ -3918,8 +3924,7 @@ class CoxModelingApp(ttk.Frame):
         opts_curve_pred['xlabel'] = opts_curve_pred.get('xlabel') or f"Tiempo ({md_dict_for_pred.get('time_col_for_model','T')})"
         apply_plot_options(ax_curve_pred, opts_curve_pred, self.log)
 
-        if len(final_curves_to_plot_labeled) > 1 or any(range_vars):
-            ax_curve_pred.legend(title="Escenarios/Grupos", fontsize='small')
+        ax_curve_pred.legend(title="Escenarios/Grupos", fontsize='small')
 
         self._create_plot_window(fig_curve_pred, title_curve_pred)
 
