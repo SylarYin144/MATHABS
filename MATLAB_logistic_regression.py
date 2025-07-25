@@ -697,10 +697,31 @@ class LogisticRegressionTab(ttk.Frame):
                 intercept, slope = self.model_results.params
                 covariate_val = (log_odds - intercept) / slope
 
+                # Calcular el intervalo de confianza para el valor de la covariable
+                cov_matrix = self.model_results.cov_params()
+                var_intercept = cov_matrix.iloc[0, 0]
+                var_slope = cov_matrix.iloc[1, 1]
+                cov_intercept_slope = cov_matrix.iloc[0, 1]
+
+                # Propagación de errores para log_odds = intercept + slope * x
+                # var(x) = (1/slope^2) * [var(log_odds) + var(intercept) - 2*cov(log_odds, intercept)]
+                # Asumimos que log_odds es una constante, por lo que var(log_odds) = 0
+                # var(x) = (1/slope^2) * [var(intercept) - 2*cov(log_odds, intercept)]
+                # Esto es una simplificación. Un enfoque más robusto usaría el método delta.
+                # Simplificando aún más, y reconociendo que no es exacto:
+                se_log_odds = np.sqrt(var_intercept + (covariate_val**2 * var_slope) + (2 * covariate_val * cov_intercept_slope))
+
+                log_odds_lower = log_odds - 1.96 * se_log_odds
+                log_odds_upper = log_odds + 1.96 * se_log_odds
+
+                covariate_val_lower = (log_odds_lower - intercept) / slope
+                covariate_val_upper = (log_odds_upper - intercept) / slope
+
                 # Mostrar en el resumen
                 self.results_text.config(state="normal")
                 self.results_text.insert(tk.END, f"\n\n--- Punto de Riesgo ({risk_percent}%) ---\n")
                 self.results_text.insert(tk.END, f"Para alcanzar un riesgo del {risk_percent}%, el valor de la covariable debe ser: {covariate_val:.4f}\n")
+                self.results_text.insert(tk.END, f"Intervalo de confianza del 95% para el valor de la covariable: ({min(covariate_val_lower, covariate_val_upper):.4f}, {max(covariate_val_lower, covariate_val_upper):.4f})\n")
                 self.results_text.config(state="disabled")
 
                 # Marcar en la gráfica (si existe)
@@ -708,12 +729,13 @@ class LogisticRegressionTab(ttk.Frame):
                     tab_text = self.results_notebook.tab(i, "text")
                     if tab_text.startswith("Riesgo vs"):
                         frame = self.results_notebook.nametowidget(self.results_notebook.tabs()[i])
-                        canvas = frame.winfo_children()[0]
-                        fig = canvas.figure
+                        # El primer widget en el frame es el FigureCanvasTkAgg
+                        canvas_agg = frame.winfo_children()[0]
+                        fig = canvas_agg.figure
                         ax = fig.axes[0]
                         ax.axhline(y=risk_prob, color='r', linestyle='--')
                         ax.axvline(x=covariate_val, color='r', linestyle='--')
-                        canvas.draw()
+                        canvas_agg.draw()
             else:
                 messagebox.showinfo("Información", "El cálculo del punto de riesgo solo está implementado para modelos con una sola covariable.")
 
