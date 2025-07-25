@@ -141,6 +141,8 @@ class LogisticRegressionTab(ttk.Frame):
         self.grid_on = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_row, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
         ttk.Checkbutton(options_row, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
+        self.show_ci = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_row, text="Mostrar IC", variable=self.show_ci).pack(side="left", padx=5)
 
         # --- Fila 3: Colores ---
         color_row = ttk.Frame(font_frame)
@@ -166,6 +168,45 @@ class LogisticRegressionTab(ttk.Frame):
         ttk.Entry(title_row, textvariable=self.xlabel_var, width=20).pack(side="left")
         ttk.Label(title_row, text="Eje Y:").pack(side="left", padx=5)
         ttk.Entry(title_row, textvariable=self.ylabel_var, width=20).pack(side="left")
+
+        risk_frame = ttk.LabelFrame(controls_frame, text="Análisis de Riesgo")
+        risk_frame.pack(fill="x", padx=5, pady=5)
+
+        risk_percent_frame = ttk.Frame(risk_frame)
+        risk_percent_frame.pack(fill="x", pady=2)
+        ttk.Label(risk_percent_frame, text="Riesgo (%):").pack(side="left", padx=5)
+        self.risk_percent_var = tk.DoubleVar(value=50.0)
+        ttk.Entry(risk_percent_frame, textvariable=self.risk_percent_var, width=10).pack(side="left")
+        ttk.Button(risk_percent_frame, text="Calcular Punto de Riesgo", command=self._calculate_risk_point).pack(side="left", padx=5)
+
+        covariate_values_frame = ttk.Frame(risk_frame)
+        covariate_values_frame.pack(fill="x", pady=2)
+        ttk.Label(covariate_values_frame, text="Valores de Covariables (separados por coma):").pack(side="left", padx=5)
+        self.covariate_values_var = tk.StringVar()
+        ttk.Entry(covariate_values_frame, textvariable=self.covariate_values_var, width=40).pack(side="left")
+        ttk.Button(covariate_values_frame, text="Calcular Riesgo Específico", command=self._calculate_specific_risk).pack(side="left", padx=5)
+
+        bootstrap_frame = ttk.LabelFrame(controls_frame, text="Intervalos de Confianza")
+        bootstrap_frame.pack(fill="x", padx=5, pady=5)
+        self.show_ci = tk.BooleanVar(value=False)
+        self.bootstrap_ci = tk.BooleanVar(value=False)
+
+        ci_check_frame = ttk.Frame(bootstrap_frame)
+        ci_check_frame.pack(fill="x", pady=2)
+        ttk.Checkbutton(ci_check_frame, text="Mostrar IC en Gráfica", variable=self.show_ci).pack(side="left", padx=5)
+        ttk.Checkbutton(ci_check_frame, text="Usar Bootstrap para IC", variable=self.bootstrap_ci).pack(side="left", padx=5)
+
+        cycles_frame = ttk.Frame(bootstrap_frame)
+        cycles_frame.pack(fill="x", pady=2)
+        ttk.Label(cycles_frame, text="Ciclos Bootstrap:").pack(side="left", padx=5)
+        self.bootstrap_cycles_var = tk.IntVar(value=1000)
+        ttk.Entry(cycles_frame, textvariable=self.bootstrap_cycles_var, width=10).pack(side="left")
+
+        seed_frame = ttk.Frame(bootstrap_frame)
+        seed_frame.pack(fill="x", pady=2)
+        ttk.Label(seed_frame, text="Semilla Bootstrap:").pack(side="left", padx=5)
+        self.bootstrap_seed_var = tk.IntVar(value=42)
+        ttk.Entry(seed_frame, textvariable=self.bootstrap_seed_var, width=10).pack(side="left")
 
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
@@ -307,6 +348,11 @@ class LogisticRegressionTab(ttk.Frame):
         self.log(f"Variables para modelo: Dep={dep_var}, Indep={indep_vars}", "INFO")
         self.log(f"Dimensiones datos análisis: {df_analysis.shape}", "INFO")
 
+        # Contar casos de 0s y 1s en la variable dependiente
+        case_counts = df_analysis[dep_var].value_counts()
+        self.results_text.insert(tk.END, f"Casos de 0: {case_counts.get(0, 0)}\n")
+        self.results_text.insert(tk.END, f"Casos de 1: {case_counts.get(1, 0)}\n\n")
+
         # 4. Construir fórmula y ajustar modelo
         try:
             # Crear fórmula para statsmodels (maneja variables categóricas automáticamente con C())
@@ -324,11 +370,29 @@ class LogisticRegressionTab(ttk.Frame):
             self.log(f"Fórmula: {formula}", "DEBUG")
 
             # Usar Logit para regresión logística binaria
-            logit_model = smf.logit(formula, data=df_analysis)
-            self.model_results = logit_model.fit()
+            if self.bootstrap_ci.get():
+                n_bootstraps = self.bootstrap_cycles_var.get()
+                np.random.seed(self.bootstrap_seed_var.get())
 
-            # 5. Mostrar resultados básicos
-            summary_str = str(self.model_results.summary())
+                boot_params = []
+                for _ in range(n_bootstraps):
+                    boot_sample = df_analysis.sample(n=len(df_analysis), replace=True)
+                    boot_model = smf.logit(formula, data=boot_sample).fit(disp=0)
+                    boot_params.append(boot_model.params)
+
+                boot_params = pd.DataFrame(boot_params)
+
+                # Calcular la media y los percentiles de los parámetros de arranque
+                param_summary = boot_params.describe(percentiles=[0.025, 0.975])
+
+                # Usar el modelo original para el resumen principal
+                logit_model = smf.logit(formula, data=df_analysis)
+                self.model_results = logit_model.fit()
+                summary_str = str(self.model_results.summary()) + "\n\n--- Coeficientes de Bootstrap ---\n" + param_summary.to_string()
+            else:
+                logit_model = smf.logit(formula, data=df_analysis)
+                self.model_results = logit_model.fit()
+                summary_str = str(self.model_results.summary())
             self.results_text.insert(tk.END, summary_str)
             self.log("Modelo ajustado. Mostrando resumen básico.", "SUCCESS")
 
@@ -586,6 +650,27 @@ class LogisticRegressionTab(ttk.Frame):
                 pred_prob = self.model_results.predict(pred_df)
 
                 ax.plot(x_range, pred_prob, color=self.line_color.get(), linestyle='-')
+
+                if self.show_ci.get():
+                    if self.bootstrap_ci.get():
+                        # Calcular IC de bootstrap para la gráfica
+                        boot_preds = []
+                        n_bootstraps = self.bootstrap_cycles_var.get()
+                        np.random.seed(self.bootstrap_seed_var.get())
+                        for _ in range(n_bootstraps):
+                            boot_sample = df_analysis.sample(n=len(df_analysis), replace=True)
+                            boot_model = smf.logit(formula, data=boot_sample).fit(disp=0)
+                            boot_preds.append(boot_model.predict(pred_df))
+
+                        boot_preds = np.array(boot_preds)
+                        ci_lower = np.percentile(boot_preds, 2.5, axis=0)
+                        ci_upper = np.percentile(boot_preds, 97.5, axis=0)
+                        ax.fill_between(x_range, ci_lower, ci_upper, color='gray', alpha=0.2)
+                    else:
+                        # Usar IC por defecto del modelo
+                        risk_pred = self.model_results.get_prediction(pred_df)
+                        ci = risk_pred.summary_frame(alpha=0.05)
+                        ax.fill_between(x_range, ci['ci_lower'], ci['ci_upper'], color='gray', alpha=0.2)
                 ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
                 ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
                 ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
@@ -601,6 +686,106 @@ class LogisticRegressionTab(ttk.Frame):
                 canvas.draw()
                 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
                 self.log(f"Gráfico de riesgo vs. {var} generado.", "INFO")
+
+    def _calculate_risk_point(self):
+        """Calcula el valor de la covariable para un riesgo dado y lo muestra."""
+        if not self.model_results:
+            messagebox.showerror("Error", "Primero debe ajustar un modelo.")
+            return
+
+        try:
+            risk_percent = self.risk_percent_var.get()
+            if not (0 < risk_percent < 100):
+                messagebox.showerror("Error", "El riesgo debe estar entre 0 y 100.")
+                return
+
+            risk_prob = risk_percent / 100.0
+            log_odds = np.log(risk_prob / (1 - risk_prob))
+
+            # Asumimos un modelo con una sola covariable por simplicidad en esta implementación
+            if len(self.model_results.params) == 2:
+                intercept, slope = self.model_results.params
+                covariate_val = (log_odds - intercept) / slope
+
+                # Calcular el intervalo de confianza para el valor de la covariable
+                cov_matrix = self.model_results.cov_params()
+                var_intercept = cov_matrix.iloc[0, 0]
+                var_slope = cov_matrix.iloc[1, 1]
+                cov_intercept_slope = cov_matrix.iloc[0, 1]
+
+                # Propagación de errores para log_odds = intercept + slope * x
+                # var(x) = (1/slope^2) * [var(log_odds) + var(intercept) - 2*cov(log_odds, intercept)]
+                # Asumimos que log_odds es una constante, por lo que var(log_odds) = 0
+                # var(x) = (1/slope^2) * [var(intercept) - 2*cov(log_odds, intercept)]
+                # Esto es una simplificación. Un enfoque más robusto usaría el método delta.
+                # Simplificando aún más, y reconociendo que no es exacto:
+                se_log_odds = np.sqrt(var_intercept + (covariate_val**2 * var_slope) + (2 * covariate_val * cov_intercept_slope))
+
+                log_odds_lower = log_odds - 1.96 * se_log_odds
+                log_odds_upper = log_odds + 1.96 * se_log_odds
+
+                covariate_val_lower = (log_odds_lower - intercept) / slope
+                covariate_val_upper = (log_odds_upper - intercept) / slope
+
+                # Mostrar en el resumen
+                self.results_text.config(state="normal")
+                self.results_text.insert(tk.END, f"\n\n--- Punto de Riesgo ({risk_percent}%) ---\n")
+                self.results_text.insert(tk.END, f"Para alcanzar un riesgo del {risk_percent}%, el valor de la covariable debe ser: {covariate_val:.4f}\n")
+                self.results_text.insert(tk.END, f"Intervalo de confianza del 95% para el valor de la covariable: ({min(covariate_val_lower, covariate_val_upper):.4f}, {max(covariate_val_lower, covariate_val_upper):.4f})\n")
+                self.results_text.config(state="disabled")
+
+                # Marcar en la gráfica (si existe)
+                for i in reversed(range(self.results_notebook.index('end'))):
+                    tab_text = self.results_notebook.tab(i, "text")
+                    if tab_text.startswith("Riesgo vs"):
+                        frame = self.results_notebook.nametowidget(self.results_notebook.tabs()[i])
+                        canvas = frame.winfo_children()[0]
+                        fig = canvas.figure
+                        ax = fig.axes[0]
+                        ax.axhline(y=risk_prob, color='r', linestyle='--')
+                        ax.axvline(x=covariate_val, color='r', linestyle='--')
+                        canvas.draw()
+            else:
+                messagebox.showinfo("Información", "El cálculo del punto de riesgo solo está implementado para modelos con una sola covariable.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo calcular el punto de riesgo:\n{e}")
+
+    def _calculate_specific_risk(self):
+        """Calcula el riesgo para un conjunto de valores de covariables."""
+        if not self.model_results:
+            messagebox.showerror("Error", "Primero debe ajustar un modelo.")
+            return
+
+        try:
+            covariate_values_str = self.covariate_values_var.get()
+            if not covariate_values_str:
+                messagebox.showerror("Error", "Ingrese los valores de las covariables.")
+                return
+
+            values = [float(v.strip()) for v in covariate_values_str.split(',')]
+
+            indep_vars_sorted = sorted(self.model_results.params.index[1:])
+            if len(values) != len(indep_vars_sorted):
+                messagebox.showerror("Error", f"Debe ingresar {len(indep_vars_sorted)} valores de covariables en el orden: {', '.join(indep_vars_sorted)}")
+                return
+
+            # Crear un DataFrame para la predicción
+            pred_df = pd.DataFrame([values], columns=indep_vars_sorted)
+
+            # Calcular el riesgo y el intervalo de confianza
+            risk_pred = self.model_results.get_prediction(pred_df)
+            risk_summary = risk_pred.summary_frame(alpha=0.05)
+
+            # Mostrar en el resumen
+            self.results_text.config(state="normal")
+            self.results_text.insert(tk.END, f"\n\n--- Riesgo Específico ---\n")
+            self.results_text.insert(tk.END, f"Para los valores de covariables {values}, el riesgo predicho es:\n")
+            self.results_text.insert(tk.END, risk_summary.to_string(float_format="%.4f"))
+            self.results_text.config(state="disabled")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo calcular el riesgo específico:\n{e}")
 
 # --- Ejemplo de uso ---
 if __name__ == '__main__':
