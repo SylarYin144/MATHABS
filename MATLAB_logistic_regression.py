@@ -143,14 +143,26 @@ class LogisticRegressionTab(ttk.Frame):
         color_frame = ttk.Frame(font_frame)
         color_frame.pack(side="left", padx=5)
         ttk.Label(color_frame, text="Línea:").pack(side="left")
-        ttk.Entry(color_frame, textvariable=self.line_color, width=10).pack(side="left")
+        self.line_color_combo = ttk.Combobox(color_frame, textvariable=self.line_color, values=["darkorange", "blue", "green", "red", "purple", "black"], width=10)
+        self.line_color_combo.pack(side="left")
         ttk.Label(color_frame, text="Marcador:").pack(side="left")
-        ttk.Entry(color_frame, textvariable=self.marker_color, width=10).pack(side="left")
+        self.marker_color_combo = ttk.Combobox(color_frame, textvariable=self.marker_color, values=["navy", "blue", "green", "red", "purple", "black"], width=10)
+        self.marker_color_combo.pack(side="left")
 
         title_frame = ttk.Frame(font_frame)
         title_frame.pack(side="left", padx=5)
         ttk.Label(title_frame, text="Título:").pack(side="left")
         ttk.Entry(title_frame, textvariable=self.title_var, width=20).pack(side="left")
+
+        self.xlabel_var = tk.StringVar(value="Covariable")
+        self.ylabel_var = tk.StringVar(value="Riesgo Predicho (Probabilidad)")
+
+        axis_frame = ttk.Frame(font_frame)
+        axis_frame.pack(side="left", padx=5)
+        ttk.Label(axis_frame, text="Eje X:").pack(side="left")
+        ttk.Entry(axis_frame, textvariable=self.xlabel_var, width=20).pack(side="left")
+        ttk.Label(axis_frame, text="Eje Y:").pack(side="left")
+        ttk.Entry(axis_frame, textvariable=self.ylabel_var, width=20).pack(side="left")
 
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
@@ -483,15 +495,17 @@ class LogisticRegressionTab(ttk.Frame):
             self.results_notebook.add(self.roc_plot_frame, text="Curva ROC")
 
         fig, ax = plt.subplots(figsize=(6, 5)) # Ajustar tamaño según sea necesario
-        ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'Curva ROC (AUC = {roc_auc:.2f})')
-        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax.plot(fpr, tpr, color=self.line_color.get(), lw=2, label=f'Curva ROC (AUC = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color=self.marker_color.get(), lw=2, linestyle='--')
         ax.set_xlim([0.0, 1.0])
         ax.set_ylim([0.0, 1.05])
-        ax.set_xlabel('Tasa de Falsos Positivos (1 - Especificidad)')
-        ax.set_ylabel('Tasa de Verdaderos Positivos (Sensibilidad)')
-        ax.set_title('Curva ROC')
+        ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
+        ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
+        ax.set_title("Curva ROC", fontsize=self.font_size_var.get() + 2)
         ax.legend(loc="lower right")
-        ax.grid(True, linestyle=':', alpha=0.7)
+        ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+        plt.xticks(fontsize=self.font_size_var.get())
+        plt.yticks(fontsize=self.font_size_var.get())
         fig.tight_layout()
 
         canvas = FigureCanvasTkAgg(fig, master=self.roc_plot_frame)
@@ -505,8 +519,17 @@ class LogisticRegressionTab(ttk.Frame):
             pass
         self.log("Curva ROC generada.", "INFO")
 
+    def _clear_covariate_plots(self):
+        """Cierra todas las pestañas de gráficos de covariables."""
+        for i in reversed(range(self.results_notebook.index('end'))):
+            tab_text = self.results_notebook.tab(i, "text")
+            if tab_text.startswith("Riesgo vs"):
+                self.results_notebook.forget(i)
+
     def _plot_risk_vs_covariates(self, df_analysis, indep_vars, y_pred_prob):
         """Genera y muestra gráficos de riesgo vs. covariables."""
+        self._clear_covariate_plots()
+
         if self.normalize_vars.get():
             # Normalizar las covariables seleccionadas y trazarlas en un solo gráfico
             covariate_plot_frame = ttk.Frame(self.results_notebook)
@@ -519,11 +542,13 @@ class LogisticRegressionTab(ttk.Frame):
                 sorted_indices = np.argsort(normalized_var)
                 ax.plot(normalized_var.iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], label=var)
 
-            ax.set_xlabel("Covariable Normalizada")
-            ax.set_ylabel("Riesgo Predicho (Probabilidad)")
-            ax.set_title(self.title_var.get())
+            ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
+            ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
+            ax.set_title(self.title_var.get(), fontsize=self.font_size_var.get() + 2)
             ax.legend()
             ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+            plt.xticks(fontsize=self.font_size_var.get())
+            plt.yticks(fontsize=self.font_size_var.get())
             fig.tight_layout()
 
             canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
@@ -539,8 +564,8 @@ class LogisticRegressionTab(ttk.Frame):
                 fig, ax = plt.subplots(figsize=(6, 5))
                 sorted_indices = np.argsort(df_analysis[var])
                 ax.plot(df_analysis[var].iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], color=self.line_color.get(), marker='o', linestyle='-', markersize=4, markerfacecolor=self.marker_color.get())
-                ax.set_xlabel(var, fontsize=self.font_size_var.get())
-                ax.set_ylabel("Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+                ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
+                ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
                 ax.set_title(self.title_var.get(), fontsize=self.font_size_var.get() + 2)
                 ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
                 plt.xticks(fontsize=self.font_size_var.get())
