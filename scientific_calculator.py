@@ -13,7 +13,12 @@ class ScientificCalculatorTab(ttk.Frame):
 
         self.display_var = tk.StringVar()
         self.display = ttk.Entry(self, textvariable=self.display_var, font=('Arial', 24), state='readonly', justify='right')
-        self.display.grid(row=0, column=0, columnspan=5, sticky="nsew", padx=5, pady=5)
+        self.display.grid(row=0, column=0, columnspan=5, sticky="nsew", padx=10, pady=10)
+
+        # Estilo de los botones
+        style = ttk.Style()
+        style.configure('TButton', font=('Arial', 14), padding=10)
+        style.configure('Sci.TButton', font=('Arial', 12))
 
         buttons = [
             ('sin', 1, 0, 1, 1, 'sci_unary'), ('cos', 1, 1, 1, 1, 'sci_unary'), ('tan', 1, 2, 1, 1, 'sci_unary'), ('log₁₀', 1, 3, 1, 1, 'sci_unary'), ('ln', 1, 4, 1, 1, 'sci_unary'),
@@ -22,12 +27,13 @@ class ScientificCalculatorTab(ttk.Frame):
             ('4', 4, 0, 1, 1, 'num'), ('5', 4, 1, 1, 1, 'num'), ('6', 4, 2, 1, 1, 'num'), ('*', 4, 3, 1, 1, 'op_binary'), ('CE', 4, 4, 1, 1, 'clear_entry'),
             ('1', 5, 0, 1, 1, 'num'), ('2', 5, 1, 1, 1, 'num'), ('3', 5, 2, 1, 1, 'num'), ('-', 5, 3, 1, 1, 'op_binary'),
             ('0', 6, 0, 1, 1, 'num'), ('.', 6, 1, 1, 1, 'num'), ('±', 6, 2, 1, 1, 'op_unary'), ('+', 6, 3, 1, 1, 'op_binary'),
-            ('=', 5, 4, 1, 2, 'equals')
+            ('=', 5, 4, 2, 2, 'equals')
         ]
 
         for (text, r, c, cs, rs, btype) in buttons:
-            button = ttk.Button(self, text=text, command=lambda t=text, type=btype: self.on_button_click(t, type))
-            button.grid(row=r, column=c, columnspan=cs, rowspan=rs, sticky="nsew", padx=2, pady=2)
+            style_name = 'TButton' if btype in ['num', 'op_binary', 'equals', 'clear_all', 'clear_entry', 'func'] else 'Sci.TButton'
+            button = ttk.Button(self, text=text, style=style_name, command=lambda t=text, type=btype: self.on_button_click(t, type))
+            button.grid(row=r, column=c, columnspan=cs, rowspan=rs, sticky="nsew", padx=5, pady=5)
 
         self.first_operand = None
         self.operator = None
