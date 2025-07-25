@@ -27,7 +27,7 @@ class ScientificCalculatorTab(ttk.Frame):
             ('4', 4, 0, 1, 1, 'num'), ('5', 4, 1, 1, 1, 'num'), ('6', 4, 2, 1, 1, 'num'), ('*', 4, 3, 1, 1, 'op_binary'), ('CE', 4, 4, 1, 1, 'clear_entry'),
             ('1', 5, 0, 1, 1, 'num'), ('2', 5, 1, 1, 1, 'num'), ('3', 5, 2, 1, 1, 'num'), ('-', 5, 3, 1, 1, 'op_binary'),
             ('0', 6, 0, 1, 1, 'num'), ('.', 6, 1, 1, 1, 'num'), ('±', 6, 2, 1, 1, 'op_unary'), ('+', 6, 3, 1, 1, 'op_binary'),
-            ('=', 5, 4, 2, 2, 'equals')
+            ('E', 1, 5, 1, 1, 'sci_unary'), ('=', 5, 4, 2, 2, 'equals')
         ]
 
         for (text, r, c, cs, rs, btype) in buttons:
@@ -52,12 +52,14 @@ class ScientificCalculatorTab(ttk.Frame):
             self.display_var.set("")
 
 
-        if button_type == 'num':
+        elif button_type == 'num' or (button_type == 'sci_unary' and char == 'E'):
             if self.clear_display_on_next_input:
                 current_text = ""
                 self.clear_display_on_next_input = False
-            if char == '.' and '.' in current_text: # Avoid multiple dots
-                return
+
+            if char == '.' and '.' in current_text: return # Avoid multiple dots
+            if char == 'E' and 'e' in current_text.lower(): return # Avoid multiple 'e'
+
             self.display_var.set(current_text + char)
 
         elif button_type == 'const':
