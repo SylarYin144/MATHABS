@@ -274,8 +274,16 @@ class LogisticRegressionTab(ttk.Frame):
         try:
             # Crear fórmula para statsmodels (maneja variables categóricas automáticamente con C())
             # Asegurarse de que los nombres de variables sean válidos para fórmulas
-            clean_indep_vars = [f"`{v}`" if not v.isidentifier() else v for v in indep_vars]
-            formula = f"`{dep_var}` ~ {' + '.join(clean_indep_vars)}"
+            def quote_var(v):
+                # Usar Q() para variables que no son identificadores válidos de Python
+                # o que podrían entrar en conflicto con palabras clave de patsy.
+                if not v.isidentifier() or v in ["C", "Q", "I"]:
+                    return f"Q('{v}')"
+                return v
+
+            clean_dep_var = quote_var(dep_var)
+            clean_indep_vars = [quote_var(v) for v in indep_vars]
+            formula = f"{clean_dep_var} ~ {' + '.join(clean_indep_vars)}"
             self.log(f"Fórmula: {formula}", "DEBUG")
 
             # Usar Logit para regresión logística binaria
