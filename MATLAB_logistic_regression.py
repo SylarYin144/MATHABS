@@ -131,6 +131,27 @@ class LogisticRegressionTab(ttk.Frame):
         self.font_size_spinbox = ttk.Spinbox(font_frame, from_=6, to=20, textvariable=self.font_size_var, width=5)
         self.font_size_spinbox.pack(side="left", padx=2)
 
+        self.normalize_vars = tk.BooleanVar(value=False)
+        self.grid_on = tk.BooleanVar(value=True)
+        self.line_color = tk.StringVar(value="darkorange")
+        self.marker_color = tk.StringVar(value="navy")
+        self.title_var = tk.StringVar(value="Riesgo Predicho vs. Covariable")
+
+        ttk.Checkbutton(font_frame, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
+        ttk.Checkbutton(font_frame, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
+
+        color_frame = ttk.Frame(font_frame)
+        color_frame.pack(side="left", padx=5)
+        ttk.Label(color_frame, text="Línea:").pack(side="left")
+        ttk.Entry(color_frame, textvariable=self.line_color, width=10).pack(side="left")
+        ttk.Label(color_frame, text="Marcador:").pack(side="left")
+        ttk.Entry(color_frame, textvariable=self.marker_color, width=10).pack(side="left")
+
+        title_frame = ttk.Frame(font_frame)
+        title_frame.pack(side="left", padx=5)
+        ttk.Label(title_frame, text="Título:").pack(side="left")
+        ttk.Entry(title_frame, textvariable=self.title_var, width=20).pack(side="left")
+
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
         filepath = filedialog.askopenfilename(
@@ -486,23 +507,50 @@ class LogisticRegressionTab(ttk.Frame):
 
     def _plot_risk_vs_covariates(self, df_analysis, indep_vars, y_pred_prob):
         """Genera y muestra gráficos de riesgo vs. covariables."""
-        for var in indep_vars:
-            # Crear una nueva pestaña para cada gráfico de covariable
+        if self.normalize_vars.get():
+            # Normalizar las covariables seleccionadas y trazarlas en un solo gráfico
             covariate_plot_frame = ttk.Frame(self.results_notebook)
-            self.results_notebook.add(covariate_plot_frame, text=f"Riesgo vs {var}")
-
+            self.results_notebook.add(covariate_plot_frame, text="Riesgo vs Covariables Normalizadas")
             fig, ax = plt.subplots(figsize=(6, 5))
-            ax.scatter(df_analysis[var], y_pred_prob, alpha=0.5)
-            ax.set_xlabel(var)
+
+            for var in indep_vars:
+                # Normalizar la covariable a un rango de 0-1
+                normalized_var = (df_analysis[var] - df_analysis[var].min()) / (df_analysis[var].max() - df_analysis[var].min())
+                sorted_indices = np.argsort(normalized_var)
+                ax.plot(normalized_var.iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], label=var)
+
+            ax.set_xlabel("Covariable Normalizada")
             ax.set_ylabel("Riesgo Predicho (Probabilidad)")
-            ax.set_title(f"Riesgo Predicho vs. {var}")
-            ax.grid(True, linestyle=':', alpha=0.7)
+            ax.set_title(self.title_var.get())
+            ax.legend()
+            ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
             fig.tight_layout()
 
             canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-            self.log(f"Gráfico de riesgo vs. {var} generado.", "INFO")
+            self.log("Gráfico de riesgo vs. covariables normalizadas generado.", "INFO")
+        else:
+            # Trazar cada covariable en un gráfico separado
+            for var in indep_vars:
+                covariate_plot_frame = ttk.Frame(self.results_notebook)
+                self.results_notebook.add(covariate_plot_frame, text=f"Riesgo vs {var}")
+
+                fig, ax = plt.subplots(figsize=(6, 5))
+                sorted_indices = np.argsort(df_analysis[var])
+                ax.plot(df_analysis[var].iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], color=self.line_color.get(), marker='o', linestyle='-', markersize=4, markerfacecolor=self.marker_color.get())
+                ax.set_xlabel(var, fontsize=self.font_size_var.get())
+                ax.set_ylabel("Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+                ax.set_title(self.title_var.get(), fontsize=self.font_size_var.get() + 2)
+                ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+                plt.xticks(fontsize=self.font_size_var.get())
+                plt.yticks(fontsize=self.font_size_var.get())
+                fig.tight_layout()
+
+                canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
+                canvas.draw()
+                canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+                self.log(f"Gráfico de riesgo vs. {var} generado.", "INFO")
 
 # --- Ejemplo de uso ---
 if __name__ == '__main__':
