@@ -134,7 +134,7 @@ class LogisticRegressionTab(ttk.Frame):
         """Carga un archivo CSV o Excel y actualiza los controles."""
         filepath = filedialog.askopenfilename(
             title="Seleccionar archivo de datos",
-            filetypes=(("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xls *.xlsx"), ("Todos los archivos", "*.*"))
+            filetypes=(("Archivos Excel", "*.xls *.xlsx"), ("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*"))
         )
         if not filepath: return
 
@@ -320,7 +320,7 @@ class LogisticRegressionTab(ttk.Frame):
             # Pseudo R-cuadrado (McFadden)
             try:
                 ll_full = self.model_results.llf
-                ll_null = smf.logit(f"`{dep_var}` ~ 1", data=df_analysis).fit(disp=0).llf
+                ll_null = smf.logit(f"{clean_dep_var} ~ 1", data=df_analysis).fit(disp=0).llf
                 pseudo_r2_mcfadden = 1 - (ll_full / ll_null)
                 self.results_text.insert(tk.END, f"Pseudo R-cuadrado (McFadden): {pseudo_r2_mcfadden:.4f}\n")
                 self.log(f"Pseudo R2 (McFadden): {pseudo_r2_mcfadden:.4f}", "INFO")
@@ -341,7 +341,7 @@ class LogisticRegressionTab(ttk.Frame):
 
             # Tabla de Clasificación y Métricas Relacionadas (usando umbral 0.5)
             try:
-                threshold = 0.5
+.               threshold = 0.5
                 y_pred_class = (y_pred_prob >= threshold).astype(int)
                 cm = confusion_matrix(y_true, y_pred_class)
                 self.results_text.insert(tk.END, f"\n--- Tabla de Clasificación (umbral={threshold}) ---\n")
