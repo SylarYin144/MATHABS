@@ -3775,7 +3775,10 @@ class CoxModelingApp(ttk.Frame):
                     pred_df = 1 - surv_df
 
                 if pred_df is not None:
+                    self.log(f"Curva calculada para escenario: {scenario}", "DEBUG")
                     all_curves[tuple(sorted(scenario.items()))] = pred_df
+                else:
+                    self.log(f"pred_df fue None para escenario: {scenario}", "WARN")
             except Exception as e:
                 self.log(f"Error en predicción para escenario {scenario}: {e}", "ERROR")
                 traceback.print_exc(limit=2)
