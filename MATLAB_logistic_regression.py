@@ -494,6 +494,7 @@ class LogisticRegressionTab(ttk.Frame):
             self.roc_plot_frame = ttk.Frame(self.results_notebook)
             self.results_notebook.add(self.roc_plot_frame, text="Curva ROC")
 
+        plt.rcParams['font.family'] = self.font_family_var.get()
         fig, ax = plt.subplots(figsize=(6, 5)) # Ajustar tamaño según sea necesario
         ax.plot(fpr, tpr, color=self.line_color.get(), lw=2, label=f'Curva ROC (AUC = {roc_auc:.2f})')
         ax.plot([0, 1], [0, 1], color=self.marker_color.get(), lw=2, linestyle='--')
@@ -534,6 +535,7 @@ class LogisticRegressionTab(ttk.Frame):
             # Normalizar las covariables seleccionadas y trazarlas en un solo gráfico
             covariate_plot_frame = ttk.Frame(self.results_notebook)
             self.results_notebook.add(covariate_plot_frame, text="Riesgo vs Covariables Normalizadas")
+            plt.rcParams['font.family'] = self.font_family_var.get()
             fig, ax = plt.subplots(figsize=(6, 5))
 
             for var in indep_vars:
@@ -542,9 +544,9 @@ class LogisticRegressionTab(ttk.Frame):
                 sorted_indices = np.argsort(normalized_var)
                 ax.plot(normalized_var.iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], label=var)
 
-            ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
-            ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
-            ax.set_title(self.title_var.get(), fontsize=self.font_size_var.get() + 2)
+            ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else "Covariable Normalizada", fontsize=self.font_size_var.get())
+            ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+            ax.set_title(self.title_var.get() if self.title_var.get() else "Riesgo vs Covariables Normalizadas", fontsize=self.font_size_var.get() + 2)
             ax.legend()
             ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
             plt.xticks(fontsize=self.font_size_var.get())
@@ -561,12 +563,13 @@ class LogisticRegressionTab(ttk.Frame):
                 covariate_plot_frame = ttk.Frame(self.results_notebook)
                 self.results_notebook.add(covariate_plot_frame, text=f"Riesgo vs {var}")
 
+                plt.rcParams['font.family'] = self.font_family_var.get()
                 fig, ax = plt.subplots(figsize=(6, 5))
                 sorted_indices = np.argsort(df_analysis[var])
-                ax.plot(df_analysis[var].iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], color=self.line_color.get(), marker='o', linestyle='-', markersize=4, markerfacecolor=self.marker_color.get())
-                ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
-                ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
-                ax.set_title(self.title_var.get(), fontsize=self.font_size_var.get() + 2)
+                ax.plot(df_analysis[var].iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], color=self.line_color.get(), linestyle='-')
+                ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
+                ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+                ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
                 ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
                 plt.xticks(fontsize=self.font_size_var.get())
                 plt.yticks(fontsize=self.font_size_var.get())
