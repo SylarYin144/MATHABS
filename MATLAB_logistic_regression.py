@@ -665,7 +665,7 @@ class LogisticRegressionTab(ttk.Frame):
                         # Usar IC por defecto del modelo
                         risk_pred = self.model_results.get_prediction(pred_df)
                         ci = risk_pred.summary_frame(alpha=0.05)
-                        ax.fill_between(x_range, ci['mean_ci_lower'], ci['mean_ci_upper'], color='gray', alpha=0.2)
+                        ax.fill_between(x_range, ci['obs_ci_lower'], ci['obs_ci_upper'], color='gray', alpha=0.2)
                 ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
                 ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
                 ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
