@@ -120,49 +120,52 @@ class LogisticRegressionTab(ttk.Frame):
         font_frame = ttk.LabelFrame(controls_frame, text="5. Opciones de Gráfico")
         font_frame.pack(fill="x", padx=5, pady=5)
 
-        ttk.Label(font_frame, text="Fuente:").pack(side="left", padx=(5, 2))
+        # --- Fila 1: Fuente y Tamaño ---
+        font_row = ttk.Frame(font_frame)
+        font_row.pack(fill="x", pady=2)
+        ttk.Label(font_row, text="Fuente:").pack(side="left", padx=(5, 2))
         self.font_family_var = tk.StringVar(value="sans-serif")
         font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
-        self.font_family_combo = ttk.Combobox(font_frame, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
+        self.font_family_combo = ttk.Combobox(font_row, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
         self.font_family_combo.pack(side="left", padx=2)
 
-        ttk.Label(font_frame, text="Tamaño:").pack(side="left", padx=(10, 2))
+        ttk.Label(font_row, text="Tamaño:").pack(side="left", padx=(10, 2))
         self.font_size_var = tk.IntVar(value=10)
-        self.font_size_spinbox = ttk.Spinbox(font_frame, from_=6, to=20, textvariable=self.font_size_var, width=5)
+        self.font_size_spinbox = ttk.Spinbox(font_row, from_=6, to=20, textvariable=self.font_size_var, width=5)
         self.font_size_spinbox.pack(side="left", padx=2)
 
+        # --- Fila 2: Opciones de Gráfico ---
+        options_row = ttk.Frame(font_frame)
+        options_row.pack(fill="x", pady=2)
         self.normalize_vars = tk.BooleanVar(value=False)
         self.grid_on = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_row, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
+        ttk.Checkbutton(options_row, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
+
+        # --- Fila 3: Colores ---
+        color_row = ttk.Frame(font_frame)
+        color_row.pack(fill="x", pady=2)
         self.line_color = tk.StringVar(value="darkorange")
         self.marker_color = tk.StringVar(value="navy")
-        self.title_var = tk.StringVar(value="Riesgo Predicho vs. Covariable")
-
-        ttk.Checkbutton(font_frame, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
-        ttk.Checkbutton(font_frame, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
-
-        color_frame = ttk.Frame(font_frame)
-        color_frame.pack(side="left", padx=5)
-        ttk.Label(color_frame, text="Línea:").pack(side="left")
-        self.line_color_combo = ttk.Combobox(color_frame, textvariable=self.line_color, values=["darkorange", "blue", "green", "red", "purple", "black"], width=10)
+        ttk.Label(color_row, text="Línea:").pack(side="left", padx=5)
+        self.line_color_combo = ttk.Combobox(color_row, textvariable=self.line_color, values=["darkorange", "blue", "green", "red", "purple", "black"], width=10)
         self.line_color_combo.pack(side="left")
-        ttk.Label(color_frame, text="Marcador:").pack(side="left")
-        self.marker_color_combo = ttk.Combobox(color_frame, textvariable=self.marker_color, values=["navy", "blue", "green", "red", "purple", "black"], width=10)
+        ttk.Label(color_row, text="Marcador:").pack(side="left", padx=5)
+        self.marker_color_combo = ttk.Combobox(color_row, textvariable=self.marker_color, values=["navy", "blue", "green", "red", "purple", "black"], width=10)
         self.marker_color_combo.pack(side="left")
 
-        title_frame = ttk.Frame(font_frame)
-        title_frame.pack(side="left", padx=5)
-        ttk.Label(title_frame, text="Título:").pack(side="left")
-        ttk.Entry(title_frame, textvariable=self.title_var, width=20).pack(side="left")
-
-        self.xlabel_var = tk.StringVar(value="Covariable")
-        self.ylabel_var = tk.StringVar(value="Riesgo Predicho (Probabilidad)")
-
-        axis_frame = ttk.Frame(font_frame)
-        axis_frame.pack(side="left", padx=5)
-        ttk.Label(axis_frame, text="Eje X:").pack(side="left")
-        ttk.Entry(axis_frame, textvariable=self.xlabel_var, width=20).pack(side="left")
-        ttk.Label(axis_frame, text="Eje Y:").pack(side="left")
-        ttk.Entry(axis_frame, textvariable=self.ylabel_var, width=20).pack(side="left")
+        # --- Fila 4: Títulos y Ejes ---
+        title_row = ttk.Frame(font_frame)
+        title_row.pack(fill="x", pady=2)
+        self.title_var = tk.StringVar(value="")
+        self.xlabel_var = tk.StringVar(value="")
+        self.ylabel_var = tk.StringVar(value="")
+        ttk.Label(title_row, text="Título:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.title_var, width=20).pack(side="left")
+        ttk.Label(title_row, text="Eje X:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.xlabel_var, width=20).pack(side="left")
+        ttk.Label(title_row, text="Eje Y:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.ylabel_var, width=20).pack(side="left")
 
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
@@ -504,7 +507,10 @@ class LogisticRegressionTab(ttk.Frame):
         ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
         ax.set_title("Curva ROC", fontsize=self.font_size_var.get() + 2)
         ax.legend(loc="lower right")
-        ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+        if self.grid_on.get():
+            ax.grid(True, linestyle=':', alpha=0.7)
+        else:
+            ax.grid(False)
         plt.xticks(fontsize=self.font_size_var.get())
         plt.yticks(fontsize=self.font_size_var.get())
         fig.tight_layout()
@@ -548,7 +554,10 @@ class LogisticRegressionTab(ttk.Frame):
             ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
             ax.set_title(self.title_var.get() if self.title_var.get() else "Riesgo vs Covariables Normalizadas", fontsize=self.font_size_var.get() + 2)
             ax.legend()
-            ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+            if self.grid_on.get():
+                ax.grid(True, linestyle=':', alpha=0.7)
+            else:
+                ax.grid(False)
             plt.xticks(fontsize=self.font_size_var.get())
             plt.yticks(fontsize=self.font_size_var.get())
             fig.tight_layout()
@@ -565,12 +574,25 @@ class LogisticRegressionTab(ttk.Frame):
 
                 plt.rcParams['font.family'] = self.font_family_var.get()
                 fig, ax = plt.subplots(figsize=(6, 5))
-                sorted_indices = np.argsort(df_analysis[var])
-                ax.plot(df_analysis[var].iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], color=self.line_color.get(), linestyle='-')
+                # Generar una secuencia de valores para la covariable para un gráfico más suave
+                x_range = np.linspace(df_analysis[var].min(), df_analysis[var].max(), 200)
+
+                # Crear un DataFrame para la predicción. Todas las demás covariables se mantienen en su media.
+                pred_df = pd.DataFrame({var: x_range})
+                for other_var in indep_vars:
+                    if other_var != var:
+                        pred_df[other_var] = df_analysis[other_var].mean()
+
+                pred_prob = self.model_results.predict(pred_df)
+
+                ax.plot(x_range, pred_prob, color=self.line_color.get(), linestyle='-')
                 ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
                 ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
                 ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
-                ax.grid(self.grid_on.get(), linestyle=':', alpha=0.7)
+                if self.grid_on.get():
+                    ax.grid(True, linestyle=':', alpha=0.7)
+                else:
+                    ax.grid(False)
                 plt.xticks(fontsize=self.font_size_var.get())
                 plt.yticks(fontsize=self.font_size_var.get())
                 fig.tight_layout()
