@@ -186,20 +186,25 @@ class LogisticRegressionTab(ttk.Frame):
         ttk.Entry(covariate_values_frame, textvariable=self.covariate_values_var, width=40).pack(side="left")
         ttk.Button(covariate_values_frame, text="Calcular Riesgo Específico", command=self._calculate_specific_risk).pack(side="left", padx=5)
 
-        bootstrap_frame = ttk.LabelFrame(controls_frame, text="Intervalos de Confianza con Bootstrap")
+        bootstrap_frame = ttk.LabelFrame(controls_frame, text="Intervalos de Confianza")
         bootstrap_frame.pack(fill="x", padx=5, pady=5)
+        self.show_ci = tk.BooleanVar(value=False)
         self.bootstrap_ci = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bootstrap_frame, text="Habilitar Bootstrap", variable=self.bootstrap_ci).pack(side="left", padx=5)
+
+        ci_check_frame = ttk.Frame(bootstrap_frame)
+        ci_check_frame.pack(fill="x", pady=2)
+        ttk.Checkbutton(ci_check_frame, text="Mostrar IC en Gráfica", variable=self.show_ci).pack(side="left", padx=5)
+        ttk.Checkbutton(ci_check_frame, text="Usar Bootstrap para IC", variable=self.bootstrap_ci).pack(side="left", padx=5)
 
         cycles_frame = ttk.Frame(bootstrap_frame)
-        cycles_frame.pack(side="left", padx=5)
-        ttk.Label(cycles_frame, text="Ciclos:").pack(side="left")
+        cycles_frame.pack(fill="x", pady=2)
+        ttk.Label(cycles_frame, text="Ciclos Bootstrap:").pack(side="left", padx=5)
         self.bootstrap_cycles_var = tk.IntVar(value=1000)
         ttk.Entry(cycles_frame, textvariable=self.bootstrap_cycles_var, width=10).pack(side="left")
 
         seed_frame = ttk.Frame(bootstrap_frame)
-        seed_frame.pack(side="left", padx=5)
-        ttk.Label(seed_frame, text="Semilla:").pack(side="left")
+        seed_frame.pack(fill="x", pady=2)
+        ttk.Label(seed_frame, text="Semilla Bootstrap:").pack(side="left", padx=5)
         self.bootstrap_seed_var = tk.IntVar(value=42)
         ttk.Entry(seed_frame, textvariable=self.bootstrap_seed_var, width=10).pack(side="left")
 
@@ -729,13 +734,12 @@ class LogisticRegressionTab(ttk.Frame):
                     tab_text = self.results_notebook.tab(i, "text")
                     if tab_text.startswith("Riesgo vs"):
                         frame = self.results_notebook.nametowidget(self.results_notebook.tabs()[i])
-                        # El primer widget en el frame es el FigureCanvasTkAgg
-                        canvas_agg = frame.winfo_children()[0]
-                        fig = canvas_agg.figure
+                        canvas = frame.winfo_children()[0]
+                        fig = canvas.figure
                         ax = fig.axes[0]
                         ax.axhline(y=risk_prob, color='r', linestyle='--')
                         ax.axvline(x=covariate_val, color='r', linestyle='--')
-                        canvas_agg.draw()
+                        canvas.draw()
             else:
                 messagebox.showinfo("Información", "El cálculo del punto de riesgo solo está implementado para modelos con una sola covariable.")
 
