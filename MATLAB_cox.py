@@ -3668,7 +3668,7 @@ class CoxModelingApp(ttk.Frame):
         ttk.Entry(frame_opts_pred,textvariable=times_str_var_pred_ui,width=30).grid(row=1,column=1,columnspan=3,padx=5,pady=3,sticky=tk.EW)
         
         frame_btns_pred_diag = ttk.Frame(frame_main_pred_diag,padding=(0,10,0,0)); frame_btns_pred_diag.pack(fill=tk.X)
-        ttk.Button(frame_btns_pred_diag,text="Predecir y Mostrar Curva",command=lambda: self._perform_prediction_and_plot(pred_diag,md_pred,entries_pred,type_var_pred_ui.get(),times_str_var_pred_ui.get())).pack(side=tk.LEFT,padx=10)
+        ttk.Button(frame_btns_pred_diag,text="Predecir y Mostrar Curva",command=lambda: self._perform_prediction_and_plot(pred_diag,md_pred,{k: v for k, v in entries_pred.items()},type_var_pred_ui.get(),times_str_var_pred_ui.get())).pack(side=tk.LEFT,padx=10)
         ttk.Button(frame_btns_pred_diag,text="Cancelar",command=pred_diag.destroy).pack(side=tk.RIGHT,padx=10)
 
     def _parse_prediction_input_and_generate_scenarios(self, entries_dict, original_data_context):
@@ -3753,11 +3753,13 @@ class CoxModelingApp(ttk.Frame):
 
         fig_curve_pred, ax_curve_pred = plt.subplots(figsize=(10, 6))
 
-        # 1. Calculate all individual curves first
+        # 1. Calculate all individual curves
         all_curves = {}
+        self.log(f"Calculando curvas para {len(scenarios)} escenarios...", "DEBUG")
         for scenario in scenarios:
             df_input = pd.DataFrame([scenario])
             try:
+                # Scaling logic
                 fitted_scaler = md_dict_for_pred.get("fitted_scaler_object")
                 scaled_columns = md_dict_for_pred.get("scaled_columns_info", [])
                 if fitted_scaler and scaled_columns:
@@ -3766,87 +3768,109 @@ class CoxModelingApp(ttk.Frame):
                         df_input[numeric_cols] = df_input[numeric_cols].apply(pd.to_numeric, errors='coerce')
                         df_input[numeric_cols] = fitted_scaler.transform(df_input[numeric_cols])
 
+                # Prediction
+                pred_df = None
                 if type_ui_pred == "Supervivencia":
                     pred_df = cph_model_for_pred.predict_survival_function(df_input)
                 elif type_ui_pred == "Riesgo":
                     pred_df = cph_model_for_pred.predict_cumulative_hazard(df_input)
                 else: # ProbEventoAcum
-                    surv_df = cph_model_for_pred.predict_survival_function(df_input)
-                    pred_df = 1 - surv_df
+                    pred_df = 1 - cph_model_for_pred.predict_survival_function(df_input)
 
-                if pred_df is not None:
+                if pred_df is not None and not pred_df.empty:
                     self.log(f"Curva calculada para escenario: {scenario}", "DEBUG")
                     all_curves[tuple(sorted(scenario.items()))] = pred_df
                 else:
-                    self.log(f"pred_df fue None para escenario: {scenario}", "WARN")
+                    self.log(f"pred_df fue None o vacío para escenario: {scenario}", "WARN")
             except Exception as e:
                 self.log(f"Error en predicción para escenario {scenario}: {e}", "ERROR")
                 traceback.print_exc(limit=2)
-                messagebox.showerror("Error en Predicción", f"Falló la predicción para:\n{scenario}\n\nError: {e}", parent=dialog_pred_ref)
+                messagebox.showerror("Error en Predicción", f"Falló para:\n{scenario}\n\nError: {e}", parent=dialog_pred_ref)
                 return
+        self.log(f"Se calcularon {len(all_curves)} curvas individuales.", "DEBUG")
 
-        # 2. Group curves for averaging
+        # 2. Group scenarios and prepare curves for plotting
         final_curves_to_plot = {}
         scenarios_in_groups = set()
 
         for range_var, range_str in range_vars.items():
-            # Identify all scenarios that are part of this group
-            # This is complex because other variables can be lists (comma-separated)
-            # We need to find all scenarios that have `range_var` and one of its range values
-            
-            # Let's simplify: find scenarios that differ *only* by the range_var value
-            base_scenarios = {tuple(sorted(s.items())) for s in scenarios}
-            
-            while base_scenarios:
-                base_scen_tuple = base_scenarios.pop()
-                if range_var not in dict(base_scen_tuple): continue
+            def get_base_scenario_tuple(s_dict):
+                s_copy = s_dict.copy()
+                if range_var in s_copy: del s_copy[range_var]
+                return tuple(sorted(s_copy.items()))
 
-                group_tuples = {base_scen_tuple}
-                base_scen_dict = dict(base_scen_tuple)
+            grouped_by_base = {}
+            for scen_dict in scenarios:
+                if range_var in scen_dict:
+                    base_tuple = get_base_scenario_tuple(scen_dict)
+                    if base_tuple not in grouped_by_base:
+                        grouped_by_base[base_tuple] = []
+                    grouped_by_base[base_tuple].append(scen_dict)
 
-                # Find other scenarios that match the base except for the range_var
-                for other_scen_tuple in list(base_scenarios):
-                    other_scen_dict = dict(other_scen_tuple)
-                    is_match = True
-                    for k, v in base_scen_dict.items():
-                        if k != range_var and other_scen_dict.get(k) != v:
-                            is_match = False
-                            break
-                    if is_match and range_var in other_scen_dict:
-                        group_tuples.add(other_scen_tuple)
+            for base_tuple, group_scenarios in grouped_by_base.items():
+                curves_to_avg = [all_curves[tuple(sorted(s.items()))] for s in group_scenarios if tuple(sorted(s.items())) in all_curves]
 
-                if len(group_tuples) > 1:
-                    base_scenarios -= group_tuples
-                    scenarios_in_groups.update(group_tuples)
+                if not curves_to_avg: continue
 
-                    curves_to_avg = [all_curves[t] for t in group_tuples if t in all_curves]
-                    if not curves_to_avg: continue
+                for s in group_scenarios: scenarios_in_groups.add(tuple(sorted(s.items())))
 
-                    # Average the curves
-                    all_indices = pd.concat(curves_to_avg).index.unique().sort_values()
-                    reindexed = [c.reindex(all_indices, method='ffill').fillna(1.0 if type_ui_pred == "Supervivencia" else 0.0) for c in curves_to_avg]
-                    avg_curve = pd.concat(reindexed).groupby(level=0).mean()
+                all_indices = pd.concat(curves_to_avg).index.unique().sort_values()
+                fill_val = 1.0 if type_ui_pred == "Supervivencia" else 0.0
+                reindexed = [c.reindex(all_indices, method='ffill').fillna(fill_val) for c in curves_to_avg]
+                avg_curve = pd.concat(reindexed).groupby(level=0).mean()
 
-                    # Create label
-                    label_dict = dict(base_scen_tuple)
-                    label_dict[range_var] = f"Grupo({range_str})"
-                    label = ", ".join([f"{k}={v}" for k, v in sorted(label_dict.items())])
-                    final_curves_to_plot[label] = avg_curve
+                label_dict = dict(base_tuple)
+                label_dict[range_var] = f"Grupo({range_str})"
+                label = ", ".join([f"{k}={v}" for k, v in sorted(label_dict.items())])
+                final_curves_to_plot[label] = avg_curve
 
-        # 3. Add individual curves not part of any group
         for scenario_tuple, curve in all_curves.items():
             if scenario_tuple not in scenarios_in_groups:
                 label = ", ".join([f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k,v in sorted(scenario_tuple)])
                 final_curves_to_plot[label] = curve
 
-        # 4. Plotting
+        # 3. Plotting
+        self.log(f"Total de curvas a graficar (individuales + grupos): {len(final_curves_to_plot)}", "DEBUG")
+        if not final_curves_to_plot:
+            self.log("No se generaron curvas finales para graficar.", "WARN")
+            messagebox.showwarning("Sin Gráficos", "No se pudieron generar curvas de predicción.", parent=dialog_pred_ref)
+            return
+
         colors = plt.cm.viridis(np.linspace(0, 1, len(final_curves_to_plot)))
+        results_text_pred_list = []
+
         for i, (label, pred_df) in enumerate(final_curves_to_plot.items()):
             pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post', color=colors[i], label=label)
-            # Point predictions logic can be added here if needed for averaged curves
+            if times_list_pred:
+                label_prefix = {"Supervivencia": "S", "Riesgo": "H", "ProbEventoAcum": "1-S"}[type_ui_pred]
+                results_for_scenario = [f"Curva: {label}"]
+                for t_val in times_list_pred:
+                    val_str = f"{np.interp(t_val, pred_df.index, pred_df.iloc[:,0]):.3f}" if t_val >= pred_df.index.min() and t_val <= pred_df.index.max() else "N/A"
+                    if val_str != "N/A":
+                        ax_curve_pred.scatter([t_val], [float(val_str)], marker='o', color=colors[i], s=40, zorder=5)
+                    results_for_scenario.append(f"  {label_prefix}(t={t_val}|X) = {val_str}")
+                results_text_pred_list.append("\n".join(results_for_scenario))
 
-        # 5. Finalize plot
-        # ... (rest of the plotting logic, adapted for new structure)
+        # 4. Finalize plot
+        title_map = {"Supervivencia": "Pred. Prob. Supervivencia", "Riesgo": "Pred. Riesgo Acumulado", "ProbEventoAcum": "Pred. Prob. Evento Acumulado"}
+        title_curve_pred = f"{title_map.get(type_ui_pred)} ({name_for_pred})"
+        ylabel_map = {"Supervivencia": "S(t|X)", "Riesgo": "H(t|X)", "ProbEventoAcum": "1 - S(t|X)"}
+        ax_curve_pred.set_ylabel(ylabel_map.get(type_ui_pred))
+
+        opts_curve_pred = self.current_plot_options.copy()
+        opts_curve_pred['title'] = opts_curve_pred.get('title') or title_curve_pred
+        opts_curve_pred['xlabel'] = opts_curve_pred.get('xlabel') or f"Tiempo ({md_dict_for_pred.get('time_col_for_model','T')})"
+        apply_plot_options(ax_curve_pred, opts_curve_pred, self.log)
+
+        if len(final_curves_to_plot) > 1 or any(range_vars):
+            ax_curve_pred.legend(title="Escenarios/Grupos", fontsize='small')
+
+        self._create_plot_window(fig_curve_pred, title_curve_pred)
+
+        if results_text_pred_list:
+            ModelSummaryWindow(dialog_pred_ref, "Resultados de Predicción Puntual", "\n\n".join(results_text_pred_list))
+        elif not times_list_pred:
+            messagebox.showinfo("Predicción Exitosa", "Curva(s) de predicción generada(s).", parent=dialog_pred_ref)
 
 
     def generate_calibration_plot(self):
