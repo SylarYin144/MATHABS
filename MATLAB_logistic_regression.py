@@ -341,7 +341,7 @@ class LogisticRegressionTab(ttk.Frame):
 
             # Tabla de Clasificación y Métricas Relacionadas (usando umbral 0.5)
             try:
-.               threshold = 0.5
+                threshold = 0.5
                 y_pred_class = (y_pred_prob >= threshold).astype(int)
                 cm = confusion_matrix(y_true, y_pred_class)
                 self.results_text.insert(tk.END, f"\n--- Tabla de Clasificación (umbral={threshold}) ---\n")
