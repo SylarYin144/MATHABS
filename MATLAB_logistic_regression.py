@@ -348,6 +348,11 @@ class LogisticRegressionTab(ttk.Frame):
         self.log(f"Variables para modelo: Dep={dep_var}, Indep={indep_vars}", "INFO")
         self.log(f"Dimensiones datos análisis: {df_analysis.shape}", "INFO")
 
+        # Contar casos de 0s y 1s en la variable dependiente
+        case_counts = df_analysis[dep_var].value_counts()
+        self.results_text.insert(tk.END, f"Casos de 0: {case_counts.get(0, 0)}\n")
+        self.results_text.insert(tk.END, f"Casos de 1: {case_counts.get(1, 0)}\n\n")
+
         # 4. Construir fórmula y ajustar modelo
         try:
             # Crear fórmula para statsmodels (maneja variables categóricas automáticamente con C())
