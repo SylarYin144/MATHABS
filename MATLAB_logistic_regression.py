@@ -12,7 +12,8 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report, roc_auc_score
-from statsmodels.graphics.gofplots import ProbPlot # Para Hosmer-Lemeshow gráfico si es necesario, o usar cálculo manual.
+from statsmodels.graphics.gofplots import ProbPlot
+from scipy import stats
 # Considerar una función directa para Hosmer-Lemeshow si existe o implementarla.
 
 try:
@@ -371,6 +372,12 @@ class LogisticRegressionTab(ttk.Frame):
                 self.log(f"Error calculando Hosmer-Lemeshow: {e_hl}", "WARN")
                 self.results_text.insert(tk.END, f"Prueba de Hosmer-Lemeshow: Error ({e_hl})\n")
 
+            # Generar gráficos de riesgo vs. covariables
+            try:
+                self._plot_risk_vs_covariates(df_analysis, indep_vars, y_pred_prob)
+            except Exception as e_risk_plot:
+                self.log(f"Error generando gráficos de riesgo: {e_risk_plot}", "WARN")
+
         except Exception as e:
             self.log(f"Error al ajustar el modelo logístico: {e}", "ERROR")
             self.results_text.insert(tk.END, f"Error al ajustar el modelo:\n{e}\n{traceback.format_exc()}")
@@ -441,7 +448,7 @@ class LogisticRegressionTab(ttk.Frame):
         # patrones de covarianza distintos si se agrupa por ellos, o g-2 si se agrupa por deciles de riesgo.
         # Aquí usamos g-2 como aproximación común para deciles.
         df_hl = max(1, g - 2)
-        p_value = 1 - sm.stats.chisqprob(hl_stat, df_hl) # statsmodels.stats.chisqprob es scipy.stats.chi2.sf
+        p_value = stats.chi2.sf(hl_stat, df_hl)
 
         return hl_stat, p_value
 
@@ -477,6 +484,25 @@ class LogisticRegressionTab(ttk.Frame):
             pass
         self.log("Curva ROC generada.", "INFO")
 
+    def _plot_risk_vs_covariates(self, df_analysis, indep_vars, y_pred_prob):
+        """Genera y muestra gráficos de riesgo vs. covariables."""
+        for var in indep_vars:
+            # Crear una nueva pestaña para cada gráfico de covariable
+            covariate_plot_frame = ttk.Frame(self.results_notebook)
+            self.results_notebook.add(covariate_plot_frame, text=f"Riesgo vs {var}")
+
+            fig, ax = plt.subplots(figsize=(6, 5))
+            ax.scatter(df_analysis[var], y_pred_prob, alpha=0.5)
+            ax.set_xlabel(var)
+            ax.set_ylabel("Riesgo Predicho (Probabilidad)")
+            ax.set_title(f"Riesgo Predicho vs. {var}")
+            ax.grid(True, linestyle=':', alpha=0.7)
+            fig.tight_layout()
+
+            canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.log(f"Gráfico de riesgo vs. {var} generado.", "INFO")
 
 # --- Ejemplo de uso ---
 if __name__ == '__main__':

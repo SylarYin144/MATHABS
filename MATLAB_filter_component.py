@@ -26,7 +26,7 @@ class FilterComponent(ttk.Frame):
         self.df_original = None
         self.column_list = []
         self.filter_conditions = [] # Lista para almacenar widgets de cada condición
-        self.max_unique_cat = max_unique_cat
+        self.max_unique_cat = max_unique_cat if max_unique_cat is not None else 50
 
         # --- UI Principal ---
         self.main_frame = ttk.Frame(self)
