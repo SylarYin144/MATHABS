@@ -3887,7 +3887,10 @@ class CoxModelingApp(ttk.Frame):
         new_labels = dialog_legends.result
 
         # Rebuild the final_curves_to_plot with the new labels
-        final_curves_to_plot_labeled = {new_labels[original_label]: curve for original_label, curve in final_curves_to_plot.items()}
+        final_curves_to_plot_labeled = {}
+        for original_label, curve in final_curves_to_plot.items():
+            new_label = new_labels.get(original_label, original_label) # Fallback to original if something goes wrong
+            final_curves_to_plot_labeled[new_label] = curve
 
         colors = plt.cm.viridis(np.linspace(0, 1, len(final_curves_to_plot_labeled)))
         results_text_pred_list = []
