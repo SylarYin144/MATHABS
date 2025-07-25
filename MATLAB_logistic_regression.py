@@ -141,6 +141,8 @@ class LogisticRegressionTab(ttk.Frame):
         self.grid_on = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_row, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
         ttk.Checkbutton(options_row, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
+        self.show_ci = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_row, text="Mostrar IC", variable=self.show_ci).pack(side="left", padx=5)
 
         # --- Fila 3: Colores ---
         color_row = ttk.Frame(font_frame)
@@ -638,6 +640,27 @@ class LogisticRegressionTab(ttk.Frame):
                 pred_prob = self.model_results.predict(pred_df)
 
                 ax.plot(x_range, pred_prob, color=self.line_color.get(), linestyle='-')
+
+                if self.show_ci.get():
+                    if self.bootstrap_ci.get():
+                        # Calcular IC de bootstrap para la gráfica
+                        boot_preds = []
+                        n_bootstraps = self.bootstrap_cycles_var.get()
+                        np.random.seed(self.bootstrap_seed_var.get())
+                        for _ in range(n_bootstraps):
+                            boot_sample = df_analysis.sample(n=len(df_analysis), replace=True)
+                            boot_model = smf.logit(formula, data=boot_sample).fit(disp=0)
+                            boot_preds.append(boot_model.predict(pred_df))
+
+                        boot_preds = np.array(boot_preds)
+                        ci_lower = np.percentile(boot_preds, 2.5, axis=0)
+                        ci_upper = np.percentile(boot_preds, 97.5, axis=0)
+                        ax.fill_between(x_range, ci_lower, ci_upper, color='gray', alpha=0.2)
+                    else:
+                        # Usar IC por defecto del modelo
+                        risk_pred = self.model_results.get_prediction(pred_df)
+                        ci = risk_pred.summary_frame(alpha=0.05)
+                        ax.fill_between(x_range, ci['mean_ci_lower'], ci['mean_ci_upper'], color='gray', alpha=0.2)
                 ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
                 ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
                 ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
@@ -711,12 +734,13 @@ class LogisticRegressionTab(ttk.Frame):
 
             values = [float(v.strip()) for v in covariate_values_str.split(',')]
 
-            if len(values) != len(self.model_results.params) - 1:
-                messagebox.showerror("Error", f"Debe ingresar {len(self.model_results.params) - 1} valores de covariables.")
+            indep_vars_sorted = sorted(self.model_results.params.index[1:])
+            if len(values) != len(indep_vars_sorted):
+                messagebox.showerror("Error", f"Debe ingresar {len(indep_vars_sorted)} valores de covariables en el orden: {', '.join(indep_vars_sorted)}")
                 return
 
             # Crear un DataFrame para la predicción
-            pred_df = pd.DataFrame([values], columns=self.model_results.params.index[1:])
+            pred_df = pd.DataFrame([values], columns=indep_vars_sorted)
 
             # Calcular el riesgo y el intervalo de confianza
             risk_pred = self.model_results.get_prediction(pred_df)
