@@ -1278,7 +1278,7 @@ class RegresionesTab(ttk.Frame):
                     mod = sm.OLS(y, X_lin).fit()
                     a, b = mod.params
                     p_values = mod.pvalues
-                    formula = f"y = {format_number(a)} (p={fmt_p(p_values[0])}) + {format_number(b)}x (p={fmt_p(p_values[1])})"
+                    formula = f"y = {format_number(a)} + {format_number(b)}x"
                     yhat = mod.predict(X_lin)
                     p, pp = safe_pearson(y, yhat)
                     s, ps = safe_spearman(y, yhat)
@@ -1294,7 +1294,7 @@ class RegresionesTab(ttk.Frame):
                     mod_quad = sm.OLS(y, X_quad).fit()
                     c2, c1, c0 = mod_quad.params
                     p_values_quad = mod_quad.pvalues
-                    formula_quad = f"y = {format_number(c0)} (p={fmt_p(p_values_quad[0])}) + {format_number(c1)}x (p={fmt_p(p_values_quad[1])}) + {format_number(c2)}x² (p={fmt_p(p_values_quad[2])})"
+                    formula_quad = f"y = {format_number(c0)} + {format_number(c1)}x + {format_number(c2)}x²"
                     yhat_quad = mod_quad.predict(X_quad)
                     p_quad, _ = safe_pearson(y, yhat_quad)
                     r2_quad = p_quad**2 if not np.isnan(p_quad) else np.nan
@@ -1309,7 +1309,7 @@ class RegresionesTab(ttk.Frame):
                     X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
                     mod_cubic = sm.OLS(y, X_cubic).fit()
                     p_values_cubic = mod_cubic.pvalues
-                    formula_cubic = f"y = {format_number(mod_cubic.params[0])} (p={fmt_p(p_values_cubic[0])}) + {format_number(mod_cubic.params[1])}x (p={fmt_p(p_values_cubic[1])}) + {format_number(mod_cubic.params[2])}x² (p={fmt_p(p_values_cubic[2])}) + {format_number(mod_cubic.params[3])}x³ (p={fmt_p(p_values_cubic[3])})"
+                    formula_cubic = f"y = {format_number(mod_cubic.params[0])} + {format_number(mod_cubic.params[1])}x + {format_number(mod_cubic.params[2])}x² + {format_number(mod_cubic.params[3])}x³"
                     yhat_cubic = mod_cubic.predict(X_cubic)
                     p_cubic, _ = safe_pearson(y, yhat_cubic)
                     r2_cubic = p_cubic**2 if not np.isnan(p_cubic) else np.nan
