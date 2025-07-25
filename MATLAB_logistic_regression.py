@@ -12,7 +12,8 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report, roc_auc_score
-from statsmodels.graphics.gofplots import ProbPlot # Para Hosmer-Lemeshow gráfico si es necesario, o usar cálculo manual.
+from statsmodels.graphics.gofplots import ProbPlot
+from scipy import stats
 # Considerar una función directa para Hosmer-Lemeshow si existe o implementarla.
 
 try:
@@ -119,22 +120,58 @@ class LogisticRegressionTab(ttk.Frame):
         font_frame = ttk.LabelFrame(controls_frame, text="5. Opciones de Gráfico")
         font_frame.pack(fill="x", padx=5, pady=5)
 
-        ttk.Label(font_frame, text="Fuente:").pack(side="left", padx=(5, 2))
+        # --- Fila 1: Fuente y Tamaño ---
+        font_row = ttk.Frame(font_frame)
+        font_row.pack(fill="x", pady=2)
+        ttk.Label(font_row, text="Fuente:").pack(side="left", padx=(5, 2))
         self.font_family_var = tk.StringVar(value="sans-serif")
         font_families = ["serif", "sans-serif", "monospace", "Arial", "Times New Roman", "Courier New", "Palatino Linotype"]
-        self.font_family_combo = ttk.Combobox(font_frame, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
+        self.font_family_combo = ttk.Combobox(font_row, textvariable=self.font_family_var, values=font_families, state="readonly", width=15)
         self.font_family_combo.pack(side="left", padx=2)
 
-        ttk.Label(font_frame, text="Tamaño:").pack(side="left", padx=(10, 2))
+        ttk.Label(font_row, text="Tamaño:").pack(side="left", padx=(10, 2))
         self.font_size_var = tk.IntVar(value=10)
-        self.font_size_spinbox = ttk.Spinbox(font_frame, from_=6, to=20, textvariable=self.font_size_var, width=5)
+        self.font_size_spinbox = ttk.Spinbox(font_row, from_=6, to=20, textvariable=self.font_size_var, width=5)
         self.font_size_spinbox.pack(side="left", padx=2)
+
+        # --- Fila 2: Opciones de Gráfico ---
+        options_row = ttk.Frame(font_frame)
+        options_row.pack(fill="x", pady=2)
+        self.normalize_vars = tk.BooleanVar(value=False)
+        self.grid_on = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_row, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
+        ttk.Checkbutton(options_row, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
+
+        # --- Fila 3: Colores ---
+        color_row = ttk.Frame(font_frame)
+        color_row.pack(fill="x", pady=2)
+        self.line_color = tk.StringVar(value="darkorange")
+        self.marker_color = tk.StringVar(value="navy")
+        ttk.Label(color_row, text="Línea:").pack(side="left", padx=5)
+        self.line_color_combo = ttk.Combobox(color_row, textvariable=self.line_color, values=["darkorange", "blue", "green", "red", "purple", "black"], width=10)
+        self.line_color_combo.pack(side="left")
+        ttk.Label(color_row, text="Marcador:").pack(side="left", padx=5)
+        self.marker_color_combo = ttk.Combobox(color_row, textvariable=self.marker_color, values=["navy", "blue", "green", "red", "purple", "black"], width=10)
+        self.marker_color_combo.pack(side="left")
+
+        # --- Fila 4: Títulos y Ejes ---
+        title_row = ttk.Frame(font_frame)
+        title_row.pack(fill="x", pady=2)
+        self.title_var = tk.StringVar(value="")
+        self.xlabel_var = tk.StringVar(value="")
+        self.ylabel_var = tk.StringVar(value="")
+        ttk.Label(title_row, text="Título:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.title_var, width=20).pack(side="left")
+        ttk.Label(title_row, text="Eje X:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.xlabel_var, width=20).pack(side="left")
+        ttk.Label(title_row, text="Eje Y:").pack(side="left", padx=5)
+        ttk.Entry(title_row, textvariable=self.ylabel_var, width=20).pack(side="left")
 
     def _load_file(self):
         """Carga un archivo CSV o Excel y actualiza los controles."""
         filepath = filedialog.askopenfilename(
             title="Seleccionar archivo de datos",
-            filetypes=(("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xls *.xlsx"), ("Todos los archivos", "*.*"))
+            filetypes=(("Archivos Excel", "*.xls *.xlsx"), ("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*"))
         )
         if not filepath: return
 
@@ -274,8 +311,16 @@ class LogisticRegressionTab(ttk.Frame):
         try:
             # Crear fórmula para statsmodels (maneja variables categóricas automáticamente con C())
             # Asegurarse de que los nombres de variables sean válidos para fórmulas
-            clean_indep_vars = [f"`{v}`" if not v.isidentifier() else v for v in indep_vars]
-            formula = f"`{dep_var}` ~ {' + '.join(clean_indep_vars)}"
+            def quote_var(v):
+                # Usar Q() para variables que no son identificadores válidos de Python
+                # o que podrían entrar en conflicto con palabras clave de patsy.
+                if not v.isidentifier() or v in ["C", "Q", "I"]:
+                    return f"Q('{v}')"
+                return v
+
+            clean_dep_var = quote_var(dep_var)
+            clean_indep_vars = [quote_var(v) for v in indep_vars]
+            formula = f"{clean_dep_var} ~ {' + '.join(clean_indep_vars)}"
             self.log(f"Fórmula: {formula}", "DEBUG")
 
             # Usar Logit para regresión logística binaria
@@ -312,7 +357,7 @@ class LogisticRegressionTab(ttk.Frame):
             # Pseudo R-cuadrado (McFadden)
             try:
                 ll_full = self.model_results.llf
-                ll_null = smf.logit(f"`{dep_var}` ~ 1", data=df_analysis).fit(disp=0).llf
+                ll_null = smf.logit(f"{clean_dep_var} ~ 1", data=df_analysis).fit(disp=0).llf
                 pseudo_r2_mcfadden = 1 - (ll_full / ll_null)
                 self.results_text.insert(tk.END, f"Pseudo R-cuadrado (McFadden): {pseudo_r2_mcfadden:.4f}\n")
                 self.log(f"Pseudo R2 (McFadden): {pseudo_r2_mcfadden:.4f}", "INFO")
@@ -362,6 +407,12 @@ class LogisticRegressionTab(ttk.Frame):
             except Exception as e_hl:
                 self.log(f"Error calculando Hosmer-Lemeshow: {e_hl}", "WARN")
                 self.results_text.insert(tk.END, f"Prueba de Hosmer-Lemeshow: Error ({e_hl})\n")
+
+            # Generar gráficos de riesgo vs. covariables
+            try:
+                self._plot_risk_vs_covariates(df_analysis, indep_vars, y_pred_prob)
+            except Exception as e_risk_plot:
+                self.log(f"Error generando gráficos de riesgo: {e_risk_plot}", "WARN")
 
         except Exception as e:
             self.log(f"Error al ajustar el modelo logístico: {e}", "ERROR")
@@ -433,7 +484,7 @@ class LogisticRegressionTab(ttk.Frame):
         # patrones de covarianza distintos si se agrupa por ellos, o g-2 si se agrupa por deciles de riesgo.
         # Aquí usamos g-2 como aproximación común para deciles.
         df_hl = max(1, g - 2)
-        p_value = 1 - sm.stats.chisqprob(hl_stat, df_hl) # statsmodels.stats.chisqprob es scipy.stats.chi2.sf
+        p_value = stats.chi2.sf(hl_stat, df_hl)
 
         return hl_stat, p_value
 
@@ -446,16 +497,22 @@ class LogisticRegressionTab(ttk.Frame):
             self.roc_plot_frame = ttk.Frame(self.results_notebook)
             self.results_notebook.add(self.roc_plot_frame, text="Curva ROC")
 
+        plt.rcParams['font.family'] = self.font_family_var.get()
         fig, ax = plt.subplots(figsize=(6, 5)) # Ajustar tamaño según sea necesario
-        ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'Curva ROC (AUC = {roc_auc:.2f})')
-        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax.plot(fpr, tpr, color=self.line_color.get(), lw=2, label=f'Curva ROC (AUC = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color=self.marker_color.get(), lw=2, linestyle='--')
         ax.set_xlim([0.0, 1.0])
         ax.set_ylim([0.0, 1.05])
-        ax.set_xlabel('Tasa de Falsos Positivos (1 - Especificidad)')
-        ax.set_ylabel('Tasa de Verdaderos Positivos (Sensibilidad)')
-        ax.set_title('Curva ROC')
+        ax.set_xlabel(self.xlabel_var.get(), fontsize=self.font_size_var.get())
+        ax.set_ylabel(self.ylabel_var.get(), fontsize=self.font_size_var.get())
+        ax.set_title("Curva ROC", fontsize=self.font_size_var.get() + 2)
         ax.legend(loc="lower right")
-        ax.grid(True, linestyle=':', alpha=0.7)
+        if self.grid_on.get():
+            ax.grid(True, linestyle=':', alpha=0.7)
+        else:
+            ax.grid(False)
+        plt.xticks(fontsize=self.font_size_var.get())
+        plt.yticks(fontsize=self.font_size_var.get())
         fig.tight_layout()
 
         canvas = FigureCanvasTkAgg(fig, master=self.roc_plot_frame)
@@ -469,6 +526,81 @@ class LogisticRegressionTab(ttk.Frame):
             pass
         self.log("Curva ROC generada.", "INFO")
 
+    def _clear_covariate_plots(self):
+        """Cierra todas las pestañas de gráficos de covariables."""
+        for i in reversed(range(self.results_notebook.index('end'))):
+            tab_text = self.results_notebook.tab(i, "text")
+            if tab_text.startswith("Riesgo vs"):
+                self.results_notebook.forget(i)
+
+    def _plot_risk_vs_covariates(self, df_analysis, indep_vars, y_pred_prob):
+        """Genera y muestra gráficos de riesgo vs. covariables."""
+        self._clear_covariate_plots()
+
+        if self.normalize_vars.get():
+            # Normalizar las covariables seleccionadas y trazarlas en un solo gráfico
+            covariate_plot_frame = ttk.Frame(self.results_notebook)
+            self.results_notebook.add(covariate_plot_frame, text="Riesgo vs Covariables Normalizadas")
+            plt.rcParams['font.family'] = self.font_family_var.get()
+            fig, ax = plt.subplots(figsize=(6, 5))
+
+            for var in indep_vars:
+                # Normalizar la covariable a un rango de 0-1
+                normalized_var = (df_analysis[var] - df_analysis[var].min()) / (df_analysis[var].max() - df_analysis[var].min())
+                sorted_indices = np.argsort(normalized_var)
+                ax.plot(normalized_var.iloc[sorted_indices], y_pred_prob.iloc[sorted_indices], label=var)
+
+            ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else "Covariable Normalizada", fontsize=self.font_size_var.get())
+            ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+            ax.set_title(self.title_var.get() if self.title_var.get() else "Riesgo vs Covariables Normalizadas", fontsize=self.font_size_var.get() + 2)
+            ax.legend()
+            if self.grid_on.get():
+                ax.grid(True, linestyle=':', alpha=0.7)
+            else:
+                ax.grid(False)
+            plt.xticks(fontsize=self.font_size_var.get())
+            plt.yticks(fontsize=self.font_size_var.get())
+            fig.tight_layout()
+
+            canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.log("Gráfico de riesgo vs. covariables normalizadas generado.", "INFO")
+        else:
+            # Trazar cada covariable en un gráfico separado
+            for var in indep_vars:
+                covariate_plot_frame = ttk.Frame(self.results_notebook)
+                self.results_notebook.add(covariate_plot_frame, text=f"Riesgo vs {var}")
+
+                plt.rcParams['font.family'] = self.font_family_var.get()
+                fig, ax = plt.subplots(figsize=(6, 5))
+                # Generar una secuencia de valores para la covariable para un gráfico más suave
+                x_range = np.linspace(df_analysis[var].min(), df_analysis[var].max(), 200)
+
+                # Crear un DataFrame para la predicción. Todas las demás covariables se mantienen en su media.
+                pred_df = pd.DataFrame({var: x_range})
+                for other_var in indep_vars:
+                    if other_var != var:
+                        pred_df[other_var] = df_analysis[other_var].mean()
+
+                pred_prob = self.model_results.predict(pred_df)
+
+                ax.plot(x_range, pred_prob, color=self.line_color.get(), linestyle='-')
+                ax.set_xlabel(self.xlabel_var.get() if self.xlabel_var.get() else var, fontsize=self.font_size_var.get())
+                ax.set_ylabel(self.ylabel_var.get() if self.ylabel_var.get() else "Riesgo Predicho (Probabilidad)", fontsize=self.font_size_var.get())
+                ax.set_title(self.title_var.get() if self.title_var.get() else f"Riesgo Predicho vs. {var}", fontsize=self.font_size_var.get() + 2)
+                if self.grid_on.get():
+                    ax.grid(True, linestyle=':', alpha=0.7)
+                else:
+                    ax.grid(False)
+                plt.xticks(fontsize=self.font_size_var.get())
+                plt.yticks(fontsize=self.font_size_var.get())
+                fig.tight_layout()
+
+                canvas = FigureCanvasTkAgg(fig, master=covariate_plot_frame)
+                canvas.draw()
+                canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+                self.log(f"Gráfico de riesgo vs. {var} generado.", "INFO")
 
 # --- Ejemplo de uso ---
 if __name__ == '__main__':
