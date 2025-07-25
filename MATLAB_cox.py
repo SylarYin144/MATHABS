@@ -666,6 +666,49 @@ class PlotOptionsDialog(Toplevel):
         self.destroy()
 
 
+class EditPredictionLegendsDialog(tk.Toplevel):
+    def __init__(self, parent, curves_to_plot):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title("Editar Leyendas de Curvas de Predicción")
+
+        self.result = None
+        self.entries = {}
+
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Edite las leyendas para cada curva:", font=("TkDefaultFont", 10, "bold")).pack(pady=(0,10), anchor='w')
+
+        scrolled_frame = ScrolledFrame(main_frame)
+        scrolled_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.controls_frame = scrolled_frame.interior
+
+        for i, (original_label, curve_df) in enumerate(curves_to_plot.items()):
+            row_frame = ttk.Frame(self.controls_frame)
+            row_frame.pack(fill=tk.X, pady=2, padx=5)
+
+            ttk.Label(row_frame, text=f"Curva {i+1}:", width=10).pack(side=tk.LEFT, padx=(0,5))
+
+            entry_var = tk.StringVar(value=original_label)
+            entry = ttk.Entry(row_frame, textvariable=entry_var, width=80)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self.entries[original_label] = entry_var
+
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10,0))
+        ttk.Button(buttons_frame, text="OK/Generar Gráfico", command=self.on_ok).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def on_ok(self):
+        self.result = {original_label: var.get() for original_label, var in self.entries.items()}
+        self.destroy()
+
 class ScrolledFrame(ttk.Frame):
     def __init__(self, parent, *args, **kw):
         super().__init__(parent, *args, **kw)
@@ -3836,10 +3879,20 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showwarning("Sin Gráficos", "No se pudieron generar curvas de predicción.", parent=dialog_pred_ref)
             return
 
-        colors = plt.cm.viridis(np.linspace(0, 1, len(final_curves_to_plot)))
+        dialog_legends = EditPredictionLegendsDialog(dialog_pred_ref, final_curves_to_plot)
+        if dialog_legends.result is None:
+            self.log("Edición de leyendas cancelada por el usuario.", "INFO")
+            return
+
+        new_labels = dialog_legends.result
+
+        # Rebuild the final_curves_to_plot with the new labels
+        final_curves_to_plot_labeled = {new_labels[original_label]: curve for original_label, curve in final_curves_to_plot.items()}
+
+        colors = plt.cm.viridis(np.linspace(0, 1, len(final_curves_to_plot_labeled)))
         results_text_pred_list = []
 
-        for i, (label, pred_df) in enumerate(final_curves_to_plot.items()):
+        for i, (label, pred_df) in enumerate(final_curves_to_plot_labeled.items()):
             pred_df.plot(ax=ax_curve_pred, legend=False, drawstyle='steps-post', color=colors[i], label=label)
             if times_list_pred:
                 label_prefix = {"Supervivencia": "S", "Riesgo": "H", "ProbEventoAcum": "1-S"}[type_ui_pred]
@@ -3862,7 +3915,7 @@ class CoxModelingApp(ttk.Frame):
         opts_curve_pred['xlabel'] = opts_curve_pred.get('xlabel') or f"Tiempo ({md_dict_for_pred.get('time_col_for_model','T')})"
         apply_plot_options(ax_curve_pred, opts_curve_pred, self.log)
 
-        if len(final_curves_to_plot) > 1 or any(range_vars):
+        if len(final_curves_to_plot_labeled) > 1 or any(range_vars):
             ax_curve_pred.legend(title="Escenarios/Grupos", fontsize='small')
 
         self._create_plot_window(fig_curve_pred, title_curve_pred)
