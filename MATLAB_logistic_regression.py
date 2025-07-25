@@ -81,6 +81,16 @@ class LogisticRegressionTab(ttk.Frame):
         self.dep_var_combo = ttk.Combobox(vars_frame, textvariable=self.dependent_var, state="readonly", width=25)
         self.dep_var_combo.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
         self.dep_var_combo.bind("<<ComboboxSelected>>", self._validate_dependent_var)
+
+        # Codificación de la variable dependiente
+        coding_frame = ttk.Frame(vars_frame)
+        coding_frame.grid(row=0, column=2, padx=5, pady=2, sticky="w")
+        ttk.Label(coding_frame, text="Codificar como 0:").pack(side="left")
+        self.code_as_0_var = tk.StringVar(value="0")
+        ttk.Entry(coding_frame, textvariable=self.code_as_0_var, width=5).pack(side="left")
+        ttk.Label(coding_frame, text="Codificar como 1:").pack(side="left")
+        self.code_as_1_var = tk.StringVar(value="1")
+        ttk.Entry(coding_frame, textvariable=self.code_as_1_var, width=5).pack(side="left")
         # Variables Independientes
         ttk.Label(vars_frame, text="Independientes:").grid(row=1, column=0, padx=5, pady=2, sticky="nw")
         list_frame = ttk.Frame(vars_frame)
@@ -141,8 +151,6 @@ class LogisticRegressionTab(ttk.Frame):
         self.grid_on = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_row, text="Normalizar", variable=self.normalize_vars).pack(side="left", padx=5)
         ttk.Checkbutton(options_row, text="Rejilla", variable=self.grid_on).pack(side="left", padx=5)
-        self.show_ci = tk.BooleanVar(value=False)
-        ttk.Checkbutton(options_row, text="Mostrar IC", variable=self.show_ci).pack(side="left", padx=5)
 
         # --- Fila 3: Colores ---
         color_row = ttk.Frame(font_frame)
@@ -227,7 +235,11 @@ class LogisticRegressionTab(ttk.Frame):
             if self.filter_component:
                 self.filter_component.set_dataframe(self.df_original)
 
-            messagebox.showinfo("Archivo Cargado", f"Archivo '{os.path.basename(filepath)}' cargado.")
+            self.results_text.config(state="normal")
+            self.results_text.delete("1.0", tk.END)
+            self.results_text.insert(tk.END, f"Archivo '{os.path.basename(filepath)}' cargado.\n")
+            self.results_text.insert(tk.END, f"Dimensiones de los datos: {self.df_original.shape}\n")
+            self.results_text.config(state="disabled")
             self.log(f"Datos cargados: {self.df_original.shape}", "INFO")
 
         except Exception as e:
@@ -268,11 +280,20 @@ class LogisticRegressionTab(ttk.Frame):
         if not dep_var_name or self.df_original is None:
             return
 
+        code_as_0 = self.code_as_0_var.get()
+        code_as_1 = self.code_as_1_var.get()
         unique_vals = self.df_original[dep_var_name].dropna().unique()
-        # Ser estricto: debe contener solo 0 y 1
-        if not all(v in [0, 1] for v in unique_vals) or len(unique_vals) != 2:
+
+        try:
+            # Intentar convertir los valores únicos al tipo de la codificación
+            unique_vals_conv = [type(eval(code_as_0))(v) for v in unique_vals]
+            if not all(v in [eval(code_as_0), eval(code_as_1)] for v in unique_vals_conv) or len(unique_vals_conv) != 2:
+                messagebox.showwarning("Variable Dependiente Inválida",
+                                       f"La variable dependiente '{dep_var_name}' debe ser binaria y contener solo los valores {code_as_0} y {code_as_1}.")
+                self.dependent_var.set("") # Limpiar selección
+        except:
             messagebox.showwarning("Variable Dependiente Inválida",
-                                   f"La variable dependiente '{dep_var_name}' debe ser binaria y contener solo los valores 0 y 1.")
+                                   f"No se pudo validar la variable dependiente '{dep_var_name}' con la codificación especificada.")
             self.dependent_var.set("") # Limpiar selección
 
     def _run_logistic_regression(self):
@@ -336,6 +357,11 @@ class LogisticRegressionTab(ttk.Frame):
              self.results_text.insert(tk.END, f"Datos insuficientes después de eliminar NaNs (Filas: {len(df_analysis)}). Se necesitan más filas que variables.")
              self.results_text.config(state="disabled")
              return
+
+        # Recodificar la variable dependiente
+        code_as_0 = self.code_as_0_var.get()
+        code_as_1 = self.code_as_1_var.get()
+        df_analysis[dep_var] = df_analysis[dep_var].apply(lambda x: 1 if str(x) == code_as_1 else 0)
 
         # Validar nuevamente la variable dependiente en los datos filtrados/limpios
         unique_deps = df_analysis[dep_var].unique()
