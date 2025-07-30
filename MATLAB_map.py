@@ -105,7 +105,7 @@ class MapTab(ttk.Frame):
         # Botones para nuevas funcionalidades
         ttk.Button(file_frame, text="Cargar valores", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
         ttk.Button(file_frame, text="Exportar a Excel", command=self.export_to_excel).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Cargar desde Excel", command=self.load_from_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar Casos (Excel)", command=self.load_from_excel).pack(side=tk.LEFT, padx=5)
 
         ttk.Entry(file_frame, textvariable=self.filepath_var, width=30, state="readonly").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
@@ -322,6 +322,7 @@ class MapTab(ttk.Frame):
                     self.state_entries[state_name].delete(0, tk.END)
                     self.state_entries[state_name].insert(0, value)
 
+            self.value_col_var.set(self.MANUAL_STATE_DATA_OPTION)
             messagebox.showinfo("Éxito", "Valores cargados correctamente desde Excel.")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el archivo de Excel: {e}")
