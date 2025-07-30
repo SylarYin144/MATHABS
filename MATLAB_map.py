@@ -104,10 +104,8 @@ class MapTab(ttk.Frame):
         ttk.Button(file_frame, text="Cargar Datos (CSV/Excel)", command=self._load_data).pack(side=tk.LEFT, padx=5)
 
         # Botones para nuevas funcionalidades
-        ttk.Button(file_frame, text="Cargar Valores Manuales", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
         ttk.Button(file_frame, text="Exportar Plantilla (Excel)", command=self.export_to_excel).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Cargar Población (Excel)", command=self.load_population_from_excel).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Cargar Casos (Excel)", command=self.load_cases_from_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar Datos (Excel)", command=self.load_data_from_excel).pack(side=tk.LEFT, padx=5)
 
         ttk.Entry(file_frame, textvariable=self.filepath_var, width=30, state="readonly").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
@@ -220,70 +218,6 @@ class MapTab(ttk.Frame):
         self.frm_map = ttk.Frame(self.canvas_map); self.canvas_map.create_window((0,0),window=self.frm_map,anchor="nw")
         self.frm_map.bind("<Configure>", lambda e: self.canvas_map.configure(scrollregion=self.canvas_map.bbox("all")))
 
-    def open_popup_window(self):
-        if self.gdf_mex is None:
-            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
-            return
-
-        popup = tk.Toplevel(self)
-        popup.title("Cargar Valores Manualmente")
-
-        frame = ttk.Frame(popup)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        cols = ("Estado", "Valor")
-        tree = ttk.Treeview(frame, columns=cols, show="headings")
-        tree.pack(fill=tk.BOTH, expand=True)
-
-        for col in cols:
-            tree.heading(col, text=col)
-
-        for state_name in self.gdf_mex[self.geojson_state_column_name]:
-            tree.insert("", "end", values=(state_name, "0"))
-
-        def on_tree_click(event):
-            item = tree.identify('item', event.x, event.y)
-            column = tree.identify_column(event.x)
-            if item and column == "#2":  # Check if the "Valor" column is clicked
-                edit_cell(item, column)
-
-        def edit_cell(item, column):
-            # Get the current value
-            current_value = tree.set(item, column)
-
-            # Create an entry widget
-            entry = ttk.Entry(tree)
-            entry.place(x=tree.bbox(item, column)[0], y=tree.bbox(item, column)[1],
-                        width=tree.bbox(item, column)[2], height=tree.bbox(item, column)[3])
-            entry.insert(0, current_value)
-            entry.focus()
-
-            def on_entry_focus_out(event):
-                new_value = entry.get()
-                tree.set(item, column, new_value)
-                entry.destroy()
-
-            entry.bind("<FocusOut>", on_entry_focus_out)
-            entry.bind("<Return>", on_entry_focus_out)
-
-        tree.bind("<Button-1>", on_tree_click)
-
-        def save_values():
-            for i, item in enumerate(tree.get_children()):
-                values = tree.item(item, "values")
-                state_name = values[0]
-                value = values[1]
-
-                if state_name in self.state_entries:
-                    self.state_entries[state_name].delete(0, tk.END)
-                    self.state_entries[state_name].insert(0, value)
-
-            popup.destroy()
-            messagebox.showinfo("Éxito", "Valores guardados correctamente.")
-
-        save_button = ttk.Button(frame, text="Guardar", command=save_values)
-        save_button.pack(pady=5)
-
     def export_to_excel(self):
         if self.gdf_mex is None:
             messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
@@ -306,20 +240,22 @@ class MapTab(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar el archivo de Excel: {e}")
 
-    def load_population_from_excel(self):
+    def load_data_from_excel(self):
         if self.gdf_mex is None:
             messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
             return
 
         filepath = filedialog.askopenfilename(
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            title="Cargar archivo de Población"
+            title="Cargar archivo de datos"
         )
         if not filepath:
             return
 
         try:
             df = pd.read_excel(filepath)
+
+            #Load population data
             for index, row in df.iterrows():
                 state_name = row["Estado"]
                 value = row["Poblacion"]
@@ -328,27 +264,12 @@ class MapTab(ttk.Frame):
                     self.state_entries[state_name].delete(0, tk.END)
                     self.state_entries[state_name].insert(0, value)
 
-            messagebox.showinfo("Éxito", "Valores de población cargados correctamente desde Excel.")
+            #Load cases data
+            self.cases_data = df
+
+            messagebox.showinfo("Éxito", "Datos cargados correctamente desde Excel.")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el archivo de Excel: {e}")
-
-    def load_cases_from_excel(self):
-        if self.gdf_mex is None:
-            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
-            return
-
-        filepath = filedialog.askopenfilename(
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            title="Cargar archivo de Casos"
-        )
-        if not filepath:
-            return
-
-        try:
-            self.cases_data = pd.read_excel(filepath)
-            messagebox.showinfo("Éxito", "Datos de casos cargados correctamente desde Excel.")
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar el archivo de casos: {e}")
 
     def load_population_from_csv(self):
         if not self.geojson_state_column_name:
@@ -506,8 +427,11 @@ class MapTab(ttk.Frame):
                 lbl = ttk.Label(self.state_data_frame, text=f"{state_name_from_geojson}:")
                 lbl.grid(row=index, column=0, padx=5, pady=2, sticky="w")
 
-                entry = ttk.Entry(self.state_data_frame, width=15)
-                entry.grid(row=index, column=1, padx=5, pady=2, sticky="ew")
+                pop_entry = ttk.Entry(self.state_data_frame, width=15)
+                pop_entry.grid(row=index, column=1, padx=5, pady=2, sticky="ew")
+
+                case_entry = ttk.Entry(self.state_data_frame, width=15)
+                case_entry.grid(row=index, column=2, padx=5, pady=2, sticky="ew")
 
                 # MODIFIED: New logic for default population lookup
                 default_pop_to_insert = "0"
@@ -520,10 +444,11 @@ class MapTab(ttk.Frame):
                 if not found_match:
                     self.log(f"No default population data found for GeoJSON state: '{state_name_from_geojson}' using case-insensitive matching against new default keys.", "WARNING")
 
-                entry.insert(0, default_pop_to_insert)
+                pop_entry.insert(0, default_pop_to_insert)
+                case_entry.insert(0, "0")
 
                 if hasattr(self, 'state_entries'):
-                    self.state_entries[state_name_from_geojson] = entry # Use original name from GeoJSON as key
+                    self.state_entries[state_name_from_geojson] = (pop_entry, case_entry)
 
             if hasattr(self, 'state_data_frame') and self.state_data_frame.winfo_exists():
                  self.state_data_frame.update_idletasks()
@@ -551,7 +476,7 @@ class MapTab(ttk.Frame):
 
         num_restored = 0
         # state_name_key is the original name from GeoJSON (used as key in self.state_entries)
-        for state_name_key, entry_widget in self.state_entries.items():
+        for state_name_key, (pop_entry, case_entry) in self.state_entries.items():
             default_pop_to_insert = "0"
             found_match = False
             # Iterate through the potentially mixed-case keys of the new self.default_population_data
@@ -564,8 +489,10 @@ class MapTab(ttk.Frame):
             if not found_match:
                  self.log(f"No default population data found for state: '{state_name_key}' during restore (using new mixed-case keys).", "WARNING")
 
-            entry_widget.delete(0, tk.END)
-            entry_widget.insert(0, default_pop_to_insert)
+            pop_entry.delete(0, tk.END)
+            pop_entry.insert(0, default_pop_to_insert)
+            case_entry.delete(0, tk.END)
+            case_entry.insert(0, "0")
             num_restored += 1
 
         self.log(f"{num_restored} campos de población restaurados a valores por defecto.", "INFO")
@@ -613,19 +540,22 @@ class MapTab(ttk.Frame):
         if not self.geojson_state_column_name:
             self.log("Columna de estado GeoJSON no identificada.", "ERROR"); messagebox.showerror("Error", "Columna de estado GeoJSON no identificada. Recargue GeoJSON."); return None, None
 
-        population_data = []
-        for state_name_key, entry_widget in self.state_entries.items():
-            value_str = entry_widget.get(); value = 0.0
-            try: value = float(value_str)
-            except ValueError: self.log(f"Valor inválido '{value_str}' para {state_name_key}, usando 0.0", "WARNING")
-            population_data.append({self.geojson_state_column_name: state_name_key, "Poblacion": value})
+        data = []
+        for state_name_key, (pop_entry, case_entry) in self.state_entries.items():
+            pop_str = pop_entry.get(); pop_value = 0.0
+            case_str = case_entry.get(); case_value = 0.0
+            try: pop_value = float(pop_str)
+            except ValueError: self.log(f"Valor de población inválido '{pop_str}' para {state_name_key}, usando 0.0", "WARNING")
+            try: case_value = float(case_str)
+            except ValueError: self.log(f"Valor de casos inválido '{case_str}' para {state_name_key}, usando 0.0", "WARNING")
+            data.append({self.geojson_state_column_name: state_name_key, "Poblacion": pop_value, "Casos": case_value})
 
-        if not population_data:
-            self.log("Lista de datos de población vacía.", "WARNING"); return None, None
+        if not data:
+            self.log("Lista de datos vacía.", "WARNING"); return None, None
 
-        df_population = pd.DataFrame(population_data)
-        self.log("Datos de población generados desde entradas manuales.", "INFO")
-        return df_population, self.geojson_state_column_name
+        df = pd.DataFrame(data)
+        self.log("Datos generados desde entradas manuales.", "INFO")
+        return df, self.geojson_state_column_name
 
     def _apply_general_filters(self, df):
         df_to_filter = df.copy()
