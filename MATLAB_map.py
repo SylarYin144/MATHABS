@@ -111,15 +111,18 @@ class MapTab(ttk.Frame):
 
         select_frame = ttk.Frame(ctrl_main)
         select_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(select_frame, text="Columna Estado/Región:").grid(row=0, column=0, padx=5, pady=2, sticky="w")
-        self.state_col_combo = ttk.Combobox(select_frame, textvariable=self.state_col_var, state="readonly", width=20)
-        self.state_col_combo.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
         ttk.Label(select_frame, text="Columna Valor:").grid(row=1, column=0, padx=5, pady=2, sticky="w")
         self.value_col_combo = ttk.Combobox(select_frame, textvariable=self.value_col_var, state="readonly", width=20)
         self.value_col_combo.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
         ttk.Label(select_frame, text="Agregar por:").grid(row=2, column=0, padx=5, pady=2, sticky="w")
         self.agg_method_combo = ttk.Combobox(select_frame, textvariable=self.agg_method_var, values=["count", "sum", "mean"], state="readonly", width=10)
         self.agg_method_combo.grid(row=2, column=1, padx=5, pady=2, sticky="w")
+
+        ttk.Label(select_frame, text="Visualización:").grid(row=3, column=0, padx=5, pady=2, sticky="w")
+        self.visualization_var = tk.StringVar(value="Prevalencia")
+        self.visualization_combo = ttk.Combobox(select_frame, textvariable=self.visualization_var, values=["Prevalencia", "Casos Totales"], state="readonly", width=15)
+        self.visualization_combo.grid(row=3, column=1, padx=5, pady=2, sticky="w")
+
         select_frame.columnconfigure(1, weight=1)
 
         frm_filters_general = ttk.LabelFrame(ctrl_main, text="Filtros Generales (Opcional)")
@@ -518,7 +521,6 @@ class MapTab(ttk.Frame):
 
     def _update_column_selectors(self):
         cols = sorted(self.df_original.columns.tolist()) if self.df_original is not None else []
-        self.state_col_combo['values'] = [""] + cols
         current_value_options = [""]
         if self.df_original is not None:
             numeric_cols = self.df_original.select_dtypes(include=np.number).columns.tolist()
@@ -529,7 +531,6 @@ class MapTab(ttk.Frame):
         filter_cols_options = [''] + cols
         if hasattr(self, 'filter_col_1_combo'): self.filter_col_1_combo['values'] = filter_cols_options
         if hasattr(self, 'filter_col_2_combo'): self.filter_col_2_combo['values'] = filter_cols_options
-        if not self.state_col_var.get() and cols: self.state_col_var.set("")
         if not self.value_col_var.get() and current_value_options: self.value_col_var.set("")
         if self.filter_col_1_var.get() not in filter_cols_options: self.filter_col_1_var.set('')
         if self.filter_col_2_var.get() not in filter_cols_options: self.filter_col_2_var.set('')
@@ -606,18 +607,28 @@ class MapTab(ttk.Frame):
         pal,ncol,inv,scale,dpi,lw,vmin,vmax_s,nt,vals = self.cmb_palette.get(),int(self.ent_pal_n.get()) if self.ent_pal_n.get().isdigit() else 0,self.invert_cmap.get(),self.cmb_scale.get(),int(self.ent_dpi.get()),float(self.ent_lw.get()),float(self.ent_vmin.get()),self.ent_vmax.get().strip(),int(self.ent_nt.get()),self.ent_vals.get().strip()
         vmax = float(vmax_s) if vmax_s else None
         title,tcol,tsz,subt,scol,ssz,cbt,cbtcol,cbtsz,cbkcol,cbksz = self.ent_title.get().strip(),self.ent_tcol.get().strip() or "black",float(self.ent_tsz.get()),self.ent_sub.get().strip(),self.ent_scol.get().strip() or "gray",float(self.ent_ssz.get()),self.ent_cbt.get().strip(),self.ent_cbtcol.get().strip() or "black",float(self.ent_cbtsz.get()),self.ent_cbkcol.get().strip() or "black",float(self.ent_cbksz.get())
-        col_to_plot = "Prevalencia"
-        if self.cases_data is None:
-            messagebox.showerror("Error", "Cargue primero los datos de casos.")
-            return None
+        visualization = self.visualization_var.get()
+        if visualization == "Prevalencia":
+            col_to_plot = "Prevalencia"
+            if self.cases_data is None:
+                messagebox.showerror("Error", "Cargue primero los datos de casos.")
+                return None
 
-        gdf = self.gdf_mex.merge(df_agg, how="left", left_on=self.geojson_state_column_name, right_on=data_state_col_for_merge)
-        gdf = gdf.merge(self.cases_data, how="left", left_on=self.geojson_state_column_name, right_on="Estado")
+            gdf = self.gdf_mex.merge(df_agg, how="left", left_on=self.geojson_state_column_name, right_on=data_state_col_for_merge)
+            gdf = gdf.merge(self.cases_data, how="left", left_on=self.geojson_state_column_name, right_on="Estado")
 
-        gdf["Poblacion"] = pd.to_numeric(gdf["Poblacion"], errors='coerce').fillna(0)
-        gdf["Casos"] = pd.to_numeric(gdf["Casos"], errors='coerce').fillna(0)
+            gdf["Poblacion"] = pd.to_numeric(gdf["Poblacion"], errors='coerce').fillna(0)
+            gdf["Casos"] = pd.to_numeric(gdf["Casos"], errors='coerce').fillna(0)
 
-        gdf[col_to_plot] = (gdf["Casos"] / gdf["Poblacion"]).fillna(0)
+            gdf[col_to_plot] = (gdf["Casos"] / gdf["Poblacion"]).fillna(0)
+        else:
+            col_to_plot = "Casos"
+            if self.cases_data is None:
+                messagebox.showerror("Error", "Cargue primero los datos de casos.")
+                return None
+
+            gdf = self.gdf_mex.merge(self.cases_data, how="left", left_on=self.geojson_state_column_name, right_on="Estado")
+            gdf[col_to_plot] = pd.to_numeric(gdf[col_to_plot], errors='coerce').fillna(0)
 
         if vmax is None: vmax = gdf[col_to_plot].max() if not gdf[col_to_plot].empty else 1
         thresh = 0.1 if vmax > 10 else 0.01
