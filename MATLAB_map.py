@@ -235,7 +235,8 @@ class MapTab(ttk.Frame):
             return
 
         states = self.gdf_mex[self.geojson_state_column_name]
-        df = pd.DataFrame({"Estado": states, "Poblacion": 0, "Casos": 0})
+        population = [self.default_population_data.get(state, 0) for state in states]
+        df = pd.DataFrame({"Estado": states, "Poblacion": population, "Casos": 0})
 
         try:
             df.to_excel(filepath, index=False)
@@ -536,27 +537,50 @@ class MapTab(ttk.Frame):
         if self.filter_col_2_var.get() not in filter_cols_options: self.filter_col_2_var.set('')
 
     def _get_aggregated_data(self):
-        if not self.state_entries:
-            self.log("No hay entradas de estado manuales. Cargue un GeoJSON.", "ERROR"); messagebox.showerror("Error", "No hay datos de estado manuales. Cargue GeoJSON."); return None, None
-        if not self.geojson_state_column_name:
-            self.log("Columna de estado GeoJSON no identificada.", "ERROR"); messagebox.showerror("Error", "Columna de estado GeoJSON no identificada. Recargue GeoJSON."); return None, None
+        if self.df_original is None:
+            if not self.state_entries:
+                self.log("No hay entradas de estado manuales. Cargue un GeoJSON.", "ERROR"); messagebox.showerror("Error", "No hay datos de estado manuales. Cargue GeoJSON."); return None, None
+            if not self.geojson_state_column_name:
+                self.log("Columna de estado GeoJSON no identificada.", "ERROR"); messagebox.showerror("Error", "Columna de estado GeoJSON no identificada. Recargue GeoJSON."); return None, None
 
-        data = []
-        for state_name_key, (pop_entry, case_entry) in self.state_entries.items():
-            pop_str = pop_entry.get(); pop_value = 0.0
-            case_str = case_entry.get(); case_value = 0.0
-            try: pop_value = float(pop_str)
-            except ValueError: self.log(f"Valor de población inválido '{pop_str}' para {state_name_key}, usando 0.0", "WARNING")
-            try: case_value = float(case_str)
-            except ValueError: self.log(f"Valor de casos inválido '{case_str}' para {state_name_key}, usando 0.0", "WARNING")
-            data.append({self.geojson_state_column_name: state_name_key, "Poblacion": pop_value, "Casos": case_value})
+            data = []
+            for state_name_key, (pop_entry, case_entry) in self.state_entries.items():
+                pop_str = pop_entry.get(); pop_value = 0.0
+                case_str = case_entry.get(); case_value = 0.0
+                try: pop_value = float(pop_str)
+                except ValueError: self.log(f"Valor de población inválido '{pop_str}' para {state_name_key}, usando 0.0", "WARNING")
+                try: case_value = float(case_str)
+                except ValueError: self.log(f"Valor de casos inválido '{case_str}' para {state_name_key}, usando 0.0", "WARNING")
+                data.append({self.geojson_state_column_name: state_name_key, "Poblacion": pop_value, "Casos": case_value})
 
-        if not data:
-            self.log("Lista de datos vacía.", "WARNING"); return None, None
+            if not data:
+                self.log("Lista de datos vacía.", "WARNING"); return None, None
 
-        df = pd.DataFrame(data)
-        self.log("Datos generados desde entradas manuales.", "INFO")
-        return df, self.geojson_state_column_name
+            df = pd.DataFrame(data)
+            self.log("Datos generados desde entradas manuales.", "INFO")
+            return df, self.geojson_state_column_name
+        else:
+            state_col_from_datafile = self.state_col_var.get()
+            if not state_col_from_datafile: self.log("Columna Estado/Región no seleccionada.", "ERROR"); return None, None
+            agg_method = self.agg_method_var.get()
+            selected_value_col = self.value_col_var.get()
+            if agg_method in ["sum", "mean"] and not selected_value_col: self.log(f"Columna Valor no seleccionada para '{agg_method}'.", "ERROR"); return None, None
+            df_initial = self.df_original.copy(); df_filtered = self._apply_general_filters(df_initial)
+            if df_filtered is None or df_filtered.empty: self.log("Sin datos tras filtros."); return None, None
+            if state_col_from_datafile not in df_filtered.columns: self.log(f"Columna '{state_col_from_datafile}' no en datos filtrados."); return None, None
+            try:
+                grouped = df_filtered.groupby(state_col_from_datafile)
+                if agg_method == "count": aggregated_data = grouped.size().reset_index(name='Metric')
+                elif agg_method == "sum":
+                    if selected_value_col not in df_filtered.columns or not pd.api.types.is_numeric_dtype(df_filtered[selected_value_col]): self.log(f"Columna valor '{selected_value_col}' no numérica/existente."); return None,None
+                    aggregated_data = grouped[selected_value_col].sum().reset_index(name='Metric')
+                elif agg_method == "mean":
+                    if selected_value_col not in df_filtered.columns or not pd.api.types.is_numeric_dtype(df_filtered[selected_value_col]): self.log(f"Columna valor '{selected_value_col}' no numérica/existente."); return None,None
+                    aggregated_data = grouped[selected_value_col].mean().reset_index(name='Metric')
+                else: self.log(f"Método agregación desconocido: {agg_method}"); return None, None
+                self.log(f"Datos agregados por '{state_col_from_datafile}' usando '{agg_method}'.")
+                return aggregated_data, state_col_from_datafile
+            except Exception as e: self.log(f"Error en agregación: {e}"); traceback.print_exc(); return None, None
 
     def _apply_general_filters(self, df):
         df_to_filter = df.copy()
