@@ -12,7 +12,6 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os # Añadido para manejo de archivos
 import traceback # Añadido para logging de errores
-import xml.etree.ElementTree as ET
 
 # FilterComponent ha sido eliminado.
 FilterComponent = None # Mantener para evitar errores si alguna lógica residual lo verifica.
@@ -105,8 +104,8 @@ class MapTab(ttk.Frame):
 
         # Botones para nuevas funcionalidades
         ttk.Button(file_frame, text="Cargar valores", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Exportar a XML", command=self.export_to_xml).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Cargar desde XML", command=self.load_from_xml).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Exportar a Excel", command=self.export_to_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar desde Excel", command=self.load_from_excel).pack(side=tk.LEFT, padx=5)
 
         ttk.Entry(file_frame, textvariable=self.filepath_var, width=30, state="readonly").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
@@ -279,55 +278,53 @@ class MapTab(ttk.Frame):
         save_button = ttk.Button(frame, text="Guardar", command=save_values)
         save_button.pack(pady=5)
 
-    def export_to_xml(self):
+    def export_to_excel(self):
         if self.gdf_mex is None:
             messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
             return
 
         filepath = filedialog.asksaveasfilename(
-            defaultextension=".xml",
-            filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
-            title="Guardar archivo XML"
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Guardar archivo de Excel"
         )
         if not filepath:
             return
 
-        root = ET.Element("states")
-        for state_name in self.gdf_mex[self.geojson_state_column_name]:
-            state_element = ET.SubElement(root, "state", name=state_name)
-            ET.SubElement(state_element, "value").text = "0"
+        states = self.gdf_mex[self.geojson_state_column_name]
+        df = pd.DataFrame({"Estado": states, "Valor": 0})
 
-        tree = ET.ElementTree(root)
-        tree.write(filepath, encoding="utf-8", xml_declaration=True)
-        messagebox.showinfo("Éxito", f"Archivo XML guardado en {filepath}")
+        try:
+            df.to_excel(filepath, index=False)
+            messagebox.showinfo("Éxito", f"Archivo de Excel guardado en {filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar el archivo de Excel: {e}")
 
-    def load_from_xml(self):
+    def load_from_excel(self):
         if self.gdf_mex is None:
             messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
             return
 
         filepath = filedialog.askopenfilename(
-            filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
-            title="Cargar archivo XML"
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Cargar archivo de Excel"
         )
         if not filepath:
             return
 
         try:
-            tree = ET.parse(filepath)
-            root = tree.getroot()
-
-            for state_element in root.findall("state"):
-                state_name = state_element.get("name")
-                value = state_element.find("value").text
+            df = pd.read_excel(filepath)
+            for index, row in df.iterrows():
+                state_name = row["Estado"]
+                value = row["Valor"]
 
                 if state_name in self.state_entries:
                     self.state_entries[state_name].delete(0, tk.END)
                     self.state_entries[state_name].insert(0, value)
 
-            messagebox.showinfo("Éxito", "Valores cargados correctamente desde XML.")
+            messagebox.showinfo("Éxito", "Valores cargados correctamente desde Excel.")
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar el archivo XML: {e}")
+            messagebox.showerror("Error", f"No se pudo cargar el archivo de Excel: {e}")
 
     def load_population_from_csv(self):
         if not self.geojson_state_column_name:
