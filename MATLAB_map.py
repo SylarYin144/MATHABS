@@ -48,6 +48,7 @@ class MapTab(ttk.Frame):
         self.show_labels = tk.BooleanVar(value=True)
         self.invert_cmap = tk.BooleanVar(value=False)
         self.state_entries = {}
+        self.cases_data = None
 
         self.MANUAL_STATE_DATA_OPTION = "(Usar Datos de Estado Manuales)"
         self.geojson_state_column_name = None
@@ -103,9 +104,10 @@ class MapTab(ttk.Frame):
         ttk.Button(file_frame, text="Cargar Datos (CSV/Excel)", command=self._load_data).pack(side=tk.LEFT, padx=5)
 
         # Botones para nuevas funcionalidades
-        ttk.Button(file_frame, text="Cargar valores", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Exportar a Excel", command=self.export_to_excel).pack(side=tk.LEFT, padx=5)
-        ttk.Button(file_frame, text="Cargar Casos (Excel)", command=self.load_from_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar Valores Manuales", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Exportar Plantilla (Excel)", command=self.export_to_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar Población (Excel)", command=self.load_population_from_excel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar Casos (Excel)", command=self.load_cases_from_excel).pack(side=tk.LEFT, padx=5)
 
         ttk.Entry(file_frame, textvariable=self.filepath_var, width=30, state="readonly").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
@@ -202,6 +204,10 @@ class MapTab(ttk.Frame):
         ttk.Label(appearance_row8, text="Tamaño:").pack(side=tk.LEFT, padx=5)
         self.ent_cbksz = ttk.Entry(appearance_row8,width=5); self.ent_cbksz.pack(side=tk.LEFT, padx=5); self.ent_cbksz.insert(0,"8")
 
+        self.prevalence_var = tk.StringVar()
+        ttk.Label(appearance_row8, text="Prevalencia:").pack(side=tk.LEFT, padx=15)
+        ttk.Label(appearance_row8, textvariable=self.prevalence_var).pack(side=tk.LEFT, padx=5)
+
         action_frame = ttk.Frame(frm_left); action_frame.pack(fill=tk.X, padx=5, pady=10)
         ttk.Button(action_frame, text="Generar Mapa", command=self.show_map).pack(side=tk.LEFT, padx=10)
         ttk.Button(action_frame, text="Guardar Mapa", command=self.save_map).pack(side=tk.LEFT, padx=10)
@@ -292,7 +298,7 @@ class MapTab(ttk.Frame):
             return
 
         states = self.gdf_mex[self.geojson_state_column_name]
-        df = pd.DataFrame({"Estado": states, "Valor": 0})
+        df = pd.DataFrame({"Estado": states, "Poblacion": 0, "Casos": 0})
 
         try:
             df.to_excel(filepath, index=False)
@@ -300,14 +306,14 @@ class MapTab(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar el archivo de Excel: {e}")
 
-    def load_from_excel(self):
+    def load_population_from_excel(self):
         if self.gdf_mex is None:
             messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
             return
 
         filepath = filedialog.askopenfilename(
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            title="Cargar archivo de Excel"
+            title="Cargar archivo de Población"
         )
         if not filepath:
             return
@@ -316,16 +322,33 @@ class MapTab(ttk.Frame):
             df = pd.read_excel(filepath)
             for index, row in df.iterrows():
                 state_name = row["Estado"]
-                value = row["Valor"]
+                value = row["Poblacion"]
 
                 if state_name in self.state_entries:
                     self.state_entries[state_name].delete(0, tk.END)
                     self.state_entries[state_name].insert(0, value)
 
-            self.value_col_var.set(self.MANUAL_STATE_DATA_OPTION)
-            messagebox.showinfo("Éxito", "Valores cargados correctamente desde Excel.")
+            messagebox.showinfo("Éxito", "Valores de población cargados correctamente desde Excel.")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el archivo de Excel: {e}")
+
+    def load_cases_from_excel(self):
+        if self.gdf_mex is None:
+            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
+            return
+
+        filepath = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Cargar archivo de Casos"
+        )
+        if not filepath:
+            return
+
+        try:
+            self.cases_data = pd.read_excel(filepath)
+            messagebox.showinfo("Éxito", "Datos de casos cargados correctamente desde Excel.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el archivo de casos: {e}")
 
     def load_population_from_csv(self):
         if not self.geojson_state_column_name:
@@ -585,44 +608,24 @@ class MapTab(ttk.Frame):
         if self.filter_col_2_var.get() not in filter_cols_options: self.filter_col_2_var.set('')
 
     def _get_aggregated_data(self):
-        selected_value_col = self.value_col_var.get()
-        if selected_value_col == self.MANUAL_STATE_DATA_OPTION:
-            if not self.state_entries:
-                self.log("No hay entradas de estado manuales. Cargue un GeoJSON.", "ERROR"); messagebox.showerror("Error", "No hay datos de estado manuales. Cargue GeoJSON."); return None, None
-            if not self.geojson_state_column_name:
-                self.log("Columna de estado GeoJSON no identificada.", "ERROR"); messagebox.showerror("Error", "Columna de estado GeoJSON no identificada. Recargue GeoJSON."); return None, None
-            manual_data_list = []
-            for state_name_key, entry_widget in self.state_entries.items():
-                value_str = entry_widget.get(); value = 0.0
-                try: value = float(value_str)
-                except ValueError: self.log(f"Valor inválido '{value_str}' para {state_name_key}, usando 0.0", "WARNING")
-                manual_data_list.append({self.geojson_state_column_name: state_name_key, "Metric": value})
-            if not manual_data_list: self.log("Lista de datos manuales vacía.", "WARNING"); return None, None
-            df_manual = pd.DataFrame(manual_data_list)
-            self.log("Datos generados desde entradas manuales.", "INFO")
-            return df_manual, self.geojson_state_column_name
+        if not self.state_entries:
+            self.log("No hay entradas de estado manuales. Cargue un GeoJSON.", "ERROR"); messagebox.showerror("Error", "No hay datos de estado manuales. Cargue GeoJSON."); return None, None
+        if not self.geojson_state_column_name:
+            self.log("Columna de estado GeoJSON no identificada.", "ERROR"); messagebox.showerror("Error", "Columna de estado GeoJSON no identificada. Recargue GeoJSON."); return None, None
 
-        if self.df_original is None: self.log("Datos originales no cargados.", "ERROR"); return None, None
-        state_col_from_datafile = self.state_col_var.get()
-        if not state_col_from_datafile: self.log("Columna Estado/Región no seleccionada.", "ERROR"); return None, None
-        agg_method = self.agg_method_var.get()
-        if agg_method in ["sum", "mean"] and not selected_value_col: self.log(f"Columna Valor no seleccionada para '{agg_method}'.", "ERROR"); return None, None
-        df_initial = self.df_original.copy(); df_filtered = self._apply_general_filters(df_initial)
-        if df_filtered is None or df_filtered.empty: self.log("Sin datos tras filtros."); return None, None
-        if state_col_from_datafile not in df_filtered.columns: self.log(f"Columna '{state_col_from_datafile}' no en datos filtrados."); return None, None
-        try:
-            grouped = df_filtered.groupby(state_col_from_datafile)
-            if agg_method == "count": aggregated_data = grouped.size().reset_index(name='Metric')
-            elif agg_method == "sum":
-                if selected_value_col not in df_filtered.columns or not pd.api.types.is_numeric_dtype(df_filtered[selected_value_col]): self.log(f"Columna valor '{selected_value_col}' no numérica/existente."); return None,None
-                aggregated_data = grouped[selected_value_col].sum().reset_index(name='Metric')
-            elif agg_method == "mean":
-                if selected_value_col not in df_filtered.columns or not pd.api.types.is_numeric_dtype(df_filtered[selected_value_col]): self.log(f"Columna valor '{selected_value_col}' no numérica/existente."); return None,None
-                aggregated_data = grouped[selected_value_col].mean().reset_index(name='Metric')
-            else: self.log(f"Método agregación desconocido: {agg_method}"); return None, None
-            self.log(f"Datos agregados por '{state_col_from_datafile}' usando '{agg_method}'.")
-            return aggregated_data, state_col_from_datafile
-        except Exception as e: self.log(f"Error en agregación: {e}"); traceback.print_exc(); return None, None
+        population_data = []
+        for state_name_key, entry_widget in self.state_entries.items():
+            value_str = entry_widget.get(); value = 0.0
+            try: value = float(value_str)
+            except ValueError: self.log(f"Valor inválido '{value_str}' para {state_name_key}, usando 0.0", "WARNING")
+            population_data.append({self.geojson_state_column_name: state_name_key, "Poblacion": value})
+
+        if not population_data:
+            self.log("Lista de datos de población vacía.", "WARNING"); return None, None
+
+        df_population = pd.DataFrame(population_data)
+        self.log("Datos de población generados desde entradas manuales.", "INFO")
+        return df_population, self.geojson_state_column_name
 
     def _apply_general_filters(self, df):
         df_to_filter = df.copy()
@@ -673,10 +676,19 @@ class MapTab(ttk.Frame):
         pal,ncol,inv,scale,dpi,lw,vmin,vmax_s,nt,vals = self.cmb_palette.get(),int(self.ent_pal_n.get()) if self.ent_pal_n.get().isdigit() else 0,self.invert_cmap.get(),self.cmb_scale.get(),int(self.ent_dpi.get()),float(self.ent_lw.get()),float(self.ent_vmin.get()),self.ent_vmax.get().strip(),int(self.ent_nt.get()),self.ent_vals.get().strip()
         vmax = float(vmax_s) if vmax_s else None
         title,tcol,tsz,subt,scol,ssz,cbt,cbtcol,cbtsz,cbkcol,cbksz = self.ent_title.get().strip(),self.ent_tcol.get().strip() or "black",float(self.ent_tsz.get()),self.ent_sub.get().strip(),self.ent_scol.get().strip() or "gray",float(self.ent_ssz.get()),self.ent_cbt.get().strip(),self.ent_cbtcol.get().strip() or "black",float(self.ent_cbtsz.get()),self.ent_cbkcol.get().strip() or "black",float(self.ent_cbksz.get())
-        col_to_plot = "Metric"
-        if col_to_plot not in df_agg.columns: self.log(f"Columna '{col_to_plot}' no en datos agregados."); return None
+        col_to_plot = "Prevalencia"
+        if self.cases_data is None:
+            messagebox.showerror("Error", "Cargue primero los datos de casos.")
+            return None
+
         gdf = self.gdf_mex.merge(df_agg, how="left", left_on=self.geojson_state_column_name, right_on=data_state_col_for_merge)
-        gdf[col_to_plot] = gdf[col_to_plot].fillna(0)
+        gdf = gdf.merge(self.cases_data, how="left", left_on=self.geojson_state_column_name, right_on="Estado")
+
+        gdf["Poblacion"] = pd.to_numeric(gdf["Poblacion"], errors='coerce').fillna(0)
+        gdf["Casos"] = pd.to_numeric(gdf["Casos"], errors='coerce').fillna(0)
+
+        gdf[col_to_plot] = (gdf["Casos"] / gdf["Poblacion"]).fillna(0)
+
         if vmax is None: vmax = gdf[col_to_plot].max() if not gdf[col_to_plot].empty else 1
         thresh = 0.1 if vmax > 10 else 0.01
         if scale=="Logarítmica": norm = SymLogNorm(linthresh=thresh, linscale=1, vmin=vmin, vmax=vmax)
@@ -717,6 +729,8 @@ class MapTab(ttk.Frame):
                     elif abs(val_to_show) >= 0.1: txt = f"{val_to_show:.2f}"
                     else: txt = f"{val_to_show:.2e}"
                     ax.annotate(txt, xy=(pt.x,pt.y), ha='center', fontsize=cbksz, color=cbkcol)
+
+        self.prevalence_var.set(f"{gdf[col_to_plot].sum():.4f}")
         fig.tight_layout(); return fig
 
     def save_map(self):
