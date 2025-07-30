@@ -262,11 +262,15 @@ class MapTab(ttk.Frame):
             #Load population data
             for index, row in df.iterrows():
                 state_name = row["Estado"]
-                value = row["Poblacion"]
+                population_value = row["Poblacion"]
+                cases_value = row["Casos"]
 
                 if state_name in self.state_entries:
-                    self.state_entries[state_name].delete(0, tk.END)
-                    self.state_entries[state_name].insert(0, value)
+                    pop_entry, case_entry = self.state_entries[state_name]
+                    pop_entry.delete(0, tk.END)
+                    pop_entry.insert(0, population_value)
+                    case_entry.delete(0, tk.END)
+                    case_entry.insert(0, cases_value)
 
             #Load cases data
             self.cases_data = df
