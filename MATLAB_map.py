@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os # Añadido para manejo de archivos
 import traceback # Añadido para logging de errores
+import xml.etree.ElementTree as ET
 
 # FilterComponent ha sido eliminado.
 FilterComponent = None # Mantener para evitar errores si alguna lógica residual lo verifica.
@@ -101,6 +102,12 @@ class MapTab(ttk.Frame):
         file_frame.pack(fill=tk.X, pady=5)
         ttk.Button(file_frame, text="Cargar GeoJSON Estados", command=self.load_shapefile).pack(side=tk.LEFT, padx=5)
         ttk.Button(file_frame, text="Cargar Datos (CSV/Excel)", command=self._load_data).pack(side=tk.LEFT, padx=5)
+
+        # Botones para nuevas funcionalidades
+        ttk.Button(file_frame, text="Cargar valores", command=self.open_popup_window).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Exportar a XML", command=self.export_to_xml).pack(side=tk.LEFT, padx=5)
+        ttk.Button(file_frame, text="Cargar desde XML", command=self.load_from_xml).pack(side=tk.LEFT, padx=5)
+
         ttk.Entry(file_frame, textvariable=self.filepath_var, width=30, state="readonly").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
         select_frame = ttk.Frame(ctrl_main)
@@ -207,6 +214,120 @@ class MapTab(ttk.Frame):
         self.canvas_map.configure(yscrollcommand=v2.set, xscrollcommand=h2.set)
         self.frm_map = ttk.Frame(self.canvas_map); self.canvas_map.create_window((0,0),window=self.frm_map,anchor="nw")
         self.frm_map.bind("<Configure>", lambda e: self.canvas_map.configure(scrollregion=self.canvas_map.bbox("all")))
+
+    def open_popup_window(self):
+        if self.gdf_mex is None:
+            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
+            return
+
+        popup = tk.Toplevel(self)
+        popup.title("Cargar Valores Manualmente")
+
+        frame = ttk.Frame(popup)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        cols = ("Estado", "Valor")
+        tree = ttk.Treeview(frame, columns=cols, show="headings")
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        for col in cols:
+            tree.heading(col, text=col)
+
+        for state_name in self.gdf_mex[self.geojson_state_column_name]:
+            tree.insert("", "end", values=(state_name, "0"))
+
+        def on_tree_click(event):
+            item = tree.identify('item', event.x, event.y)
+            column = tree.identify_column(event.x)
+            if item and column == "#2":  # Check if the "Valor" column is clicked
+                edit_cell(item, column)
+
+        def edit_cell(item, column):
+            # Get the current value
+            current_value = tree.set(item, column)
+
+            # Create an entry widget
+            entry = ttk.Entry(tree)
+            entry.place(x=tree.bbox(item, column)[0], y=tree.bbox(item, column)[1],
+                        width=tree.bbox(item, column)[2], height=tree.bbox(item, column)[3])
+            entry.insert(0, current_value)
+            entry.focus()
+
+            def on_entry_focus_out(event):
+                new_value = entry.get()
+                tree.set(item, column, new_value)
+                entry.destroy()
+
+            entry.bind("<FocusOut>", on_entry_focus_out)
+            entry.bind("<Return>", on_entry_focus_out)
+
+        tree.bind("<Button-1>", on_tree_click)
+
+        def save_values():
+            for i, item in enumerate(tree.get_children()):
+                values = tree.item(item, "values")
+                state_name = values[0]
+                value = values[1]
+
+                if state_name in self.state_entries:
+                    self.state_entries[state_name].delete(0, tk.END)
+                    self.state_entries[state_name].insert(0, value)
+
+            popup.destroy()
+            messagebox.showinfo("Éxito", "Valores guardados correctamente.")
+
+        save_button = ttk.Button(frame, text="Guardar", command=save_values)
+        save_button.pack(pady=5)
+
+    def export_to_xml(self):
+        if self.gdf_mex is None:
+            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xml",
+            filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
+            title="Guardar archivo XML"
+        )
+        if not filepath:
+            return
+
+        root = ET.Element("states")
+        for state_name in self.gdf_mex[self.geojson_state_column_name]:
+            state_element = ET.SubElement(root, "state", name=state_name)
+            ET.SubElement(state_element, "value").text = "0"
+
+        tree = ET.ElementTree(root)
+        tree.write(filepath, encoding="utf-8", xml_declaration=True)
+        messagebox.showinfo("Éxito", f"Archivo XML guardado en {filepath}")
+
+    def load_from_xml(self):
+        if self.gdf_mex is None:
+            messagebox.showerror("Error", "Cargue primero un archivo GeoJSON.")
+            return
+
+        filepath = filedialog.askopenfilename(
+            filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
+            title="Cargar archivo XML"
+        )
+        if not filepath:
+            return
+
+        try:
+            tree = ET.parse(filepath)
+            root = tree.getroot()
+
+            for state_element in root.findall("state"):
+                state_name = state_element.get("name")
+                value = state_element.find("value").text
+
+                if state_name in self.state_entries:
+                    self.state_entries[state_name].delete(0, tk.END)
+                    self.state_entries[state_name].insert(0, value)
+
+            messagebox.showinfo("Éxito", "Valores cargados correctamente desde XML.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el archivo XML: {e}")
 
     def load_population_from_csv(self):
         if not self.geojson_state_column_name:
