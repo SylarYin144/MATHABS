@@ -108,61 +108,72 @@ class MainApp(tk.Tk):
         about_label = ttk.Label(self.about_tab, text="Desarrollado por: César Misael Cerecedo Zapata\nVersión: 2.01.02", justify=tk.LEFT, padding=(10, 10))
         about_label.pack(anchor="nw", padx=10, pady=10)
 
-    def update_global_styles(self, font_family, font_size, font_color):
-        """Aplica los estilos de fuente y color a todos los widgets ttk y a matplotlib."""
-        # Aplicar a widgets ttk
-        self.style.configure('.', font=(font_family, font_size), foreground=font_color)
+    def update_global_styles(self, styles):
+        """Aplica la configuración de estilos detallada a toda la aplicación."""
+        font_family = styles.get('global_font_family', 'Arial')
 
-        # Estilo específico para TButton para evitar texto grande y en negrita
-        # Se usa un tamaño de fuente fijo (10) y peso normal
-        self.style.configure('TButton', font=(font_family, 10, 'normal'))
+        # --- Estilos de Pestañas (Tabs) ---
+        tab_style = styles.get('tab', {})
+        self.style.configure('TNotebook.Tab',
+                             font=(font_family, tab_style.get('font_size', 10), tab_style.get('font_weight', 'normal')),
+                             foreground=tab_style.get('fg_color', 'black'),
+                             background=tab_style.get('bg_color', '#d9d9d9'),
+                             padding=[5, 2])
 
-        self.style.configure('TNotebook.Tab', font=(font_family, font_size + 1, 'normal'), padding=[5, 2])
-        self.style.configure('TLabelframe.Label', font=(font_family, font_size, 'bold'), foreground=font_color)
+        selected_tab_style = styles.get('selected_tab', {})
+        self.style.map('TNotebook.Tab',
+                       foreground=[('selected', selected_tab_style.get('fg_color', 'black'))],
+                       background=[('selected', selected_tab_style.get('bg_color', '#d9d9d9'))])
 
-        # Aplicar solo la familia de fuente a Matplotlib
+        # --- Estilo de Botones ---
+        button_style = styles.get('button', {})
+        self.style.configure('TButton',
+                             font=(font_family, button_style.get('font_size', 10), button_style.get('font_weight', 'normal')),
+                             foreground=button_style.get('fg_color', 'black'),
+                             background=button_style.get('bg_color', '#d9d9d9'))
+
+        # --- Estilo de Campos de Texto (Entry) ---
+        entry_style = styles.get('entry', {})
+        self.style.configure('TEntry',
+                             font=(font_family, entry_style.get('font_size', 10), entry_style.get('font_weight', 'normal')),
+                             foreground=entry_style.get('fg_color', 'black'))
+        # Note: 'background' for TEntry is handled by 'fieldbackground'
+        self.style.configure('TEntry', fieldbackground=entry_style.get('bg_color', 'white'))
+
+
+        # --- Otros estilos (pueden ser configurados también si se desea) ---
+        self.style.configure('TLabelframe.Label', font=(font_family, 10, 'bold'))
+        self.style.configure('Treeview', font=(font_family, 10))
+        self.style.configure('Treeview.Heading', font=(font_family, 10, 'bold'))
+
+        # Aplicar a Matplotlib
         try:
             plt.rcParams['font.family'] = font_family
         except Exception as e:
-            print(f"Error al aplicar la fuente '{font_family}' a matplotlib: {e}")
-
-        # Estilo para Treeview
-        self.style.configure('Treeview', font=(font_family, font_size))
-        self.style.configure('Treeview.Heading', font=(font_family, font_size, 'bold'))
-
-        # Actualizar fuentes en widgets no-ttk
-        if hasattr(self, 'cox_tab') and hasattr(self.cox_tab, 'update_font_styles'):
-            self.cox_tab.update_font_styles(font_family, font_size)
-        if hasattr(self, 'regresiones_tab') and hasattr(self.regresiones_tab, 'update_font_styles'):
-            self.regresiones_tab.update_font_styles(font_family, font_size)
+            print(f"No se pudo aplicar la fuente '{font_family}' a matplotlib: {e}")
 
         self.title(f"Proyecto FEP v2.01.02 - {font_family}")
-        self.save_config(font_family, font_size, font_color)
+        self.save_config(styles)
 
-    def save_config(self, font_family, font_size, font_color):
-        """Guarda la configuración de apariencia en un archivo JSON."""
-        config = {
-            "font_family": font_family,
-            "font_size": font_size,
-            "font_color": font_color
-        }
+    def save_config(self, styles):
+        """Guarda la configuración de apariencia detallada en un archivo JSON."""
         try:
             with open("config.json", "w") as f:
-                json.dump(config, f)
+                json.dump(styles, f, indent=4)
         except Exception as e:
             print(f"Error guardando configuración: {e}")
 
     def load_config(self):
-        """Carga la configuración de apariencia desde un archivo JSON."""
+        """Carga la configuración de apariencia detallada desde un archivo JSON."""
         try:
             with open("config.json", "r") as f:
-                config = json.load(f)
-                font_family = config.get("font_family", "Palatino Linotype")
-                font_size = config.get("font_size", 10)
-                font_color = config.get("font_color", "black")
-                self.update_global_styles(font_family, font_size, font_color)
-        except FileNotFoundError:
-            # Si no hay archivo de config, usa los valores por defecto.
+                styles = json.load(f)
+                self.update_global_styles(styles)
+                # Cargar estilos en la pestaña de apariencia
+                if hasattr(self, 'appearance_tab') and hasattr(self.appearance_tab, 'load_styles'):
+                    self.appearance_tab.load_styles(styles)
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Si no hay archivo o está corrupto, no hacer nada (se usarán los defaults)
             pass
         except Exception as e:
             print(f"Error cargando configuración: {e}")
