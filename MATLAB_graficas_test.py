@@ -86,6 +86,7 @@ class GraficasTestTab(ttk.Frame):
         ttk.Label(frm_analysis_var, text="Variable Principal para Análisis:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.cmb_variables = ttk.Combobox(frm_analysis_var, state="readonly")
         self.cmb_variables.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.cmb_variables.bind("<<ComboboxSelected>>", self._update_axis_limits)
         ttk.Label(frm_analysis_var, text="Tipo de Variable Principal:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.cmb_tipo = ttk.Combobox(frm_analysis_var, values=["Cuantitativa", "Cualitativa"], state="readonly")
         self.cmb_tipo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
@@ -128,6 +129,7 @@ class GraficasTestTab(ttk.Frame):
         ttk.Label(frm_graph, text="Segunda Variable (Eje Y/Grupo/Color):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.cmb_variable_2d = ttk.Combobox(frm_graph, state="readonly")
         self.cmb_variable_2d.grid(row=1, column=1, padx=5, pady=5, sticky="ew", columnspan=2)
+        self.cmb_variable_2d.bind("<<ComboboxSelected>>", self._update_axis_limits)
 
         # Controles específicos de gráficos (se actualizarán dinámicamente)
         self.chart_specific_params_frame = ttk.Frame(frm_graph)
@@ -144,52 +146,55 @@ class GraficasTestTab(ttk.Frame):
         chart_type = self.chart_type_var.get()
         current_row = 0
 
-        # Controles comunes a muchos gráficos (de DataFilterTab)
-        # Mostrar puntos individuales (para Box/Violin/Boxen)
+        # --- General Options ---
+        frm_general = ttk.LabelFrame(self.chart_specific_params_frame, text="Opciones Generales", padding=10)
+        frm_general.pack(fill="x", expand=True, padx=5, pady=5)
         self.show_individual_points = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.chart_specific_params_frame, text="Mostrar puntos individuales", variable=self.show_individual_points).grid(row=current_row, column=0, padx=5, pady=5, sticky="w")
+        ttk.Checkbutton(frm_general, text="Mostrar puntos individuales", variable=self.show_individual_points).pack(side="left", padx=5)
         
-        # Mostrar Reja (grid)
         self.show_grid = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.chart_specific_params_frame, text="Mostrar reja (grid)", variable=self.show_grid).grid(row=current_row, column=1, padx=5, pady=5, sticky="w")
+        ttk.Checkbutton(frm_general, text="Mostrar reja (grid)", variable=self.show_grid).pack(side="left", padx=5)
         
-        # Mostrar Anotación (filtros/n)
         self.show_annotation = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.chart_specific_params_frame, text="Mostrar anotación (filtros/n)", variable=self.show_annotation).grid(row=current_row, column=2, padx=5, pady=5, sticky="w")
-        current_row += 1
+        ttk.Checkbutton(frm_general, text="Mostrar anotación (filtros/n)", variable=self.show_annotation).pack(side="left", padx=5)
 
-        # Tamaño / DPI
-        self.entry_dpi, self.entry_width, self.entry_height = self._add_size_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 1
+        # --- Figure Size ---
+        frm_size = ttk.LabelFrame(self.chart_specific_params_frame, text="Tamaño de Figura", padding=10)
+        frm_size.pack(fill="x", expand=True, padx=5, pady=5)
+        self.entry_dpi, self.entry_width, self.entry_height = self._add_size_controls(frm_size, 0)
 
-        # Colores principales
-        self.cmb_color, self.cmb_edge = self._add_color_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 1
+        # --- Colors ---
+        frm_colors = ttk.LabelFrame(self.chart_specific_params_frame, text="Colores", padding=10)
+        frm_colors.pack(fill="x", expand=True, padx=5, pady=5)
+        self.cmb_color, self.cmb_edge = self._add_color_controls(frm_colors, 0)
 
-        # Orientación y rotación
-        self.cmb_orient, self.cmb_tickrot = self._add_orientation_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 1
+        # --- Orientation & Ticks ---
+        frm_orientation = ttk.LabelFrame(self.chart_specific_params_frame, text="Orientación y Ticks", padding=10)
+        frm_orientation.pack(fill="x", expand=True, padx=5, pady=5)
+        self.cmb_orient, self.cmb_tickrot = self._add_orientation_controls(frm_orientation, 0)
 
-        # Mediana y colores de barras
-        self.cmb_mediana, self.entry_bar_colors = self._add_bar_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 1
+        # --- Bars ---
+        frm_bars = ttk.LabelFrame(self.chart_specific_params_frame, text="Barras", padding=10)
+        frm_bars.pack(fill="x", expand=True, padx=5, pady=5)
+        self.cmb_mediana, self.entry_bar_colors = self._add_bar_controls(frm_bars, 0)
 
-        # Texto (título, ejes)
-        self.entry_custom_title, self.entry_x_label, self.entry_y_label = self._add_text_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 3 # 3 filas para los labels
+        # --- Labels & Title ---
+        frm_labels = ttk.LabelFrame(self.chart_specific_params_frame, text="Etiquetas y Título", padding=10)
+        frm_labels.pack(fill="x", expand=True, padx=5, pady=5)
+        self.entry_custom_title, self.entry_x_label, self.entry_y_label = self._add_text_controls(frm_labels, 0)
 
-        # Escala / eje Y-X
-        self.cmb_scale, self.cmb_y_value = self._add_scale_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 2 # 2 filas para los labels
+        # --- Axis Properties ---
+        frm_axes = ttk.LabelFrame(self.chart_specific_params_frame, text="Propiedades de Ejes", padding=10)
+        frm_axes.pack(fill="x", expand=True, padx=5, pady=5)
+        self.cmb_scale, self.cmb_y_value = self._add_scale_controls(frm_axes, 0)
 
-        # Límites
         (self.entry_xmin, self.entry_xmax,
-         self.entry_ymin, self.entry_ymax) = self._add_limit_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 2 # 2 filas para los labels
+         self.entry_ymin, self.entry_ymax) = self._add_limit_controls(frm_axes, 1)
 
-        # Fuente
-        self.cmb_font_color, self.entry_font_size, self.cmb_font_family = self._add_font_controls(self.chart_specific_params_frame, start_row=current_row)
-        current_row += 1
+        # --- Font ---
+        frm_font = ttk.LabelFrame(self.chart_specific_params_frame, text="Fuente", padding=10)
+        frm_font.pack(fill="x", expand=True, padx=5, pady=5)
+        self.cmb_font_color, self.entry_font_size, self.cmb_font_family = self._add_font_controls(frm_font, 0)
 
         # Controles específicos para ciertos tipos de gráficos (de GeneralChartsApp)
         if chart_type == "Diagrama de Dispersión":
@@ -1115,6 +1120,29 @@ class GraficasTestTab(ttk.Frame):
         self._apply_limits(ax, x_min_str, x_max_str, y_min_str, y_max_str) 
 
 # Para pruebas directas
+    def _update_axis_limits(self, event=None):
+        if self.data is None:
+            return
+
+        var_x_name = self.cmb_variables.get()
+        var_y_name = self.cmb_variable_2d.get()
+
+        if var_x_name and pd.api.types.is_numeric_dtype(self.data[var_x_name]):
+            min_x = self.data[var_x_name].min()
+            max_x = self.data[var_x_name].max()
+            self.entry_xmin.delete(0, tk.END)
+            self.entry_xmin.insert(0, str(min_x))
+            self.entry_xmax.delete(0, tk.END)
+            self.entry_xmax.insert(0, str(max_x))
+
+        if var_y_name and pd.api.types.is_numeric_dtype(self.data[var_y_name]):
+            min_y = self.data[var_y_name].min()
+            max_y = self.data[var_y_name].max()
+            self.entry_ymin.delete(0, tk.END)
+            self.entry_ymin.insert(0, str(min_y))
+            self.entry_ymax.delete(0, tk.END)
+            self.entry_ymax.insert(0, str(max_y))
+
 if __name__ == '__main__':
     root = tk.Tk()
     root.title("Prueba Pestaña Análisis Combinado")
