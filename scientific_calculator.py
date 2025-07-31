@@ -1,62 +1,105 @@
 import tkinter as tk
-from tkinter import ttk, font as tkfont
+from tkinter import ttk, font as tkfont, simpledialog
 import math
 
 class ScientificCalculatorTab(ttk.Frame):
     def __init__(self, parent, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
 
-        # Ampliamos la parrilla a 6 columnas para más funciones
+        # --- Layout Principal (Calculadora a la izquierda, Memoria a la derecha) ---
+        self.grid_columnconfigure(0, weight=3) # Frame de la calculadora
+        self.grid_columnconfigure(1, weight=1) # Frame de la memoria
+        self.grid_rowconfigure(0, weight=1)
+
+        calc_frame = ttk.Frame(self)
+        calc_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+
+        mem_frame = ttk.Frame(self)
+        mem_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+
+        # --- UI de la Calculadora (en calc_frame) ---
         for i in range(6):
-            self.grid_columnconfigure(i, weight=1)
-        # El número de filas se ajusta más abajo
+            calc_frame.grid_columnconfigure(i, weight=1)
+        for i in range(8):
+            calc_frame.grid_rowconfigure(i, weight=1)
 
         self.display_var = tk.StringVar()
-        self.display = ttk.Entry(self, textvariable=self.display_var, font=('Arial', 24), state='readonly', justify='right')
-        self.display.grid(row=0, column=0, columnspan=6, sticky="nsew", padx=10, pady=10)
+        self.display = ttk.Entry(calc_frame, textvariable=self.display_var, font=('Arial', 24), state='readonly', justify='right')
+        self.display.grid(row=0, column=0, columnspan=6, sticky="nsew", padx=5, pady=5)
 
-        # Estilo de los botones
         self.style = ttk.Style()
         self.style.configure('TButton', font=('Arial', 14), padding=10)
         self.style.configure('Sci.TButton', font=('Arial', 12))
 
+        self.color_map = {
+            'num': '#E6F0FF', 'op_binary': '#FFE4C4', 'sci_unary': '#E0FBE2',
+            'const': '#D1F2EB', 'equals': '#D4E4FF', 'clear_all': '#FADADD',
+            'clear_entry': '#FADADD', 'func': '#F0E6FF'
+        }
+
         buttons = [
-            # Fila 1
-            ('sin', 1, 0, 1, 1, 'sci_unary'), ('cos', 1, 1, 1, 1, 'sci_unary'), ('tan', 1, 2, 1, 1, 'sci_unary'), ('log₁₀', 1, 3, 1, 1, 'sci_unary'), ('ln', 1, 4, 1, 1, 'sci_unary'), ('x!', 1, 5, 1, 1, 'sci_unary'),
-            # Fila 2
-            ('sin⁻¹', 2, 0, 1, 1, 'sci_unary'), ('cos⁻¹', 2, 1, 1, 1, 'sci_unary'), ('tan⁻¹', 2, 2, 1, 1, 'sci_unary'), ('√', 2, 3, 1, 1, 'sci_unary'), ('10ˣ', 2, 4, 1, 1, 'sci_unary'), ('1/x', 2, 5, 1, 1, 'sci_unary'),
-            # Fila 3
-            ('π', 3, 0, 1, 1, 'const'), ('e', 3, 1, 1, 1, 'const'), ('xʸ', 3, 2, 1, 1, 'op_binary'), ('DEL', 3, 3, 1, 1, 'func'), ('C', 3, 4, 1, 1, 'clear_all'), ('CE', 3, 5, 1, 1, 'clear_entry'),
-            # Fila 4
-            ('7', 4, 0, 1, 1, 'num'), ('8', 4, 1, 1, 1, 'num'), ('9', 4, 2, 1, 1, 'num'), ('/', 4, 3, 1, 1, 'op_binary'), ('*', 4, 4, 1, 1, 'op_binary'), ('-', 4, 5, 1, 1, 'op_binary'),
-            # Fila 5
-            ('4', 5, 0, 1, 1, 'num'), ('5', 5, 1, 1, 1, 'num'), ('6', 5, 2, 1, 1, 'num'), ('+', 5, 3, 1, 1, 'op_binary'),
-            # Fila 6
-            ('1', 6, 0, 1, 1, 'num'), ('2', 6, 1, 1, 1, 'num'), ('3', 6, 2, 1, 1, 'num'),
-            # Fila 7
-            ('0', 7, 0, 1, 2, 'num'), ('±', 7, 2, 1, 1, 'op_unary'), ('.', 7, 3, 1, 1, 'num'),
-            # Botones que ocupan varias celdas
-            ('=', 5, 4, 3, 2, 'equals')
+            ('sin', 1, 0), ('cos', 1, 1), ('tan', 1, 2), ('log₁₀', 1, 3), ('ln', 1, 4), ('x!', 1, 5, 'sci_unary'),
+            ('sin⁻¹', 2, 0), ('cos⁻¹', 2, 1), ('tan⁻¹', 2, 2), ('√', 2, 3), ('10ˣ', 2, 4), ('1/x', 2, 5, 'sci_unary'),
+            ('π', 3, 0, 'const'), ('e', 3, 1, 'const'), ('xʸ', 3, 2, 'op_binary'), ('DEL', 3, 3, 'func'), ('C', 3, 4, 'clear_all'), ('CE', 3, 5, 'clear_entry'),
+            ('7', 4, 0), ('8', 4, 1), ('9', 4, 2), ('/', 4, 3, 'op_binary'), ('*', 4, 4, 'op_binary'), ('-', 4, 5, 'op_binary'),
+            ('4', 5, 0), ('5', 5, 1), ('6', 5, 2), ('+', 5, 3, 'op_binary'),
+            ('1', 6, 0), ('2', 6, 1), ('3', 6, 2),
+            ('0', 7, 0, 'num', 1, 2), ('±', 7, 2, 'op_unary'), ('.', 7, 3),
+            ('=', 5, 4, 'equals', 3, 2)
         ]
 
-        # Aumentar el número de filas para acomodar el nuevo layout
-        for i in range(8):
-            self.grid_rowconfigure(i, weight=1)
-
         self.buttons = []
-        for i, (text, r, c, cs, rs, btype) in enumerate(buttons):
-            base_style = 'TButton' if btype in ['num', 'op_binary', 'equals', 'clear_all', 'clear_entry', 'func'] else 'Sci.TButton'
+        for i, btn_info in enumerate(buttons):
+            text, r, c = btn_info[0], btn_info[1], btn_info[2]
+            btype = btn_info[3] if len(btn_info) > 3 else ('num' if text.isdigit() or text == '.' else 'sci_unary')
+            rs = btn_info[4] if len(btn_info) > 4 else 1
+            cs = btn_info[5] if len(btn_info) > 5 else 1
+
+            base_style = 'TButton' if btype in ['num', 'op_binary', 'equals', 'clear_all', 'clear_entry', 'func', 'op_unary'] else 'Sci.TButton'
             unique_style = f'B{i}.{base_style}'
-            button = ttk.Button(self, text=text, style=unique_style, command=lambda t=text, type=btype: self.on_button_click(t, type))
-            button.grid(row=r, column=c, columnspan=cs, rowspan=rs, sticky="nsew", padx=5, pady=5)
+            bg_color = self.color_map.get(btype, '#FFFFFF')
+            self.style.configure(unique_style, background=bg_color)
+
+            button = ttk.Button(calc_frame, text=text, style=unique_style, command=lambda t=text, type=btype: self.on_button_click(t, type))
+            button.grid(row=r, column=c, rowspan=rs, columnspan=cs, sticky="nsew", padx=2, pady=2)
             self.buttons.append(button)
 
         self.bind("<Configure>", self._adjust_font_size)
         self.after(10, self._adjust_font_size)
+        self.bind_all("<Control-v>", self._paste_from_clipboard)
 
+        # --- UI de la Memoria (en mem_frame) ---
+        mem_frame.grid_rowconfigure(1, weight=1)
+        mem_frame.grid_columnconfigure(0, weight=1)
+
+        mem_label = ttk.Label(mem_frame, text="Memorias", font=('Arial', 14, 'bold'))
+        mem_label.grid(row=0, column=0, pady=(5,10), sticky='w')
+
+        tree_cols = ('name', 'value')
+        self.memory_tree = ttk.Treeview(mem_frame, columns=tree_cols, show='headings')
+        self.memory_tree.heading('name', text='Nombre')
+        self.memory_tree.heading('value', text='Valor')
+        self.memory_tree.column('name', width=80, anchor='w', stretch=tk.NO)
+        self.memory_tree.column('value', anchor='w')
+        self.memory_tree.grid(row=1, column=0, sticky='nsew')
+
+        mem_btn_frame = ttk.Frame(mem_frame)
+        mem_btn_frame.grid(row=2, column=0, sticky='ew', pady=5)
+        mem_btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self.btn_m_store = ttk.Button(mem_btn_frame, text="Guardar", command=self._memory_store)
+        self.btn_m_recall = ttk.Button(mem_btn_frame, text="Recuperar", command=self._memory_recall)
+        self.btn_m_clear = ttk.Button(mem_btn_frame, text="Limpiar", command=self._memory_clear)
+
+        self.btn_m_store.grid(row=0, column=0, sticky='ew', padx=2)
+        self.btn_m_recall.grid(row=0, column=1, sticky='ew', padx=2)
+        self.btn_m_clear.grid(row=0, column=2, sticky='ew', padx=2)
+
+        # --- Variables de Estado ---
         self.first_operand = None
         self.operator = None
         self.clear_display_on_next_input = False
+        self.memories = {}
 
     def _adjust_font_size(self, event=None):
         max_font_size = 18
@@ -84,6 +127,23 @@ class ScientificCalculatorTab(ttk.Frame):
 
             style_name = button.cget("style")
             self.style.configure(style_name, font=("Arial", font_size))
+
+    def _paste_from_clipboard(self, event=None):
+        try:
+            clipboard_content = self.clipboard_get()
+            # Validar que el contenido sea un número (entero o flotante)
+            float(clipboard_content)
+
+            # Si es un número válido, lo ponemos en la pantalla, reseteando el estado.
+            self.display_var.set(clipboard_content)
+            self.clear_display_on_next_input = False
+            self.first_operand = None
+            self.operator = None
+        except (tk.TclError, ValueError):
+            # TclError: el portapapeles está vacío o no contiene texto.
+            # ValueError: el contenido no es un número válido.
+            # En ambos casos, la operación de pegado se ignora silenciosamente.
+            pass
 
     def _display_error(self, message="Error"):
         self.display_var.set(message)
@@ -300,6 +360,52 @@ class ScientificCalculatorTab(ttk.Frame):
             elif current_text and self.first_operand is None and self.operator is None and self.clear_display_on_next_input:
                 # This means a result is already on display. Pressing = again does nothing to it.
                 pass
+
+
+    # --- Métodos de Memoria ---
+
+    def _update_memory_tree(self):
+        """Borra y vuelve a poblar el Treeview con el diccionario de memorias."""
+        for i in self.memory_tree.get_children():
+            self.memory_tree.delete(i)
+        for name, value in self.memories.items():
+            self.memory_tree.insert('', 'end', iid=name, values=(name, value))
+
+    def _memory_store(self):
+        """Guarda el valor actual de la pantalla en una memoria con nombre."""
+        current_value_str = self.display_var.get()
+        try:
+            value_to_store = float(current_value_str)
+        except ValueError:
+            return
+
+        name = simpledialog.askstring("Guardar Memoria", "Introduce un nombre para el valor:", parent=self)
+        if name:
+            self.memories[name] = value_to_store
+            self._update_memory_tree()
+
+    def _memory_recall(self):
+        """Recupera un valor de la memoria y lo pone en pantalla."""
+        selected_item = self.memory_tree.focus()
+        if not selected_item:
+            return
+
+        recalled_value = self.memories.get(selected_item)
+        if recalled_value is not None:
+            self.display_var.set(str(recalled_value))
+            self.clear_display_on_next_input = False
+            self.first_operand = None
+            self.operator = None
+
+    def _memory_clear(self):
+        """Limpia la memoria seleccionada."""
+        selected_item = self.memory_tree.focus()
+        if not selected_item:
+            return
+
+        if selected_item in self.memories:
+            del self.memories[selected_item]
+            self._update_memory_tree()
 
 
 if __name__ == '__main__':
