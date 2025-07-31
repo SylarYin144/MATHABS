@@ -25,7 +25,7 @@ try:
     from MATLAB_mixmodel import MixModelTab
     from MATLAB_princomp import PrincompTab
     from MATLAB_logistic_regression import LogisticRegressionTab
-    from MATLAB_combined_analysis import GraficasTestTab
+    from MATLAB_graficas_test import GraficasTestTab
     from MATLAB_sample_size_calculator import SampleSizeCalculatorTab
     from scientific_calculator import ScientificCalculatorTab
     from graphing_calculator import GraphingCalculatorTab # Nueva importación
