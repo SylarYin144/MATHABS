@@ -14,7 +14,7 @@ from itertools import cycle, islice # Para colores de barras
 # Importar el componente de filtro
 from MATLAB_filter_component import FilterComponent
 
-class CombinedAnalysisTab(ttk.Frame):
+class GraficasTestTab(ttk.Frame):
     def __init__(self, master, main_app_instance=None):
         super().__init__(master)
         self.main_app = main_app_instance
@@ -117,10 +117,7 @@ class CombinedAnalysisTab(ttk.Frame):
             "Caja y Bigotes", "Violín", "Boxen Plot", "Swarm Plot",
             "KDE Plot", "Histplot (Hist+KDE)", "Gráfico Circular",
             "Líneas", "Dispersión", "Dispersión con Regresión",
-            # Gráficos de GeneralChartsApp que requieren más implementación
-            "Trimap (Mosaico Jerárquico)", "Gráficos Q-Q", "Gráfico de Densidad Suave",
-            "Curvas de Kaplan-Meier", "Mapas de Calor", "Polígonos de Frecuencia",
-            "Diagrama de Flujo"
+            "Trimap (Mosaico Jerárquico)", "Gráficos Q-Q"
         ]
         self.cmb_plot_type = ttk.Combobox(frm_graph, textvariable=self.chart_type_var, values=self.chart_types, state="readonly")
         self.cmb_plot_type.grid(row=0, column=1, padx=5, pady=5, sticky="ew", columnspan=2)
@@ -643,6 +640,10 @@ class CombinedAnalysisTab(ttk.Frame):
                 self._plot_histogram(ax, df_plot, var_principal, orient_mat, color, edge, med_color, scale_mode, y_value_mode, x_label, y_label, x_min_str, x_max_str, y_min_str, y_max_str, rot)
             elif plot_type == "Gráfico de Barras":
                 self._plot_bar_chart(ax, df_plot, var_principal, orient_mat, edge, y_value_mode, x_label, y_label, x_min_str, x_max_str, y_min_str, y_max_str, rot)
+            elif plot_type == "Trimap (Mosaico Jerárquico)":
+                self._plot_treemap(ax, df_plot, var_principal)
+            elif plot_type == "Gráficos Q-Q":
+                self._plot_qq(ax, df_plot, var_principal)
             elif plot_type == "Countplot":
                 self._plot_countplot(ax, df_plot, var_principal, var_secundaria, orient_mat, color, edge, y_value_mode, x_label, y_label, x_min_str, x_max_str, y_min_str, y_max_str, rot)
             elif plot_type == "Caja y Bigotes":
@@ -750,6 +751,55 @@ class CombinedAnalysisTab(ttk.Frame):
         if self.current_fig is None:
             messagebox.showwarning("Sin Gráfica", "No hay ninguna gráfica generada para guardar.", parent=self.master)
             return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("SVG files", "*.svg"), ("PDF files", "*.pdf"), ("All files", "*.*")],
+            title="Guardar Gráfica Como",
+            parent=self.master
+        )
+        if not filepath:
+            return
+        try:
+            self.current_fig.savefig(filepath)
+            messagebox.showinfo("Guardado", f"Gráfica guardada en:\n{filepath}", parent=self.master)
+            self.log(f"Gráfica guardada en: {filepath}", "SUCCESS")
+        except Exception as e:
+            messagebox.showerror("Error al Guardar", f"No se pudo guardar la gráfica:\n{e}", parent=self.master)
+            self.log(f"Error al guardar gráfica: {e}", "ERROR")
+
+    def _plot_treemap(self, ax, df, values_col):
+        names_col = self.param_treemap_names_var.get()
+        if not names_col:
+            messagebox.showerror("Error", "Debe seleccionar la columna de nombres para el Trimap.", parent=self.master)
+            return
+        if not pd.api.types.is_numeric_dtype(df[values_col]):
+            messagebox.showerror("Error", f"La columna de valores '{values_col}' debe ser numérica.", parent=self.master)
+            return
+        sizes = df[values_col].dropna()
+        labels = df[names_col][sizes.index]
+        sizes = sizes[sizes > 0]
+        labels = labels[sizes.index]
+        if sizes.empty:
+            ax.text(0.5, 0.5, "No hay datos positivos para Trimap", ha='center', va='center', transform=ax.transAxes)
+            return
+        squarify.plot(sizes=sizes, label=labels, ax=ax, alpha=.8, pad=True)
+        ax.set_title(f"Trimap de {values_col} por {names_col}")
+        plt.axis('off')
+
+    def _plot_qq(self, ax, df, data_col):
+        dist_name = self.param_qq_dist_var.get()
+        if not pd.api.types.is_numeric_dtype(df[data_col]):
+            messagebox.showerror("Error", f"La columna '{data_col}' debe ser numérica para el Gráfico Q-Q.", parent=self.master)
+            return
+        plot_data = df[data_col].dropna()
+        if plot_data.empty:
+            ax.text(0.5, 0.5, "No hay datos válidos para Q-Q plot", ha='center', va='center', transform=ax.transAxes)
+            return
+        stats.probplot(plot_data, dist=dist_name, plot=ax)
+        ax.set_title(f"Gráfico Q-Q: {data_col} vs {dist_name.capitalize()} Distribución")
+        ax.set_xlabel("Cuantiles Teóricos")
+        ax.set_ylabel("Valores Ordenados de la Muestra")
         
         filepath = filedialog.asksaveasfilename(
             defaultextension=".png",
