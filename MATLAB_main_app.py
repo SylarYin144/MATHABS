@@ -112,7 +112,12 @@ class MainApp(tk.Tk):
         """Aplica los estilos de fuente y color a todos los widgets ttk y a matplotlib."""
         # Aplicar a widgets ttk
         self.style.configure('.', font=(font_family, font_size), foreground=font_color)
-        self.style.configure('TNotebook.Tab', font=(font_family, font_size + 1, 'bold'), padding=[5, 2])
+
+        # Estilo específico para TButton para evitar texto grande y en negrita
+        # Se usa un tamaño de fuente fijo (10) y peso normal
+        self.style.configure('TButton', font=(font_family, 10, 'normal'))
+
+        self.style.configure('TNotebook.Tab', font=(font_family, font_size + 1, 'normal'), padding=[5, 2])
         self.style.configure('TLabelframe.Label', font=(font_family, font_size, 'bold'), foreground=font_color)
 
         # Aplicar solo la familia de fuente a Matplotlib
