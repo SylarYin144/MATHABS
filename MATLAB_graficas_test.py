@@ -189,7 +189,7 @@ class GraficasTestTab(ttk.Frame):
         self.cmb_scale, self.cmb_y_value = self._add_scale_controls(frm_axes, 0)
 
         (self.entry_xmin, self.entry_xmax,
-         self.entry_ymin, self.entry_ymax) = self._add_limit_controls(frm_axes, 1)
+         self.entry_ymin, self.entry_ymax) = self._add_limit_controls(frm_axes, 2)
 
         # --- Font ---
         frm_font = ttk.LabelFrame(self.chart_specific_params_frame, text="Fuente", padding=10)
