@@ -4737,7 +4737,7 @@ print("Configurando y ajustando el modelo CoxPHFitter...")
 # Parámetros del modelo
 duration_col = '{time_col}'
 event_col = '{event_col}'
-formula = """{formula}"""
+formula = \"\"\"{formula}\"\"\"
 penalizer = {penalizer}
 l1_ratio = {l1_ratio}
 tie_method = '{tie_method}' # Nota: lifelines usa 'efron' por defecto, este es el valor de la UI
