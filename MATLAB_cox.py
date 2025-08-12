@@ -19,6 +19,7 @@ import json
 import re
 import math
 import sys # Añadido para manipulación de sys.path
+import tempfile # Para archivos temporales
 
 # --- Importaciones de Tkinter ---
 import tkinter as tk
@@ -1131,6 +1132,7 @@ class CoxModelingApp(ttk.Frame):
         # Variables para datos y configuración
         self.raw_data = None
         self.data = None
+        self.loaded_file_path = None # Para guardar la ruta del archivo original
         self.time_col_original_name = ""
         self.event_col_original_name = ""
         self.selected_covariables_from_ui = []
@@ -1527,6 +1529,7 @@ class CoxModelingApp(ttk.Frame):
                 return
 
             self.data = self.raw_data.copy() # Trabajar con una copia
+            self.loaded_file_path = file_path # Guardar la ruta del archivo cargado
             if self.custom_filter_component_instance:
                 self.custom_filter_component_instance.set_dataframe(self.data)
             self.log(f"Archivo '{os.path.basename(file_path)}' cargado exitosamente. Filas: {self.data.shape[0]}, Columnas: {self.data.shape[1]}", "SUCCESS")
@@ -2145,6 +2148,7 @@ class CoxModelingApp(ttk.Frame):
             ("Diagnóstico de Colinealidad", self._calculate_and_show_vif), # <-- NUEVO
             ("Predicción", self.realizar_prediccion),
             ("Exportar Resumen", self.export_model_summary),
+            ("Generar Script Python", self.generate_python_script),
             ("Guardar Modelo", self.save_model),
             ("Cargar Modelo", self.load_model_from_file),
             ("Reporte Metod.", self.show_methodological_report)
@@ -2522,6 +2526,22 @@ class CoxModelingApp(ttk.Frame):
                                    scaled_columns_info=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
+        # Guardar datos preprocesados para la reproducibilidad del script
+        preprocessed_data_path = None
+        try:
+            model_file_name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name_rm)
+            temp_data_file = tempfile.NamedTemporaryFile(
+                mode='wb', delete=False, suffix='.pkl',
+                prefix=f'cox_data_{model_file_name_part}_'
+            )
+            with temp_data_file:
+                pickle.dump(df_lifelines_rm, temp_data_file)
+            preprocessed_data_path = temp_data_file.name
+            self.log(f"Datos preprocesados para '{model_name_rm}' guardados en: {preprocessed_data_path}", "DEBUG")
+        except Exception as e_pickle:
+            self.log(f"Error al guardar datos preprocesados para script: {e_pickle}", "ERROR")
+            # Continuar sin esta ruta, la generación de script fallará de forma controlada.
+
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
         
         model_data_rm = {
@@ -2544,7 +2564,9 @@ class CoxModelingApp(ttk.Frame):
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else [],
             "custom_model_name": model_name_rm, # Inicializar con el nombre generado
             "custom_model_notes": "", # Inicializar notas vacías
-            "design_info": None # Placeholder for design_info
+            "design_info": None, # Placeholder for design_info
+            "original_data_path": self.loaded_file_path,
+            "preprocessed_data_path": preprocessed_data_path
         }
 
         # 1. Fit Null Model
@@ -4653,6 +4675,122 @@ class CoxModelingApp(ttk.Frame):
             with open(fpath_exp, "w", encoding="utf-8") as f_exp: f_exp.write(summary_txt_exp)
             self.log(f"Resumen '{name_exp}' exportado a: {fpath_exp}", "SUCCESS"); messagebox.showinfo("Exportación Exitosa",f"Resumen guardado en:\n{fpath_exp}",parent=self.parent_for_dialogs)
         except Exception as e_exp: self.log(f"Error exportando resumen: {e_exp}","ERROR"); messagebox.showerror("Error Exportación",f"No se pudo guardar:\n{e_exp}",parent=self.parent_for_dialogs)
+
+    def generate_python_script(self):
+        if not self._check_model_selected_and_valid():
+            return
+
+        model_dict = self.selected_model_in_treeview
+
+        preprocessed_data_path = model_dict.get("preprocessed_data_path")
+        if not preprocessed_data_path or not os.path.exists(preprocessed_data_path):
+            messagebox.showerror("Error", "No se encontró el archivo de datos preprocesados para este modelo.", parent=self.parent_for_dialogs)
+            self.log(f"Error: Archivo de datos preprocesados no encontrado en la ruta: {preprocessed_data_path}", "ERROR")
+            return
+
+        time_col = model_dict.get('time_col_for_model')
+        event_col = model_dict.get('event_col_for_model')
+        formula = model_dict.get('formula_patsy')
+        penalizer = model_dict.get('penalizer_value', 0.0)
+        l1_ratio = model_dict.get('l1_ratio_value', 0.0)
+        tie_method = model_dict.get('tie_method_used', 'efron')
+
+        script_content = f\"\"\"
+# -*- coding: utf-8 -*-
+# Script de Python generado automáticamente para reproducir el modelo de Cox.
+# Generado por: Software Modelos de Supervivencia de Cox
+# Fecha: {pd.Timestamp.now():%Y-%m-%d %H:%M:%S}
+
+# --- 1. Importaciones Necesarias ---
+import pandas as pd
+import pickle
+from lifelines import CoxPHFitter
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+print("--- Iniciando Script de Reproducción de Modelo Cox ---")
+
+# --- 2. Carga de Datos Preprocesados ---
+# Los datos utilizados para ajustar el modelo original han sido guardados
+# en un archivo pickle para asegurar una reproducción exacta.
+preprocessed_data_path = r'{preprocessed_data_path}'
+print(f"Cargando datos desde: {{preprocessed_data_path}}")
+
+try:
+    with open(preprocessed_data_path, 'rb') as f:
+        df = pickle.load(f)
+    print("Datos cargados exitosamente.")
+    print(f"Dimensiones del DataFrame: {{df.shape}}")
+    print("Primeras 5 filas:\\n{{df.head().to_string()}}\\n")
+except FileNotFoundError:
+    print(f"ERROR: No se pudo encontrar el archivo de datos en '{{preprocessed_data_path}}'.")
+    print("El script no puede continuar sin los datos.")
+    exit()
+except Exception as e:
+    print(f"ERROR: Ocurrió un error al cargar los datos: {{e}}")
+    exit()
+
+# --- 3. Configuración y Ajuste del Modelo de Cox ---
+print("Configurando y ajustando el modelo CoxPHFitter...")
+
+# Parámetros del modelo
+duration_col = '{time_col}'
+event_col = '{event_col}'
+formula = \"\"\"{formula}\"\"\"
+penalizer = {penalizer}
+l1_ratio = {l1_ratio}
+tie_method = '{tie_method}' # Nota: lifelines usa 'efron' por defecto, este es el valor de la UI
+
+# Instanciar el modelo
+cph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)
+
+# Ajustar el modelo a los datos
+try:
+    cph.fit(
+        df,
+        duration_col=duration_col,
+        event_col=event_col,
+        formula=formula,
+        tie_method=tie_method
+    )
+    print("Modelo ajustado exitosamente.")
+    # --- 4. Mostrar Resultados ---
+    print("\\n--- Resumen del Modelo Ajustado ---")
+    cph.print_summary()
+
+    print("\\n--- Script finalizado ---")
+
+except Exception as e:
+    print(f"ERROR: Ocurrió un error durante el ajuste del modelo: {{e}}")
+
+\"\"\"
+        self.log("Contenido del script de Python generado.", "DEBUG")
+
+        # Pedir al usuario dónde guardar el script
+        model_name_for_file = model_dict.get('custom_model_name', model_dict.get('model_name', 'modelo_cox'))
+        safe_model_name = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name_for_file)
+
+        save_path = filedialog.asksaveasfilename(
+            title="Guardar Script de Python",
+            initialfile=f"script_{safe_model_name}.py",
+            defaultextension=".py",
+            filetypes=[("Python Scripts", "*.py"), ("All files", "*.*")]
+        )
+
+        if not save_path:
+            self.log("Guardado de script cancelado por el usuario.", "INFO")
+            return
+
+        # Escribir el script en el archivo elegido
+        try:
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write(script_content)
+            self.log(f"Script de Python guardado exitosamente en: {save_path}", "SUCCESS")
+            messagebox.showinfo("Éxito", f"El script de Python ha sido guardado en:\\n{save_path}", parent=self.parent_for_dialogs)
+        except Exception as e:
+            self.log(f"Error al guardar el script de Python: {e}", "ERROR")
+            messagebox.showerror("Error al Guardar", f"No se pudo guardar el archivo del script:\\n{e}", parent=self.parent_for_dialogs)
 
     def _generate_text_summary_for_model(self, model_dict_gst):
         original_name_gst = model_dict_gst.get('model_name', 'N/A')
