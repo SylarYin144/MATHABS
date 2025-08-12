@@ -4695,7 +4695,7 @@ class CoxModelingApp(ttk.Frame):
         l1_ratio = model_dict.get('l1_ratio_value', 0.0)
         tie_method = model_dict.get('tie_method_used', 'efron')
 
-        script_content = f\"\"\"
+        script_content = f"""
 # -*- coding: utf-8 -*-
 # Script de Python generado automáticamente para reproducir el modelo de Cox.
 # Generado por: Software Modelos de Supervivencia de Cox
