@@ -1506,7 +1506,6 @@ class CoxModelingApp(ttk.Frame):
         # >>> FIN DE LA MODIFICACIÓN PROPUESTA <<<
 
         self.on_covariate_select_for_config() # Actualizar UI de configuración de covariable
-        self.log(f"DEBUG: Columnas disponibles en self.data: {self.data.columns.tolist() if self.data is not None else 'N/A'}", "DEBUG")
 
     def cargar_archivo(self):
         """Permite al usuario seleccionar y cargar un archivo de datos (CSV o Excel)."""
@@ -2621,7 +2620,13 @@ class CoxModelingApp(ttk.Frame):
             # model_data_rm["model"] is already None
         else:
             try:
-                cph_main_rm_instance.fit(df_for_fit_main, duration_col=time_col_rm, event_col=event_col_rm, formula=actual_formula_for_fit)
+                cph_main_rm_instance.fit(
+                    df_for_fit_main,
+                    duration_col=time_col_rm,
+                    event_col=event_col_rm,
+                    formula=actual_formula_for_fit,
+                    tie_method=ui_selected_tie_method
+                )
                 model_data_rm["model"] = cph_main_rm_instance
                 self.log(f"Modelo '{model_name_rm}' ajustado exitosamente.", "SUCCESS")
             except ConvergenceError as e_conv:
@@ -3035,7 +3040,6 @@ class CoxModelingApp(ttk.Frame):
             # Schoenfeld (p min)
             schoenfeld_df_results = md_tv.get("schoenfeld_results") # This might now come from proportional_hazard_test summary
             schoenfeld_p_min_tv = "N/A"
-            self.log(f"DEBUG Treeview: Model '{name_tv}', schoenfeld_results type: {type(schoenfeld_df_results)}, empty: {schoenfeld_df_results.empty if isinstance(schoenfeld_df_results, pd.DataFrame) else 'N/A'}", "DEBUG")
 
             if isinstance(schoenfeld_df_results, pd.DataFrame) and not schoenfeld_df_results.empty and 'p' in schoenfeld_df_results.columns:
                 # Filter out known global/summary rows by index name before taking min
@@ -3060,23 +3064,14 @@ class CoxModelingApp(ttk.Frame):
                     ~idx_to_check.isin(global_test_indices)
                 ]
 
-                self.log(f"DEBUG Treeview: Model '{name_tv}', N individual Schoenfeld terms after filtering: {len(individual_terms_schoenfeld_df)}", "DEBUG")
                 if not individual_terms_schoenfeld_df.empty and 'p' in individual_terms_schoenfeld_df.columns:
                     valid_p_values_schoenfeld = individual_terms_schoenfeld_df['p'].dropna()
                     if not valid_p_values_schoenfeld.empty:
                         schoenfeld_p_min_tv = valid_p_values_schoenfeld.min()
-                        self.log(f"DEBUG Treeview: Model '{name_tv}', Schoenfeld p min: {schoenfeld_p_min_tv} from {len(valid_p_values_schoenfeld)} values.", "DEBUG")
-                    else:
-                        self.log(f"DEBUG Treeview: Model '{name_tv}', No valid non-NaN Schoenfeld p-values for individual terms.", "DEBUG")
-                else:
-                    self.log(f"DEBUG Treeview: Model '{name_tv}', No individual Schoenfeld terms left after filtering or 'p' column missing.", "DEBUG")
-            else:
-                self.log(f"DEBUG Treeview: Model '{name_tv}', Schoenfeld results not DataFrame, empty, or no 'p' column.", "DEBUG")
 
             # Wald (p max)
             summary_df_tv = metrics_tv.get('summary_df') # This is CoxPHFitter.summary
             wald_p_max_tv = "N/A"
-            self.log(f"DEBUG Treeview: Model '{name_tv}', summary_df type: {type(summary_df_tv)}, empty: {summary_df_tv.empty if isinstance(summary_df_tv, pd.DataFrame) else 'N/A'}", "DEBUG")
 
             if isinstance(summary_df_tv, pd.DataFrame) and not summary_df_tv.empty and 'p' in summary_df_tv.columns:
                 # summary_df from CoxPHFitter directly lists individual covariates/spline components.
@@ -3084,12 +3079,6 @@ class CoxModelingApp(ttk.Frame):
                 valid_p_values_wald = summary_df_tv['p'].dropna()
                 if not valid_p_values_wald.empty:
                     wald_p_max_tv = valid_p_values_wald.max()
-                    self.log(f"DEBUG Treeview: Model '{name_tv}', Wald p max: {wald_p_max_tv} from {len(valid_p_values_wald)} values.", "DEBUG")
-                else:
-                    self.log(f"DEBUG Treeview: Model '{name_tv}', No valid non-NaN Wald p-values.", "DEBUG")
-            else:
-                 self.log(f"DEBUG Treeview: Model '{name_tv}', Wald summary_df not DataFrame, empty, or no 'p' column.", "DEBUG")
-
 
             vals_tv = (
                 i + 1,                                      # #
@@ -4804,9 +4793,9 @@ class CoxModelingApp(ttk.Frame):
         script_parts.append(f"l1_ratio = {l1_ratio}")
         script_parts.append(f"tie_method = '{tie_method}'")
 
-        script_parts.append("\ncph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio, tie_method=tie_method)")
+        script_parts.append("\ncph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)")
         script_parts.append("try:")
-        script_parts.append("    cph.fit(df_model, duration_col=final_t_col, event_col=final_e_col, formula=formula)")
+        script_parts.append("    cph.fit(df_model, duration_col=final_t_col, event_col=final_e_col, formula=formula, tie_method=tie_method)")
         script_parts.append("    print(\"\\nModelo ajustado exitosamente.\")")
         script_parts.append("\n    # --- 5. Mostrar Resultados ---")
         script_parts.append("    print(\"\\n--- Resumen del Modelo Ajustado ---\")")
