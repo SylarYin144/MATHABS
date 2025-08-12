@@ -19,7 +19,6 @@ import json
 import re
 import math
 import sys # Añadido para manipulación de sys.path
-import tempfile # Para archivos temporales
 
 # --- Importaciones de Tkinter ---
 import tkinter as tk
@@ -1141,6 +1140,8 @@ class CoxModelingApp(ttk.Frame):
         # {cuant_var_name: {'type': 'Natural'|'B-spline', 'df': int}}
         self.spline_config_details = {}
         self.current_plot_options = {}  # Diccionario para guardar opciones de gráficos
+        self.preprocessing_history = [] # Historial de pasos de preprocesamiento
+        self.advanced_filters_used = False # Flag para advertir sobre filtros no replicables
 
         # Variables para modelos
         # Lista de diccionarios, cada uno con datos de un modelo
@@ -1530,6 +1531,18 @@ class CoxModelingApp(ttk.Frame):
 
             self.data = self.raw_data.copy() # Trabajar con una copia
             self.loaded_file_path = file_path # Guardar la ruta del archivo cargado
+
+            # Resetear y empezar historial de preprocesamiento
+            self.preprocessing_history = []
+            self.advanced_filters_used = False
+            self.log("Historial de preprocesamiento reseteado.", "DEBUG")
+            file_path_str = self.loaded_file_path.replace('\\', '/')
+            if file_path.lower().endswith('.csv'):
+                self.preprocessing_history.append(f"df = pd.read_csv(r'{file_path_str}')")
+            elif file_path.lower().endswith(('.xlsx', '.xls')):
+                self.preprocessing_history.append(f"df = pd.read_excel(r'{file_path_str}')")
+
+
             if self.custom_filter_component_instance:
                 self.custom_filter_component_instance.set_dataframe(self.data)
             self.log(f"Archivo '{os.path.basename(file_path)}' cargado exitosamente. Filas: {self.data.shape[0]}, Columnas: {self.data.shape[1]}", "SUCCESS")
@@ -1564,6 +1577,7 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Error", "Componente de filtro no disponible.", parent=self.parent_for_dialogs)
             return
 
+        self.advanced_filters_used = True # Marcar que se usó un filtro no replicable
         self.log("Aplicando filtros avanzados al dataset principal...", "INFO")
         try:
             original_rows = self.data.shape[0]
@@ -1896,6 +1910,18 @@ class CoxModelingApp(ttk.Frame):
                 return
 
             self.log(f"Variable '{v_name}' transformada logarítmicamente (base {base}) a una nueva columna '{new_col_name}'.", "SUCCESS")
+
+            # Añadir al historial de preprocesamiento
+            log_code = ""
+            np_func = f"np.log{'' if base == 'e' else base}"
+            log_code = f"df['{new_col_name}'] = {np_func}(df['{v_name}'].where(df['{v_name}'] > 0))"
+
+            if log_code:
+                comment = f"# Transformación Log (base {base}) para '{v_name}'"
+                self.preprocessing_history.append(f"\n{comment}")
+                self.preprocessing_history.append(log_code)
+                self.log(f"Añadido al historial de preprocesamiento: {log_code}", "DEBUG")
+
             self.actualizar_controles_preproc()
             messagebox.showinfo("Transformación Exitosa", f"La variable '{v_name}' ha sido transformada a '{new_col_name}'.", parent=self.parent_for_dialogs)
         except Exception as e:
@@ -1960,6 +1986,14 @@ class CoxModelingApp(ttk.Frame):
             self.data[new_var_name] = result_series.values 
             
             self.log(f"Nueva variable '{new_var_name}' creada con fórmula: '{formula_str}'.", "SUCCESS")
+
+            # Añadir al historial de preprocesamiento
+            formula_code = f"df['{new_var_name}'] = df.eval(\"\"\"{formula_str}\"\"\", engine='python')"
+            comment = f"# Crear nueva variable '{new_var_name}' por fórmula"
+            self.preprocessing_history.append(f"\n{comment}")
+            self.preprocessing_history.append(formula_code)
+            self.log(f"Añadido al historial de preprocesamiento: {formula_code}", "DEBUG")
+
             self.actualizar_controles_preproc()
             messagebox.showinfo("Variable Creada", f"La variable '{new_var_name}' ha sido creada y añadida al dataset.", parent=self.parent_for_dialogs)
 
@@ -2367,7 +2401,8 @@ class CoxModelingApp(ttk.Frame):
         return (df_filtered_patsy, X_design_patsy, y_survival_patsy,
                 formula_patsy_gen, terms_patsy_display,
                 final_t_col, final_e_col,
-                scaling_method, fitted_scaler, scaled_column_names)
+                scaling_method, fitted_scaler, scaled_column_names,
+                time_col_ui, event_col_ui, rename_time_to, rename_event_to)
 
 
     def _get_patsy_safe_var_name(self, var_name): # No se usa actualmente, Patsy Q() maneja nombres.
@@ -2518,36 +2553,22 @@ class CoxModelingApp(ttk.Frame):
                                    time_col_rm, event_col_rm,
                                    formula_patsy_rm, model_name_rm,
                                    covariates_display_terms_rm,
-                                   full_patsy_formula_for_new_data_transform_arg, 
-                                   penalizer_val_rm=0.0, l1_ratio_val_rm=0.0, 
+                                   full_patsy_formula_for_new_data_transform_arg,
+                                   penalizer_val_rm=0.0, l1_ratio_val_rm=0.0,
                                    model_type_for_fit_logic="Multivariado",
                                    scaling_method_applied="Ninguna",
                                    fitted_scaler_obj=None,
-                                   scaled_columns_info=None):
+                                   scaled_columns_info=None,
+                                   time_col_orig_ui=None, event_col_orig_ui=None,
+                                   rename_time_ui=None, rename_event_ui=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
-        # Guardar datos preprocesados para la reproducibilidad del script
-        preprocessed_data_path = None
-        try:
-            model_file_name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name_rm)
-            temp_data_file = tempfile.NamedTemporaryFile(
-                mode='wb', delete=False, suffix='.pkl',
-                prefix=f'cox_data_{model_file_name_part}_'
-            )
-            with temp_data_file:
-                pickle.dump(df_lifelines_rm, temp_data_file)
-            preprocessed_data_path = temp_data_file.name
-            self.log(f"Datos preprocesados para '{model_name_rm}' guardados en: {preprocessed_data_path}", "DEBUG")
-        except Exception as e_pickle:
-            self.log(f"Error al guardar datos preprocesados para script: {e_pickle}", "ERROR")
-            # Continuar sin esta ruta, la generación de script fallará de forma controlada.
-
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
         
         model_data_rm = {
             "model_name": model_name_rm, "time_col_for_model": time_col_rm, "event_col_for_model": event_col_rm,
-            "formula_patsy": formula_patsy_rm, 
-            "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg, 
+            "formula_patsy": formula_patsy_rm,
+            "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg,
             "covariates_processed": covariates_display_terms_rm,
             "df_used_for_fit": self.data.copy(),
             "X_design_used_for_fit": X_design_rm.copy(),
@@ -2566,7 +2587,11 @@ class CoxModelingApp(ttk.Frame):
             "custom_model_notes": "", # Inicializar notas vacías
             "design_info": None, # Placeholder for design_info
             "original_data_path": self.loaded_file_path,
-            "preprocessed_data_path": preprocessed_data_path
+            # Nuevas claves para la generación de script completo
+            "time_col_original_ui": time_col_orig_ui,
+            "event_col_original_ui": event_col_orig_ui,
+            "rename_time_col_ui": rename_time_ui,
+            "rename_event_col_ui": rename_event_ui,
         }
 
         # 1. Fit Null Model
@@ -3196,7 +3221,8 @@ class CoxModelingApp(ttk.Frame):
         (df_init_full, X_init_full, y_init_data,
          formula_init_patsy_full, terms_init_display,
          t_col_final, e_col_final,
-         scaling_method_used, scaler_object, scaled_cols_list) = prep_res
+         scaling_method_used, scaler_object, scaled_cols_list,
+         time_col_orig_ui, event_col_orig_ui, rename_time_ui, rename_event_ui) = prep_res
 
         if df_init_full is None or df_init_full.empty: # df_init_full is now df_filtered_patsy
             self.log("DF inicial (post-patsy) vacío post-preparación. Abortando.", "ERROR"); self.log("*"*35 + " FIN MODELADO (ERRORES) " + "*"*35, "HEADER")
@@ -3233,12 +3259,14 @@ class CoxModelingApp(ttk.Frame):
                         continue 
                     
                     name_uni = f"Univariado: {orig_cov_uni}" + (f" (Términos: {', '.join(terms_uni)})" if terms_uni != [orig_cov_uni] and terms_uni else "")
-                    md_uni = self._run_model_and_get_metrics(df_uni_f, X_uni_d, y_uni_s, t_col_final, e_col_final, 
+                    md_uni = self._run_model_and_get_metrics(df_uni_f, X_uni_d, y_uni_s, t_col_final, e_col_final,
                                                              formula_uni_patsy, name_uni, terms_uni, formula_uni_patsy,
                                                              pen_val, l1_r, model_type_for_fit_logic="Univariado",
                                                              scaling_method_applied=scaling_method_used,
                                                              fitted_scaler_obj=scaler_object,
-                                                             scaled_columns_info=scaled_cols_list)
+                                                             scaled_columns_info=scaled_cols_list,
+                                                             time_col_orig_ui=time_col_orig_ui, event_col_orig_ui=event_col_orig_ui,
+                                                             rename_time_ui=rename_time_ui, rename_event_ui=rename_event_ui)
                     if md_uni:
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
@@ -3310,7 +3338,9 @@ class CoxModelingApp(ttk.Frame):
                                                        pen_val, l1_r, model_type_for_fit_logic="Multivariado",
                                                        scaling_method_applied=scaling_method_used,
                                                        fitted_scaler_obj=scaler_object,
-                                                       scaled_columns_info=scaled_cols_list)
+                                                       scaled_columns_info=scaled_cols_list,
+                                                       time_col_orig_ui=time_col_orig_ui, event_col_orig_ui=event_col_orig_ui,
+                                                       rename_time_ui=rename_time_ui, rename_event_ui=rename_event_ui)
             if md_multi:
                 temp_models_list_orch.append(md_multi)
                 if md_multi.get("model") is not None:
@@ -4681,99 +4711,120 @@ class CoxModelingApp(ttk.Frame):
             return
 
         model_dict = self.selected_model_in_treeview
+        script_parts = []
 
-        preprocessed_data_path = model_dict.get("preprocessed_data_path")
-        if not preprocessed_data_path or not os.path.exists(preprocessed_data_path):
-            messagebox.showerror("Error", "No se encontró el archivo de datos preprocesados para este modelo.", parent=self.parent_for_dialogs)
-            self.log(f"Error: Archivo de datos preprocesados no encontrado en la ruta: {preprocessed_data_path}", "ERROR")
+        # 1. Header and Imports
+        script_parts.append("# -*- coding: utf-8 -*-")
+        script_parts.append(f"# Script de Python generado automáticamente para reproducir el modelo de Cox.")
+        script_parts.append(f"# Modelo: {model_dict.get('custom_model_name', model_dict.get('model_name'))}")
+        script_parts.append(f"# Generado: {pd.Timestamp.now():%Y-%m-%d %H:%M:%S}")
+        script_parts.append("\n# --- 1. Importaciones Necesarias ---")
+        script_parts.append("import pandas as pd")
+        script_parts.append("import numpy as np")
+        script_parts.append("from lifelines import CoxPHFitter")
+        script_parts.append("from sklearn.preprocessing import StandardScaler, MinMaxScaler")
+        script_parts.append("import warnings")
+        script_parts.append("\nwarnings.filterwarnings(\"ignore\", category=FutureWarning)")
+        script_parts.append("\nprint(\"--- Iniciando Script de Reproducción de Modelo Cox ---\")")
+
+        # 2. Preprocessing History
+        script_parts.append("\n# --- 2. Carga de Datos y Preprocesamiento General ---")
+        script_parts.append("# Estos pasos replican las transformaciones hechas en la UI antes del modelado.")
+
+        if self.advanced_filters_used:
+            script_parts.append("\n# ADVERTENCIA: Se usaron filtros avanzados en la UI. Estos filtros no se")
+            script_parts.append("# pueden replicar en este script. Los resultados pueden diferir si los")
+            script_parts.append("# filtros modificaron el dataset original.")
+            self.log("Advirtiendo en script sobre filtros avanzados no replicables.", "WARN")
+
+        script_parts.extend(self.preprocessing_history)
+
+        # 3. Model-specific preparations
+        script_parts.append("\n# --- 3. Preparación Específica para el Modelo ---")
+
+        time_col_ui = model_dict.get("time_col_original_ui")
+        event_col_ui = model_dict.get("event_col_original_ui")
+        rename_time_ui = model_dict.get("rename_time_col_ui", "")
+        rename_event_ui = model_dict.get("rename_event_col_ui", "")
+        formula = model_dict.get('formula_patsy')
+        full_formula = model_dict.get('full_patsy_formula_for_new_data_transform')
+
+        if not all([time_col_ui, event_col_ui, formula, full_formula]):
+            messagebox.showerror("Error", "Información del modelo incompleta para generar el script (faltan T/E/Fórmula).", parent=self.parent_for_dialogs)
+            self.log(f"Error generando script: faltan datos clave en model_dict. T_orig: {time_col_ui}, E_orig: {event_col_ui}, Formula: {formula}, Full_formula: {full_formula}", "ERROR")
             return
 
-        time_col = model_dict.get('time_col_for_model')
-        event_col = model_dict.get('event_col_for_model')
-        formula = model_dict.get('formula_patsy')
+        orig_covs = sorted(list(set(re.findall(r"Q\('([^']+)'\)", full_formula))))
+
+        script_parts.append(f"\ntime_col_orig = '{time_col_ui}'")
+        script_parts.append(f"event_col_orig = '{event_col_ui}'")
+        script_parts.append(f"selected_covs = {orig_covs}")
+        script_parts.append("all_cols_for_model = [time_col_orig, event_col_orig] + selected_covs")
+        script_parts.append("df_model = df[all_cols_for_model].copy()")
+
+        script_parts.append("\n# Renombrar columnas de tiempo y evento si se especificó")
+        script_parts.append(f"final_t_col = '{rename_time_ui}' if '{rename_time_ui}' else time_col_orig")
+        script_parts.append(f"final_e_col = '{rename_event_ui}' if '{rename_event_ui}' else event_col_orig")
+        script_parts.append("renames = {}")
+        script_parts.append("if final_t_col != time_col_orig: renames[time_col_orig] = final_t_col")
+        script_parts.append("if final_e_col != event_col_orig: renames[event_col_orig] = final_e_col")
+        script_parts.append("if renames: df_model.rename(columns=renames, inplace=True)")
+
+        script_parts.append("\n# Conversión de tipos y manejo de NaNs para tiempo y evento")
+        script_parts.append("df_model[final_t_col] = pd.to_numeric(df_model[final_t_col], errors='coerce')")
+        script_parts.append("df_model[final_e_col] = pd.to_numeric(df_model[final_e_col], errors='coerce')")
+        script_parts.append("# Nota: La columna de evento debe ser binaria (0/1).")
+        script_parts.append("df_model.dropna(subset=[final_t_col, final_e_col], inplace=True)")
+        script_parts.append("df_model[final_e_col] = df_model[final_e_col].astype(int)")
+
+        scaling_method = model_dict.get("scaling_method_applied", "Ninguna")
+        scaled_cols = model_dict.get("scaled_columns_info", [])
+        if scaling_method != "Ninguna" and scaled_cols:
+            script_parts.append("\n# Escalado de covariables numéricas")
+            script_parts.append(f"scaling_method = '{scaling_method}'")
+            script_parts.append(f"scaled_cols = {scaled_cols}")
+            script_parts.append("numeric_cols_to_scale = [c for c in scaled_cols if c in df_model.columns and pd.api.types.is_numeric_dtype(df_model[c])]")
+            script_parts.append("if numeric_cols_to_scale:")
+            if scaling_method == 'Estandarización (Z-score)':
+                script_parts.append("    scaler = StandardScaler()")
+            else:
+                script_parts.append("    scaler = MinMaxScaler()")
+            script_parts.append("    df_model[numeric_cols_to_scale] = scaler.fit_transform(df_model[numeric_cols_to_scale])")
+            script_parts.append("    print(f\"\\nAplicado escalado '{scaling_method}' a: {{numeric_cols_to_scale}}\")")
+
+        # 4. Model fitting
+        script_parts.append("\n# --- 4. Configuración y Ajuste del Modelo de Cox ---")
         penalizer = model_dict.get('penalizer_value', 0.0)
         l1_ratio = model_dict.get('l1_ratio_value', 0.0)
         tie_method = model_dict.get('tie_method_used', 'efron')
 
-        script_content = f"""
-# -*- coding: utf-8 -*-
-# Script de Python generado automáticamente para reproducir el modelo de Cox.
-# Generado por: Software Modelos de Supervivencia de Cox
-# Fecha: {pd.Timestamp.now():%Y-%m-%d %H:%M:%S}
+        script_parts.append("\nprint(\"\\nConfigurando y ajustando el modelo CoxPHFitter...\")")
+        script_parts.append(f"formula = \"\"\"{formula}\"\"\"")
+        script_parts.append(f"penalizer = {penalizer}")
+        script_parts.append(f"l1_ratio = {l1_ratio}")
+        script_parts.append(f"tie_method = '{tie_method}'")
 
-# --- 1. Importaciones Necesarias ---
-import pandas as pd
-import pickle
-from lifelines import CoxPHFitter
-import warnings
+        script_parts.append("\ncph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio, tie_method=tie_method)")
+        script_parts.append("try:")
+        script_parts.append("    cph.fit(df_model, duration_col=final_t_col, event_col=final_e_col, formula=formula)")
+        script_parts.append("    print(\"\\nModelo ajustado exitosamente.\")")
+        script_parts.append("\n    # --- 5. Mostrar Resultados ---")
+        script_parts.append("    print(\"\\n--- Resumen del Modelo Ajustado ---\")")
+        script_parts.append("    cph.print_summary()")
+        script_parts.append("\n    print(\"\\n--- Script finalizado ---\")")
+        script_parts.append("except Exception as e:")
+        script_parts.append("    print(f\"\\nERROR: Ocurrió un error durante el ajuste del modelo: {{e}}\")")
 
-warnings.filterwarnings("ignore", category=FutureWarning)
+        # Join and save
+        script_content = "\n".join(script_parts)
+        self.log("Contenido del script de Python autogenerado y completo.", "DEBUG")
 
-print("--- Iniciando Script de Reproducción de Modelo Cox ---")
-
-# --- 2. Carga de Datos Preprocesados ---
-# Los datos utilizados para ajustar el modelo original han sido guardados
-# en un archivo pickle para asegurar una reproducción exacta.
-preprocessed_data_path = r'{preprocessed_data_path}'
-print(f"Cargando datos desde: {{preprocessed_data_path}}")
-
-try:
-    with open(preprocessed_data_path, 'rb') as f:
-        df = pickle.load(f)
-    print("Datos cargados exitosamente.")
-    print(f"Dimensiones del DataFrame: {{df.shape}}")
-    print("Primeras 5 filas:\\n{{df.head().to_string()}}\\n")
-except FileNotFoundError:
-    print(f"ERROR: No se pudo encontrar el archivo de datos en '{{preprocessed_data_path}}'.")
-    print("El script no puede continuar sin los datos.")
-    exit()
-except Exception as e:
-    print(f"ERROR: Ocurrió un error al cargar los datos: {{e}}")
-    exit()
-
-# --- 3. Configuración y Ajuste del Modelo de Cox ---
-print("Configurando y ajustando el modelo CoxPHFitter...")
-
-# Parámetros del modelo
-duration_col = '{time_col}'
-event_col = '{event_col}'
-formula = \"\"\"{formula}\"\"\"
-penalizer = {penalizer}
-l1_ratio = {l1_ratio}
-tie_method = '{tie_method}' # Nota: lifelines usa 'efron' por defecto, este es el valor de la UI
-
-# Instanciar el modelo
-cph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)
-
-# Ajustar el modelo a los datos
-try:
-    cph.fit(
-        df,
-        duration_col=duration_col,
-        event_col=event_col,
-        formula=formula,
-        tie_method=tie_method
-    )
-    print("Modelo ajustado exitosamente.")
-    # --- 4. Mostrar Resultados ---
-    print("\\n--- Resumen del Modelo Ajustado ---")
-    cph.print_summary()
-
-    print("\\n--- Script finalizado ---")
-
-except Exception as e:
-    print(f"ERROR: Ocurrió un error durante el ajuste del modelo: {{e}}")
-
-"""
-        self.log("Contenido del script de Python generado.", "DEBUG")
-
-        # Pedir al usuario dónde guardar el script
         model_name_for_file = model_dict.get('custom_model_name', model_dict.get('model_name', 'modelo_cox'))
         safe_model_name = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name_for_file)
 
         save_path = filedialog.asksaveasfilename(
-            title="Guardar Script de Python",
-            initialfile=f"script_{safe_model_name}.py",
+            title="Guardar Script de Python Completo",
+            initialfile=f"script_completo_{safe_model_name}.py",
             defaultextension=".py",
             filetypes=[("Python Scripts", "*.py"), ("All files", "*.*")]
         )
@@ -4782,12 +4833,11 @@ except Exception as e:
             self.log("Guardado de script cancelado por el usuario.", "INFO")
             return
 
-        # Escribir el script en el archivo elegido
         try:
             with open(save_path, 'w', encoding='utf-8') as f:
                 f.write(script_content)
-            self.log(f"Script de Python guardado exitosamente en: {save_path}", "SUCCESS")
-            messagebox.showinfo("Éxito", f"El script de Python ha sido guardado en:\\n{save_path}", parent=self.parent_for_dialogs)
+            self.log(f"Script de Python completo guardado en: {save_path}", "SUCCESS")
+            messagebox.showinfo("Éxito", f"El script de Python completo ha sido guardado en:\\n{save_path}", parent=self.parent_for_dialogs)
         except Exception as e:
             self.log(f"Error al guardar el script de Python: {e}", "ERROR")
             messagebox.showerror("Error al Guardar", f"No se pudo guardar el archivo del script:\\n{e}", parent=self.parent_for_dialogs)
