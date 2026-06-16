@@ -23,7 +23,7 @@ except ModuleNotFoundError:
     FACTOR_ANALYZER_AVAILABLE = False
 
 class PrincompTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
         super().__init__(master)
         self.df_original = None # DataFrame cargado originalmente
         self.df_for_pca = None  # DataFrame después de filtros, listo para PCA
@@ -55,6 +55,20 @@ class PrincompTab(ttk.Frame):
         self.exclude_nans_in_filter_var = tk.BooleanVar(value=True) # Se mantiene para limpieza post-filtro general
 
         self._build_ui_with_scroll()
+
+    def update_variable_lists(self):
+        if self.main_app and hasattr(self.main_app, 'data_filter_tab') and self.main_app.data_filter_tab.data is not None:
+            self.df_original = self.main_app.data_filter_tab.data
+            all_cols = self.df_original.columns.tolist()
+            numeric_cols = self.df_original.select_dtypes(include=np.number).columns.tolist()
+            filter_cols_options = [''] + all_cols
+            if hasattr(self, 'filter_col_1_combo'):
+                self.filter_col_1_combo['values'] = filter_cols_options
+            if hasattr(self, 'filter_col_2_combo'):
+                self.filter_col_2_combo['values'] = filter_cols_options
+            self.pca_vars_text.delete("1.0", tk.END)
+            for col in numeric_cols:
+                self.pca_vars_text.insert(tk.END, col + "\n")
 
     def _build_ui_with_scroll(self):
         # Canvas principal para scroll

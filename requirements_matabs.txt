@@ -2,12 +2,13 @@
 # For the broadest compatibility with all listed dependencies, Python 3.10 or 3.11 is recommended.
 # Some older libraries in this list may have more stable pre-compiled versions for these Python releases.
 # Note: 'statsmodels' has been updated to a version compatible with Python 3.12.
-# If using Python 3.12 and encountering build issues with other packages, consider using Python 3.10/3.11 or installing C++ Build Tools.
+# If using Python 3.12 and encountering build issues with other packages, consider using Python 3.10/3.11
+# or installing C++ Build Tools.
 #
 bottleneck
 factor_analyzer
 flask
-geopandas  # Note: Can have complex dependencies
+geopandas
 lifelines==0.27.8
 matplotlib
 numexpr
@@ -23,3 +24,11 @@ seaborn
 statsmodels==0.14.1
 plotly
 squarify
+stemgraphic
+matplotlib-venn==1.1.2
+# --- Analisis de supervivencia avanzado ---
+scikit-survival  # Random Survival Forest (RSF) y metricas de supervivencia
+# --- Interpretabilidad de modelos (SHAP) ---
+# shap es opcional; si no se instala, la pestaña RSF funciona sin analisis SHAP.
+# Para habilitarlo: pip install shap
+shap

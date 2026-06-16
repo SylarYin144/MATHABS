@@ -87,7 +87,9 @@ class SurvivalAnalysisTab(ttk.Frame):
         1 - Supervivencia o Riesgo Acumulado).
       - La posibilidad de exportar la tabla de estadísticas a Excel desde el popup de resumen.
     """
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
+        super().__init__(master)
+        self.main_app = main_app_instance
         super().__init__(master)
         # =============================================================================
         # VARIABLES PRINCIPALES Y DE CONTROL
@@ -149,6 +151,7 @@ class SurvivalAnalysisTab(ttk.Frame):
         self.y_color = tk.StringVar(value="black")
         self.axis_fontsize = tk.IntVar(value=10)
         self.font_family = tk.StringVar(value="Arial")
+        self.legend_title = tk.StringVar(value="")
 
         # Opciones para IC y Bootstrap
         self.show_ci = tk.BooleanVar(value=True)
@@ -161,6 +164,10 @@ class SurvivalAnalysisTab(ttk.Frame):
 
         # Nuevo: Forzar tratamiento categórico para variable de agrupación
         self.force_categorical_grouping_var = tk.BooleanVar(value=False)
+
+        # Configuración opcional para agrupar variables numéricas por cuantiles
+        self.enable_quantile_grouping = tk.BooleanVar(value=False)
+        self.quantile_group_count = tk.IntVar(value=4)
 
         # =============================================================================
         # LLAMADA A LA CREACIÓN DE WIDGETS
@@ -236,7 +243,28 @@ class SurvivalAnalysisTab(ttk.Frame):
                                                 variable=self.force_categorical_grouping_var)
         chk_force_categorical.grid(row=3, column=0, columnspan=2, sticky="w", padx=5, pady=(5,2))
 
+        frm_quantiles = ttk.Frame(frm_grouping)
+        frm_quantiles.grid(row=4, column=0, columnspan=2, sticky="we", padx=5, pady=(5, 2))
+        chk_quantiles = ttk.Checkbutton(
+            frm_quantiles,
+            text="Agrupar cuantitativa en N percentiles",
+            variable=self.enable_quantile_grouping,
+            command=self._toggle_quantile_controls
+        )
+        chk_quantiles.pack(side=tk.LEFT, padx=5)
+        ttk.Label(frm_quantiles, text="N° grupos:").pack(side=tk.LEFT, padx=(10, 5))
+        self.spin_quantile_bins = tk.Spinbox(
+            frm_quantiles,
+            from_=2,
+            to=10,
+            textvariable=self.quantile_group_count,
+            width=4,
+            state=tk.DISABLED
+        )
+        self.spin_quantile_bins.pack(side=tk.LEFT, padx=(0, 5))
+
         frm_grouping.columnconfigure(1, weight=1)
+        self._toggle_quantile_controls()
 
         # 4. Filtros Avanzados (Componente)
         frm_filters_advanced = ttk.LabelFrame(self.scrollable_controls, text="Filtros Avanzados (Componente)")
@@ -289,6 +317,9 @@ class SurvivalAnalysisTab(ttk.Frame):
                                            state="readonly")
         self.cmb_graph_type.pack(fill=tk.X, padx=5, pady=2)
         self.cmb_graph_type.set("KM")
+        ttk.Label(frm_graph_opts, text="Título de la leyenda:").pack(anchor=tk.W, padx=5, pady=2)
+        self.entry_legend_title = ttk.Entry(frm_graph_opts, textvariable=self.legend_title)
+        self.entry_legend_title.pack(fill=tk.X, padx=5, pady=2)
 
         # 7. Opciones de Ejes
         frm_axes = ttk.LabelFrame(self.scrollable_controls, text="Opciones de Ejes")
@@ -438,6 +469,33 @@ class SurvivalAnalysisTab(ttk.Frame):
         log_frame.columnconfigure(0, weight=1)
         self.extra_info()
 
+    def update_variable_lists(self):
+        if self.main_app and hasattr(self.main_app, 'data_filter_tab') and self.main_app.data_filter_tab.data is not None:
+            self.data = self.main_app.data_filter_tab.data
+            cols = list(self.data.columns)
+            self.cmb_time['values'] = cols
+            self.cmb_event['values'] = cols
+            self.cmb_cat['values'] = [""] + cols
+            if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance:
+                self.custom_filter_component_instance.set_dataframe(self.data)
+
+    def receive_shared_dataset(self, dataset, filtered_dataset=None, filter_summary=None,
+                               metadata=None, source_widget=None):
+        """Recibe el dataset compartido desde el Archivo de Trabajo (MATLAB_main_app)."""
+        if dataset is None:
+            return
+        try:
+            self.data = dataset.copy()
+            cols = list(self.data.columns)
+            self.cmb_time['values'] = cols
+            self.cmb_event['values'] = cols
+            self.cmb_cat['values'] = [""] + cols
+            if FILTER_COMPONENT_AVAILABLE and self.custom_filter_component_instance:
+                self.custom_filter_component_instance.set_dataframe(self.data)
+            self.log_debug(f"Dataset compartido recibido: {self.data.shape[0]} filas, {self.data.shape[1]} columnas.")
+        except Exception as e:
+            self.log_debug(f"Error al recibir dataset compartido: {e}")
+
     # ---------------------------------------------------------------------------
     # MÉTODO: load_data
     # ---------------------------------------------------------------------------
@@ -499,6 +557,14 @@ class SurvivalAnalysisTab(ttk.Frame):
         cat_var = self.cmb_cat.get().strip()
         filtro_etiquetas = self.entry_filter.get().strip() # Renombrado para claridad
         ordered_categories = None # Reiniciar orden
+
+        if cat_var and cat_var in df.columns and self.enable_quantile_grouping.get():
+            if pd.api.types.is_numeric_dtype(df[cat_var]):
+                quantile_labels = self._apply_quantile_binning(df, cat_var)
+                if quantile_labels:
+                    ordered_categories = quantile_labels
+            else:
+                self.log_debug(f"Agrupación por cuantiles omitida: '{cat_var}' no es numérica.")
 
         if cat_var and cat_var in df.columns and filtro_etiquetas:
             col_is_num = pd.api.types.is_numeric_dtype(df[cat_var])
@@ -582,6 +648,76 @@ class SurvivalAnalysisTab(ttk.Frame):
             for c in obj_cols:
                 df = df[~df[c].astype(str).apply(lambda x: x.replace('.', '', 1).isdigit())]
         return df
+
+    def _toggle_quantile_controls(self):
+        state = tk.NORMAL if self.enable_quantile_grouping.get() else tk.DISABLED
+        if hasattr(self, "spin_quantile_bins"):
+            self.spin_quantile_bins.config(state=state)
+
+    def _format_quantile_edge(self, value):
+        if pd.isna(value):
+            return "NA"
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if np.isneginf(numeric_value):
+            return "-inf"
+        if np.isposinf(numeric_value):
+            return "+inf"
+        abs_val = abs(numeric_value)
+        if abs_val >= 1000 or (abs_val != 0 and abs_val < 0.01):
+            return f"{numeric_value:.3e}"
+        formatted = f"{numeric_value:.3f}"
+        return formatted.rstrip('0').rstrip('.') if '.' in formatted else formatted
+
+    def _apply_quantile_binning(self, df, column_name):
+        numeric_series = df[column_name].dropna()
+        if numeric_series.empty:
+            self.log_debug(f"Agrupación por cuantiles no aplicada: '{column_name}' sin datos válidos.")
+            return None
+        try:
+            q_count = max(2, int(self.quantile_group_count.get()))
+        except (TypeError, ValueError):
+            q_count = 4
+        distinct_values = numeric_series.nunique()
+        if distinct_values < 2:
+            self.log_debug(f"Agrupación por cuantiles no aplicada: '{column_name}' requiere al menos dos valores distintos.")
+            return None
+        q_count = min(q_count, distinct_values)
+        try:
+            quantile_cats = pd.qcut(numeric_series, q=q_count, duplicates="drop")
+        except ValueError as exc:
+            self.log_debug(f"Fallo al crear cuantiles para '{column_name}': {exc}")
+            return None
+        quantile_cats = quantile_cats.cat.remove_unused_categories()
+        codes = quantile_cats.cat.codes
+        # Garantizar que cada categoría sea contigua: si hay códigos alternados, reordenar por el orden original de aparición
+        if pd.Series(codes).is_monotonic_increasing is False:
+            sorted_index = quantile_cats.sort_values().index
+            quantile_cats = quantile_cats.loc[sorted_index]
+        original_min = numeric_series.min()
+        original_max = numeric_series.max()
+        labels = []
+        categories_list = list(quantile_cats.cat.categories)
+        total_cats = len(categories_list)
+        for idx, interval in enumerate(categories_list, start=1):
+            left_edge = original_min if idx == 1 else interval.left
+            right_edge = original_max if idx == total_cats else interval.right
+            if right_edge is not None and left_edge is not None and right_edge < left_edge:
+                right_edge = left_edge
+            left_label = self._format_quantile_edge(left_edge)
+            right_label = self._format_quantile_edge(right_edge)
+            labels.append(f"{left_label} - {right_label}")
+        label_series = quantile_cats.cat.rename_categories(labels).astype(str)
+        new_column = pd.Series(np.nan, index=df.index, dtype=object)
+        new_column.loc[label_series.index] = label_series
+        df[column_name] = new_column
+        if len(labels) < q_count:
+            self.log_debug(f"Cuantiles ajustados para '{column_name}': se generaron {len(labels)} grupos únicos.")
+        else:
+            self.log_debug(f"Agrupación por cuantiles aplicada a '{column_name}' con {len(labels)} grupos.")
+        return labels
 
     # ---------------------------------------------------------------------------
     # MÉTODO: apply_figure_size
@@ -1059,20 +1195,34 @@ class SurvivalAnalysisTab(ttk.Frame):
             ax.set_title(self.title_text.get() if self.title_text.get().strip() else " ", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
             ax.set_ylabel(self.y_label.get() if self.y_label.get().strip() else " ", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "Log de Supervivencia":
-            ax.set_title("Log de Supervivencia (ln[S(t)])", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
-            ax.set_ylabel("ln(S(t))", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
+            default_title = "Log de Supervivencia (ln[S(t)])"
+            default_ylabel = "ln(S(t))"
+            title_val = self.title_text.get().strip() or default_title
+            ylabel_val = self.y_label.get().strip() or default_ylabel
+            ax.set_title(title_val, color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel(ylabel_val, color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "1 - Supervivencia":
-            ax.set_title("1 - Supervivencia", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
-            ax.set_ylabel("1 - S(t)", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
+            default_title = "1 - Supervivencia"
+            default_ylabel = "1 - S(t)"
+            title_val = self.title_text.get().strip() or default_title
+            ylabel_val = self.y_label.get().strip() or default_ylabel
+            ax.set_title(title_val, color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel(ylabel_val, color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         elif graph_type == "Riesgo Acumulado":
-            ax.set_title("Riesgo Acumulado", color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
-            ax.set_ylabel("Riesgo Acumulado", color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
+            default_title = "Riesgo Acumulado"
+            default_ylabel = "Riesgo Acumulado"
+            title_val = self.title_text.get().strip() or default_title
+            ylabel_val = self.y_label.get().strip() or default_ylabel
+            ax.set_title(title_val, color=self.title_color.get(), fontsize=self.title_fontsize.get(), fontname=font_name)
+            ax.set_ylabel(ylabel_val, color=self.y_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
 
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(handles, labels)
+            legend_title = self.legend_title.get().strip()
+            ax.legend(handles, labels, title=legend_title if legend_title else None)
 
-        ax.set_xlabel(self.x_label.get(), color=self.x_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
+        xlabel_val = self.x_label.get().strip()
+        ax.set_xlabel(xlabel_val if xlabel_val else " ", color=self.x_color.get(), fontsize=self.axis_fontsize.get(), fontname=font_name)
         self.canvas.draw()
         self.txt_log.insert(tk.END, "Gráfica generada.\n")
         self.log_debug("Se completó el análisis Kaplan-Meier.")

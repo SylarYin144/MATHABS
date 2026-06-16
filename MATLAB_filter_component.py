@@ -25,8 +25,9 @@ class FilterComponent(ttk.Frame):
         super().__init__(master, *args, **kwargs)
         self.df_original = None
         self.column_list = []
-        self.filter_conditions = [] # Lista para almacenar widgets de cada condición
+        self.filter_conditions = []  # Lista para almacenar widgets de cada condición
         self.max_unique_cat = max_unique_cat if max_unique_cat is not None else 50
+        self.last_filters_summary = []
 
         # --- UI Principal ---
         self.main_frame = ttk.Frame(self)
@@ -302,6 +303,7 @@ class FilterComponent(ttk.Frame):
         """
         if self.df_original is None:
             self.log("No hay DataFrame original para filtrar.", "WARN")
+            self.last_filters_summary = []
             return None
 
         df_filtered = self.df_original.copy()
@@ -429,6 +431,7 @@ class FilterComponent(ttk.Frame):
             except Exception as e:
                 self.log(f"Error aplicando filtro para '{col_name}': {e}", "ERROR")
                 messagebox.showerror("Error de Filtro", f"Error al aplicar filtro en columna '{col_name}':\n{e}")
+                self.last_filters_summary = []
                 return None # Detener si un filtro falla
 
             if df_filtered.empty:
@@ -440,7 +443,125 @@ class FilterComponent(ttk.Frame):
         else:
             self.log("No se aplicaron filtros activos.", "INFO")
 
+        self.last_filters_summary = active_filters_summary
+
         return df_filtered
+
+    def get_last_filters_summary(self):
+        return list(self.last_filters_summary)
+
+    def clear_all_filters(self):
+        self._clear_all_conditions()
+        self.last_filters_summary = []
+
+    def export_conditions(self):
+        """Serializa las condiciones actuales de filtro para almacenamiento externo."""
+        state = []
+        for widgets in self.filter_conditions:
+            col_combo = widgets.get("col_combo")
+            type_combo = widgets.get("type_combo")
+            controls = widgets.get("specific_controls")
+            if not col_combo or not type_combo or not controls:
+                continue
+            column = col_combo.get()
+            if not column:
+                continue
+            control_type = controls.get("type")
+            if not control_type:
+                continue
+            entry = {
+                "column": column,
+                "type_mode": type_combo.get() or "Automático",
+                "control_type": control_type,
+                "data": {}
+            }
+            if control_type == "categorical":
+                listbox = controls.get("listbox")
+                if listbox is not None:
+                    selected_indices = listbox.curselection()
+                    entry["data"] = {
+                        "selected": [listbox.get(i) for i in selected_indices]
+                    }
+            elif control_type in ("numeric", "date"):
+                entry["data"] = {
+                    "from": controls.get("from").get() if controls.get("from") else "",
+                    "to": controls.get("to").get() if controls.get("to") else ""
+                }
+            elif control_type == "text":
+                entry["data"] = {
+                    "op": controls.get("op_combo").get() if controls.get("op_combo") else "contiene",
+                    "value": controls.get("value_entry").get() if controls.get("value_entry") else ""
+                }
+            state.append(entry)
+        return state
+
+    def load_conditions(self, serialized_conditions):
+        """Reconstruye condiciones de filtro previamente serializadas."""
+        self._clear_all_conditions()
+        if not serialized_conditions:
+            return
+
+        available_columns = set(self.column_list or [])
+        for condition in serialized_conditions:
+            column = condition.get("column")
+            if not column or (available_columns and column not in available_columns):
+                continue
+
+            self._add_filter_condition_row()
+            widgets = self.filter_conditions[-1]
+            col_combo = widgets.get("col_combo")
+            type_combo = widgets.get("type_combo")
+            if col_combo is None or type_combo is None:
+                continue
+
+            try:
+                col_combo.set(column)
+            except Exception:
+                continue
+
+            type_mode = condition.get("type_mode") or "Automático"
+            try:
+                type_combo.set(type_mode)
+            except Exception:
+                pass
+
+            self._on_column_selected(None, widgets)
+            controls = widgets.get("specific_controls")
+            if not controls:
+                continue
+
+            control_type = condition.get("control_type")
+            data = condition.get("data", {})
+            if control_type == "categorical":
+                listbox = controls.get("listbox")
+                if listbox is not None:
+                    listbox.selection_clear(0, tk.END)
+                    values_to_select = set(data.get("selected", []))
+                    if values_to_select:
+                        current_values = listbox.get(0, tk.END)
+                        for idx, value in enumerate(current_values):
+                            if value in values_to_select:
+                                listbox.selection_set(idx)
+            elif control_type in ("numeric", "date"):
+                from_entry = controls.get("from")
+                to_entry = controls.get("to")
+                if from_entry is not None:
+                    from_entry.delete(0, tk.END)
+                    from_entry.insert(0, data.get("from", ""))
+                if to_entry is not None:
+                    to_entry.delete(0, tk.END)
+                    to_entry.insert(0, data.get("to", ""))
+            elif control_type == "text":
+                op_combo = controls.get("op_combo")
+                value_entry = controls.get("value_entry")
+                if op_combo is not None:
+                    try:
+                        op_combo.set(data.get("op", "contiene"))
+                    except Exception:
+                        pass
+                if value_entry is not None:
+                    value_entry.delete(0, tk.END)
+                    value_entry.insert(0, data.get("value", ""))
 
     def get_active_filters_description(self):
         """

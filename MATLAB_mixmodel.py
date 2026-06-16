@@ -102,8 +102,9 @@ class ScrollableFrame(ttk.Frame):
 # -----------------------
 
 class MixModelTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
         super().__init__(master)
+        self.main_app = main_app_instance
         self.df = None
         self.fixed_list = []
         self.random_list = []
@@ -247,16 +248,22 @@ class MixModelTab(ttk.Frame):
         self.populate_comboboxes()
 
     def populate_comboboxes(self):
-        # Inicialmente sin datos, se actualizarán al cargar archivo
-        columnas = []
-        self.fixed_cb['values'] = columnas
-        self.random_cb['values'] = columnas
-        self.depvar_cb['values'] = columnas
-        self.groupvar_cb['values'] = columnas
-        self.horavar_cb['values'] = columnas
-        self.multivar_listbox.delete(0, tk.END)
-        for col in columnas:
-            self.multivar_listbox.insert(tk.END, col)
+        if self.main_app and hasattr(self.main_app, 'data_filter_tab') and self.main_app.data_filter_tab.data is not None:
+            self.df = self.main_app.data_filter_tab.data
+            columnas = list(self.df.columns)
+            self.fixed_cb['values'] = columnas
+            self.random_cb['values'] = columnas
+            self.depvar_cb['values'] = columnas
+            self.groupvar_cb['values'] = columnas
+            self.horavar_cb['values'] = columnas
+            self.multivar_listbox.delete(0, tk.END)
+            for col in columnas:
+                self.multivar_listbox.insert(tk.END, col)
+            filter_cols_options = [''] + columnas
+            if hasattr(self, 'filter_col_1_combo'):
+                self.filter_col_1_combo['values'] = filter_cols_options
+            if hasattr(self, 'filter_col_2_combo'):
+                self.filter_col_2_combo['values'] = filter_cols_options
 
     def browse_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("CSV, Excel Files", "*.csv;*.xls;*.xlsx")])

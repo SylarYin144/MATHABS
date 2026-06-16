@@ -42,8 +42,9 @@ class BasePlugin:
 class DataFilterTab(ttk.Frame):
     """Pestaña de filtros, estadísticas y gráficos."""
 
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
         super().__init__(master)
+        self.main_app = main_app_instance
         # Colores disponibles (40)
         self.color_options = [
             "blue", "green", "red", "skyblue", "orange", "purple", "black", "gray", "brown", "pink",
@@ -1086,21 +1087,30 @@ class DataFilterTab(ttk.Frame):
 
     def _plot_pie_chart(self, df, var_principal, edge, x_label, y_label):
         """Genera un gráfico circular (Pie Chart)."""
-        # La variable principal ya debería ser string si tipo_variable_principal es Cualitativa
-        # o si el usuario la marcó como cualitativa.
-        
-        series_for_pie = df[var_principal].astype(str) # Asegurar que sea string para value_counts
+        # Trabajar inicialmente con dtype string para poder filtrar espacios en blanco sin perder NaNs
+        working_series = df[var_principal].astype('string')
+        stripped = working_series.str.strip()
+
         if self.exclude_blank.get():
-            series_for_pie = series_for_pie[series_for_pie.notna() & (series_for_pie.str.strip() != '')]
+            valid_mask = stripped.fillna("").ne("")
+            working_series = working_series[valid_mask]
+        else:
+            working_series = working_series.fillna("Sin dato")
+            working_series.loc[stripped.fillna("") == ""] = "Sin dato"
 
+        working_series = working_series.dropna()
+        if working_series.empty:
+            plt.text(0.5, 0.5, "No hay datos válidos para el Gráfico Circular", ha='center', va='center', transform=plt.gca().transAxes)
+            return
 
-        freq_series = series_for_pie.value_counts(dropna=self.exclude_blank.get())
+        series_for_pie = working_series.astype(str).str.strip()
+        freq_series = series_for_pie.value_counts(dropna=False)
 
         if freq_series.empty:
             plt.text(0.5, 0.5, "No hay datos válidos para el Gráfico Circular", ha='center', va='center', transform=plt.gca().transAxes)
             return
 
-        labels = freq_series.index
+        labels = freq_series.index.astype(str)
         sizes = freq_series.values
         
         custom_text = self.entry_etiquetas.get().strip()

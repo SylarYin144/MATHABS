@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-echo --- MATABS Ejecucion (Simplificado) ---
+echo --- Mathabs 1.00 - Ejecucion (Simplificado) ---
 
 set VENV_DIR=matabs_env
 set PYTHON_EXE_IN_VENV="%VENV_DIR%\Scripts\python.exe"
@@ -19,7 +19,7 @@ echo Entorno virtual encontrado.
 
 REM 2. Ejecutar aplicacion
 echo.
-echo Ejecutando MATLAB_main_app.py desde el entorno...
+echo Ejecutando Mathabs 1.00 (MATLAB_main_app.py) desde el entorno...
 %PYTHON_EXE_IN_VENV% MATLAB_main_app.py
 
 echo.
