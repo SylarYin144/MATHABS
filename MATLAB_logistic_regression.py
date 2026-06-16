@@ -23,10 +23,9 @@ except ImportError:
     FilterComponent = None
 
 class LogisticRegressionTab(ttk.Frame):
-    """
-    Pestaña para realizar análisis de Regresión Logística.
-    """
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
+        super().__init__(master)
+        self.main_app = main_app_instance
         super().__init__(master)
         self.df_original = None
         self.df_filtered = None

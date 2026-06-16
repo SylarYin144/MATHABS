@@ -1,0 +1,259 @@
+{
+    "appearance": {
+        "global_font_family": "Arial",
+        "tab": {
+            "font_size": 10,
+            "font_weight": "normal",
+            "fg_color": "#000000",
+            "bg_color": "#d9d9d9"
+        },
+        "selected_tab": {
+            "fg_color": "#000000",
+            "bg_color": "#f5f5f5"
+        },
+        "button": {
+            "font_size": 10,
+            "font_weight": "normal",
+            "fg_color": "#000000",
+            "bg_color": "#d9d9d9"
+        },
+        "entry": {
+            "font_size": 10,
+            "font_weight": "normal",
+            "fg_color": "#000000",
+            "bg_color": "#ffffff"
+        }
+    },
+    "table_layouts": {
+        "rsf_saved_models": {
+            "id": {
+                "visible": true,
+                "width": 50,
+                "heading": "ID"
+            },
+            "apto": {
+                "visible": false,
+                "width": 45,
+                "heading": "Apto"
+            },
+            "seed": {
+                "visible": true,
+                "width": 60,
+                "heading": "Seed"
+            },
+            "scope": {
+                "visible": true,
+                "width": 936,
+                "heading": "Scope"
+            },
+            "mode": {
+                "visible": false,
+                "width": 95,
+                "heading": "Modo"
+            },
+            "trees": {
+                "visible": false,
+                "width": 70,
+                "heading": "Árboles"
+            },
+            "features": {
+                "visible": true,
+                "width": 100,
+                "heading": "max_features"
+            },
+            "leaf": {
+                "visible": false,
+                "width": 70,
+                "heading": "min_leaf"
+            },
+            "split": {
+                "visible": false,
+                "width": 75,
+                "heading": "min_split"
+            },
+            "max_depth": {
+                "visible": false,
+                "width": 85,
+                "heading": "max_depth"
+            },
+            "max_leaf_nodes": {
+                "visible": false,
+                "width": 110,
+                "heading": "max_leaf_nodes"
+            },
+            "max_samples": {
+                "visible": false,
+                "width": 95,
+                "heading": "max_samples"
+            },
+            "test_prop": {
+                "visible": false,
+                "width": 75,
+                "heading": "Test %"
+            },
+            "cv": {
+                "visible": true,
+                "width": 170,
+                "heading": "CV"
+            },
+            "c_train": {
+                "visible": true,
+                "width": 170,
+                "heading": "C-train"
+            },
+            "c_test": {
+                "visible": true,
+                "width": 170,
+                "heading": "C-test"
+            },
+            "oob": {
+                "visible": true,
+                "width": 80,
+                "heading": "OOB"
+            },
+            "c_uno": {
+                "visible": false,
+                "width": 110,
+                "heading": "C-Uno (IPCW)"
+            },
+            "c_antolini": {
+                "visible": false,
+                "width": 120,
+                "heading": "C-Antolini (Ctd)"
+            },
+            "tau": {
+                "visible": false,
+                "width": 80,
+                "heading": "τ (tau)"
+            },
+            "ibs": {
+                "visible": true,
+                "width": 160,
+                "heading": "IBS"
+            },
+            "ibs_km": {
+                "visible": false,
+                "width": 95,
+                "heading": "IBS KM (nulo)"
+            },
+            "bss": {
+                "visible": true,
+                "width": 160,
+                "heading": "BSS"
+            },
+            "c_q25": {
+                "visible": false,
+                "width": 80,
+                "heading": "C@Q25"
+            },
+            "c_q50": {
+                "visible": false,
+                "width": 80,
+                "heading": "C@Q50"
+            },
+            "c_q75": {
+                "visible": false,
+                "width": 80,
+                "heading": "C@Q75"
+            },
+            "brier_q25": {
+                "visible": false,
+                "width": 85,
+                "heading": "Brier@Q25"
+            },
+            "brier_q50": {
+                "visible": false,
+                "width": 85,
+                "heading": "Brier@Q50"
+            },
+            "brier_q75": {
+                "visible": false,
+                "width": 85,
+                "heading": "Brier@Q75"
+            },
+            "auroc_q25": {
+                "visible": false,
+                "width": 80,
+                "heading": "AUC@Q25"
+            },
+            "auroc_q50": {
+                "visible": false,
+                "width": 80,
+                "heading": "AUC@Q50"
+            },
+            "auroc_q75": {
+                "visible": false,
+                "width": 80,
+                "heading": "AUC@Q75"
+            }
+        }
+    },
+    "module_states": {
+        "rsf": {
+            "version": 1,
+            "duration_col": "EvolucionAM",
+            "event_col": "Finado",
+            "selected_covariates": [
+                "RAMA AFECTADA",
+                "RepetidosCAG",
+                "EIMA"
+            ],
+            "missing_strategy": "Eliminar filas incompletas",
+            "drop_first": true,
+            "test_size": 0.0,
+            "stratify_event": true,
+            "optimization_metric": "Uno C-index",
+            "tau_mode": "Percentil 90",
+            "tau_manual": "",
+            "preset": "Balanceado",
+            "n_estimators": 300,
+            "max_features": "manual",
+            "max_features_manual": "2",
+            "min_samples_split": 60,
+            "min_samples_leaf": 10,
+            "max_depth": "",
+            "max_leaf_nodes": "",
+            "bootstrap": true,
+            "max_samples": "",
+            "oob_score": true,
+            "n_jobs": -1,
+            "random_state": "144, 15785, 720654, 551375, 100164, 917965, 58274, 103155, 243984, 594345, 783694, 422735, 78124, 193105, 48534, 451495, 213044, 221885, 185554, 225475, 576864, 878265, 730974, 676255, 711884, 595455, 904684, 610645, 560394, 83225, 712514, 664115, 388624, 360105, 251534, 417295, 485244, 391685, 693754, 619275, 501064, 616065, 151174, 478055, 108084, 781245, 155794, 981625, 997214, 696415",
+            "cv_enabled": true,
+            "cv_folds": 5,
+            "cv_metric": "C-Uno (IPCW)",
+            "tuning_profile": "Manual",
+            "robust_vimp_mode": "Permisivo (IC95% sup > 0)",
+            "corr_prune_threshold": "0.85",
+            "manual_trees": "100",
+            "manual_max_features": "1,2",
+            "manual_min_leaf": "20",
+            "manual_split_mult": "5,6",
+            "manual_max_depth": "",
+            "manual_max_leaf_nodes": "",
+            "manual_max_samples": "",
+            "tuning_models_mode": "Multivariado",
+            "tuning_progress_metric": "C-Uno (IPCW)",
+            "tvt_min_covariates": "1",
+            "tvt_max_covariates": "",
+            "tvt_max_combinations": "123123123",
+            "tvt_required_covariates": "",
+            "oob_cindex": "Uno (IPCW)",
+            "variable_configs": {
+                "RAMA AFECTADA": {
+                    "compare_mode": "one_vs_rest",
+                    "treat_as": "categorical",
+                    "ref_cat": "Materna",
+                    "selected_cat": "Materna"
+                }
+            },
+            "auto_tree_start": "100",
+            "auto_tree_step": "100",
+            "auto_tree_max": "1200",
+            "early_stopping_enabled": false,
+            "early_stopping_seeds": "2",
+            "early_stopping_gap": "0.01",
+            "early_stopping_pass_stops": false,
+            "early_stopping_impossible_stops": false
+        }
+    }
+}

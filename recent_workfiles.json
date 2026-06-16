@@ -1,0 +1,35 @@
+[
+  {
+    "path": "D:/OneDrive/Proyectos/Survival SCA7/TODO SCA7  20260407.xlsx",
+    "sheet_name": "TODO",
+    "display_name": "TODO SCA7  20260407.xlsx [TODO]",
+    "loaded_at": "2026-06-16T18:28:47.784523",
+    "selected_columns": [
+      "Tipo",
+      "Finado",
+      "RAMA AFECTADA",
+      "RepetidosCAG",
+      "EvolucionAM",
+      "EIMA"
+    ],
+    "filters": [
+      {
+        "column": "Tipo",
+        "type_mode": "Automático",
+        "control_type": "categorical",
+        "data": {
+          "selected": [
+            "Muerte",
+            "Supervivencia"
+          ]
+        }
+      }
+    ],
+    "filter_summary": [
+      "Tipo IN (Muerte, Supervivencia)"
+    ],
+    "analysis_presets": {},
+    "row_count": 806,
+    "column_count": 163
+  }
+]

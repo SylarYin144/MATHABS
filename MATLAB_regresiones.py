@@ -4,10 +4,11 @@
 import sys
 import os
 import io, base64
+import textwrap
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg # Importar FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk # Importar FigureCanvasTkAgg
 from matplotlib.ticker import LogFormatterSciNotation, LogFormatterExponent, ScalarFormatter # Para formato de ejes log
 from matplotlib.lines import Line2D # Para leyendas personalizadas
 import warnings
@@ -179,6 +180,9 @@ def run_flask_app():
               <label>Color mediana:</label>
               <input type="text" name="mediana_color" value="red"><br><br>
 
+              <label>Número de barras (histograma):</label>
+              <input type="number" name="hist_bins" value="20" min="1"><br><br>
+
               <!-- CONTROLES ADICIONALES DE ESTILO -->
               <label>Título Gráfica:</label>
               <input type="text" name="title" placeholder="Mi título"><br><br>
@@ -292,16 +296,24 @@ def run_flask_app():
         edge_color = request.form.get("edge_color", "black")
         mediana_color = request.form.get("mediana_color", "red")
 
+        hist_bins_raw = request.form.get("hist_bins", "").strip()
+        try:
+            hist_bins = int(hist_bins_raw) if hist_bins_raw else 20
+        except (TypeError, ValueError):
+            hist_bins = 20
+        if hist_bins < 1:
+            hist_bins = 1
+
         # Nuevos controles de estilo
-        title = request.form.get("title", "").strip()
+        title = request.form.get("title", "")
         title_size = int(request.form.get("title_size", "14"))
         title_color = request.form.get("title_color", "black")
 
-        xlabel = request.form.get("xlabel", "").strip()
+        xlabel = request.form.get("xlabel", "")
         xlabel_size = int(request.form.get("xlabel_size", "10"))
         xlabel_color = request.form.get("xlabel_color", "black")
 
-        ylabel = request.form.get("ylabel", "").strip()
+        ylabel = request.form.get("ylabel", "")
         ylabel_size = int(request.form.get("ylabel_size", "10"))
         ylabel_color = request.form.get("ylabel_color", "black")
 
@@ -313,6 +325,16 @@ def run_flask_app():
         grid_on = True if request.form.get("grid") == "on" else False
         show_info = True if request.form.get("show_info") == "on" else False
         plot_corr = True if request.form.get("plot_corr") == "on" else False
+
+        def resolve_plot_text(user_value, default_value):
+            if user_value is None:
+                return default_value
+            if user_value == "":
+                return default_value
+            stripped = user_value.strip()
+            if stripped == "":
+                return ""
+            return stripped
 
         # Función de filtrado idéntica a la de escritorio
         def apply_filter_criteria(df, var, filtro):
@@ -380,10 +402,13 @@ def run_flask_app():
 
             # Generar histograma
             plt.figure(figsize=(width/dpi, height/dpi), dpi=dpi)
-            plt.hist(df_filtered[var].dropna(), bins=20, color=color, edgecolor=edge_color)
-            plt.title(title or f"Histograma de {var}", fontsize=title_size, color=title_color)
-            plt.xlabel(xlabel or var, fontsize=xlabel_size, color=xlabel_color)
-            plt.ylabel(ylabel or "Frecuencia", fontsize=ylabel_size, color=ylabel_color)
+            plt.hist(df_filtered[var].dropna(), bins=hist_bins, color=color, edgecolor=edge_color)
+            resolved_title = resolve_plot_text(title, f"Histograma de {var}")
+            plt.title(resolved_title, fontsize=title_size, color=title_color)
+            resolved_xlabel = resolve_plot_text(xlabel, var)
+            plt.xlabel(resolved_xlabel, fontsize=xlabel_size, color=xlabel_color)
+            resolved_ylabel = resolve_plot_text(ylabel, "Frecuencia")
+            plt.ylabel(resolved_ylabel, fontsize=ylabel_size, color=ylabel_color)
             plt.axvline(mediana, color=mediana_color, linestyle="dashed", linewidth=2, label=f"Mediana: {mediana}")
             plt.legend()
 
@@ -473,9 +498,12 @@ def run_flask_app():
             # Gráfico de barras
             plt.figure(figsize=(width/dpi, height/dpi), dpi=dpi)
             plt.bar(freq_df.index, freq_df['Count'].values, color=color, edgecolor=edge_color)
-            plt.title(title or f"Gráfico de barras de frecuencias para {var}", fontsize=title_size, color=title_color)
-            plt.xlabel(xlabel or var, fontsize=xlabel_size, color=xlabel_color)
-            plt.ylabel(ylabel or "Frecuencia", fontsize=ylabel_size, color=ylabel_color)
+            resolved_bar_title = resolve_plot_text(title, f"Gráfico de barras de frecuencias para {var}")
+            plt.title(resolved_bar_title, fontsize=title_size, color=title_color)
+            resolved_bar_xlabel = resolve_plot_text(xlabel, var)
+            plt.xlabel(resolved_bar_xlabel, fontsize=xlabel_size, color=xlabel_color)
+            resolved_bar_ylabel = resolve_plot_text(ylabel, "Frecuencia")
+            plt.ylabel(resolved_bar_ylabel, fontsize=ylabel_size, color=ylabel_color)
             plt.xticks(rotation=45, ha="right")
 
             # Límites y ticks
@@ -622,10 +650,12 @@ class ScrollableFrame(ttk.Frame):
         self.columnconfigure(0, weight=1)
 
 class RegresionesTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, main_app_instance=None):
         super().__init__(master)
+        self.main_app = main_app_instance
         self.data = None # DataFrame original cargado
         self.filtered_data = None # DataFrame después de aplicar filtros
+        self.shared_filter_summary = []  # Resumen de filtros del Archivo de Trabajo
         self.graph_path = "temp_graph.png" # Considerar un subdirectorio temporal
         self.results_text_content = "" # Para almacenar el texto de resultados
         self.plot_label_map = {} # Para mapear nombres de variables a etiquetas de gráfico
@@ -659,11 +689,31 @@ class RegresionesTab(ttk.Frame):
         # Frame derecho para resultados
         right_frame = ttk.Frame(self.paned)
         self.paned.add(right_frame, weight=1)
-        frm_results = ttk.LabelFrame(right_frame, text="Resumen de Resultados")
-        frm_results.pack(fill="both", expand=True, padx=10, pady=10)
-        self.txt_results = scrolledtext.ScrolledText(frm_results, wrap="none", height=15) # wrap="none" para scroll H
+
+        # Notebook en el panel derecho para resultados y gráfica
+        self.results_notebook = ttk.Notebook(right_frame)
+        self.results_notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Pestaña de Resumen
+        frm_results = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(frm_results, text="Resumen de Resultados")
+        self.txt_results = scrolledtext.ScrolledText(frm_results, wrap="none", height=15)
         self.txt_results.pack(fill="both", expand=True)
-        self.txt_results.config(state="disabled") # Iniciar deshabilitado
+        self.txt_results.config(state="disabled")
+
+        # Pestaña de Gráfica
+        self.graph_frame = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(self.graph_frame, text="Gráfica")
+
+        # Canvas para la gráfica
+        self.fig = plt.figure(figsize=(5, 4), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.graph_frame)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Toolbar para la gráfica
+        self.toolbar = NavigationToolbar2Tk(self.canvas, self.graph_frame)
+        self.toolbar.update()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # --- Contenido del frame izquierdo (container) ---
         frm_top = ttk.Frame(container)
@@ -697,10 +747,13 @@ class RegresionesTab(ttk.Frame):
         
         dep_var_frame = ttk.Frame(frm_vars)
         dep_var_frame.pack(fill="x", pady=2)
-        ttk.Label(dep_var_frame, text="Variable Dependiente:").pack(side="left", padx=5)
-        self.combo_dep_var_spec = ttk.Combobox(dep_var_frame, width=38, state="readonly")
-        self.combo_dep_var_spec.pack(side="left", padx=5, expand=True, fill="x")
-        self.combo_dep_var_spec.bind("<<ComboboxSelected>>", self._update_indep_vars_listbox)
+        ttk.Label(dep_var_frame, text="Variables Dependientes (selección múltiple):").pack(anchor="nw", padx=5)
+        self.listbox_dep_vars_spec = tk.Listbox(dep_var_frame, selectmode=tk.MULTIPLE, height=4, exportselection=False)
+        dep_vars_v_scrollbar = ttk.Scrollbar(dep_var_frame, orient="vertical", command=self.listbox_dep_vars_spec.yview)
+        self.listbox_dep_vars_spec.configure(yscrollcommand=dep_vars_v_scrollbar.set)
+        dep_vars_v_scrollbar.pack(side="right", fill="y")
+        self.listbox_dep_vars_spec.pack(side="left", fill="both", expand=True, padx=5, pady=(0,5))
+        self.listbox_dep_vars_spec.bind('<<ListboxSelect>>', self._update_indep_vars_listbox)
 
         indep_vars_frame = ttk.Frame(frm_vars)
         indep_vars_frame.pack(fill="both", expand=True, pady=2)
@@ -723,6 +776,83 @@ class RegresionesTab(ttk.Frame):
         self.rename_var_entry = ttk.Entry(rename_vars_frame, width=20)
         self.rename_var_entry.pack(side="left", padx=5)
         ttk.Button(rename_vars_frame, text="Renombrar", command=self.rename_variable).pack(side="left", padx=5)
+
+        # --- Comparación por Grupos ---
+        frm_groups = ttk.LabelFrame(container, text="Comparación entre Grupos (Opcional)")
+        frm_groups.pack(fill="x", padx=10, pady=5)
+        
+        group_row1 = ttk.Frame(frm_groups)
+        group_row1.pack(fill="x", pady=2)
+        
+        self.var_compare_groups = tk.BooleanVar(value=False)
+        ttk.Checkbutton(group_row1, text="Comparar por grupos", variable=self.var_compare_groups, 
+                       command=self._toggle_group_comparison).pack(side="left", padx=5)
+        
+        ttk.Label(group_row1, text="Variable de agrupación:").pack(side="left", padx=(15, 5))
+        self.cmb_group_var = ttk.Combobox(group_row1, values=[], state="disabled", width=20)
+        self.cmb_group_var.pack(side="left", padx=5)
+        
+        group_row2 = ttk.Frame(frm_groups)
+        group_row2.pack(fill="x", pady=2)
+        
+        ttk.Label(group_row2, text="Grupos a incluir (dejar vacío = todos):").pack(side="left", padx=5)
+        self.entry_group_filter = ttk.Entry(group_row2, width=30, state="disabled")
+        self.entry_group_filter.pack(side="left", padx=5)
+        ttk.Label(group_row2, text="Ej: Masculino,Femenino", foreground="gray").pack(side="left", padx=5)
+        
+        group_row3 = ttk.Frame(frm_groups)
+        group_row3.pack(fill="x", pady=2)
+        
+        self.var_separate_plots = tk.BooleanVar(value=False)
+        self.chk_separate_plots = ttk.Checkbutton(group_row3, text="Gráficos separados por grupo (facetas)", 
+                                                   variable=self.var_separate_plots, state="disabled")
+        self.chk_separate_plots.pack(side="left", padx=5)
+        
+        self.var_show_group_stats = tk.BooleanVar(value=True)
+        self.chk_group_stats = ttk.Checkbutton(group_row3, text="Mostrar estadísticas por grupo", 
+                                                variable=self.var_show_group_stats, state="disabled")
+        self.chk_group_stats.pack(side="left", padx=15)
+        
+        # Análisis de interacción (comparación formal de pendientes)
+        group_row4 = ttk.Frame(frm_groups)
+        group_row4.pack(fill="x", pady=2)
+        
+        self.var_interaction_analysis = tk.BooleanVar(value=True)
+        self.chk_interaction = ttk.Checkbutton(group_row4, 
+            text="Análisis de interacción (comparar pendientes)", 
+            variable=self.var_interaction_analysis, state="disabled")
+        self.chk_interaction.pack(side="left", padx=5)
+        
+        self.var_ancova = tk.BooleanVar(value=True)
+        self.chk_ancova = ttk.Checkbutton(group_row4, 
+            text="ANCOVA (medias ajustadas)", 
+            variable=self.var_ancova, state="disabled")
+        self.chk_ancova.pack(side="left", padx=10)
+        
+        self.var_chow_test = tk.BooleanVar(value=True)
+        self.chk_chow = ttk.Checkbutton(group_row4, 
+            text="Prueba de Chow (ruptura estructural)", 
+            variable=self.var_chow_test, state="disabled")
+        self.chk_chow.pack(side="left", padx=10)
+        
+        # Fila adicional para comparación NLS
+        group_row4b = ttk.Frame(frm_groups)
+        group_row4b.pack(fill="x", pady=2)
+        
+        self.var_nls_comparison = tk.BooleanVar(value=True)
+        self.chk_nls = ttk.Checkbutton(group_row4b, 
+            text="Comparación NLS (AIC/BIC modelos no lineales)", 
+            variable=self.var_nls_comparison, state="disabled")
+        self.chk_nls.pack(side="left", padx=5)
+        
+        ttk.Label(group_row4b, text="Usa AIC y Likelihood Ratio Test para comparar curvas no lineales",
+                  foreground="gray", font=("Consolas", 8)).pack(side="left", padx=10)
+        
+        # Tooltip/ayuda para los análisis
+        group_row5 = ttk.Frame(frm_groups)
+        group_row5.pack(fill="x", pady=2)
+        ttk.Label(group_row5, text="Interacción: Y = β₀ + β₁X + β₂G + β₃(X·G)  |  ANCOVA: Y = β₀ + β₁X + β₂G (pendientes paralelas)", 
+                  foreground="gray", font=("Consolas", 8)).pack(side="left", padx=5)
 
         # --- Parámetros Gráficos ---
         frm_params = ttk.LabelFrame(container, text="Parámetros Gráficos")
@@ -812,11 +942,26 @@ class RegresionesTab(ttk.Frame):
         self.sci_notation_conditional_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(param_grid_frame, text="Notación científica (solo si aplica)", variable=self.sci_notation_conditional_var).grid(row=9, column=3, sticky="w", padx=5)
 
+        self.var_table_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(param_grid_frame, text="Mostrar solo tabla de correlaciones", variable=self.var_table_only).grid(row=10, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+
+        self.var_show_formula = tk.BooleanVar(value=True)
+        ttk.Checkbutton(param_grid_frame, text="Mostrar fórmula", variable=self.var_show_formula).grid(row=10, column=2, sticky="w", padx=5)
+
+        self.var_show_r2 = tk.BooleanVar(value=True)
+        ttk.Checkbutton(param_grid_frame, text="Mostrar R²", variable=self.var_show_r2).grid(row=10, column=3, sticky="w", padx=5)
+
+        # New: Custom Labels for Dependent Variable
+        ttk.Label(param_grid_frame, text="Etiquetas Personalizadas (Var. Dep.):").grid(row=11, column=0, sticky="w", padx=5, pady=2)
+        self.entry_dep_var_labels = ttk.Entry(param_grid_frame, width=30)
+        self.entry_dep_var_labels.grid(row=11, column=1, columnspan=3, sticky="we", padx=5)
+        ttk.Label(param_grid_frame, text="Ej: 1:Bajo,2:Medio").grid(row=11, column=4, columnspan=2, sticky="w", padx=5)
+
 
         # --- Modelos de Regresión ---
         frm_models = ttk.LabelFrame(container, text="Modelos de Regresión a Aplicar")
         frm_models.pack(fill="x", padx=10, pady=5)
-        self.var_linear = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Lineal", variable=self.var_linear).grid(row=0, column=0, padx=2, pady=2, sticky="w")
+        self.var_linear = tk.BooleanVar(value=True); ttk.Checkbutton(frm_models, text="Lineal", variable=self.var_linear).grid(row=0, column=0, padx=2, pady=2, sticky="w")
         self.var_quadratic = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Cuadrática", variable=self.var_quadratic).grid(row=0, column=1, padx=2, pady=2, sticky="w")
         self.var_cubic = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Cúbica", variable=self.var_cubic).grid(row=0, column=2, padx=2, pady=2, sticky="w")
         self.var_power = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Potencia", variable=self.var_power).grid(row=0, column=3, padx=2, pady=2, sticky="w")
@@ -824,6 +969,21 @@ class RegresionesTab(ttk.Frame):
         self.var_loess = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="LOESS", variable=self.var_loess).grid(row=0, column=5, padx=2, pady=2, sticky="w")
         self.var_inverse = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Inversa (1/X)", variable=self.var_inverse).grid(row=1, column=0, padx=2, pady=2, sticky="w")
         self.var_rcs = tk.BooleanVar(value=False); ttk.Checkbutton(frm_models, text="Splines (RCS)", variable=self.var_rcs).grid(row=1, column=1, padx=2, pady=2, sticky="w")
+        
+        # --- Transformaciones de Variables ---
+        frm_transform = ttk.LabelFrame(container, text="Transformaciones de Variables")
+        frm_transform.pack(fill="x", padx=10, pady=5)
+        
+        self.var_ln_x = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frm_transform, text="ln(X) - Transformar Variable Independiente", 
+                        variable=self.var_ln_x).grid(row=0, column=0, padx=5, pady=2, sticky="w")
+        
+        self.var_ln_y = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frm_transform, text="ln(Y) - Transformar Variable Dependiente", 
+                        variable=self.var_ln_y).grid(row=0, column=1, padx=5, pady=2, sticky="w")
+        
+        ttk.Label(frm_transform, text="Nota: Los valores ≤ 0 serán excluidos al aplicar ln", 
+                  foreground="gray").grid(row=1, column=0, columnspan=2, padx=5, pady=2, sticky="w")
         
         frm_otros = ttk.LabelFrame(container, text="Otros Modelos (Solo Resumen)")
         frm_otros.pack(fill="x", padx=10, pady=5)
@@ -852,13 +1012,80 @@ class RegresionesTab(ttk.Frame):
         frm_buttons_bottom.pack(pady=10, fill="x", padx=10)
         btn_plot = ttk.Button(frm_buttons_bottom, text="Generar Dispersión y Regresión", command=self.plot_regression)
         btn_plot.pack(side="left", padx=5, expand=True, fill="x")
-        btn_view = ttk.Button(frm_buttons_bottom, text="Ver Gráfica en Popup", command=self.view_graph_popup)
-        btn_view.pack(side="left", padx=5, expand=True, fill="x")
+        btn_corr_table = ttk.Button(frm_buttons_bottom, text="Mostrar Tabla de Correlaciones", command=self.calculate_and_show_correlations)
+        btn_corr_table.pack(side="left", padx=5, expand=True, fill="x")
         btn_save = ttk.Button(frm_buttons_bottom, text="Guardar Gráfica", command=self.save_graph_directly)
         btn_save.pack(side="left", padx=5, expand=True, fill="x")
 
-        btn_edit_results = ttk.Button(frm_buttons_bottom, text="Editar y Formatear Resultados", command=self.open_results_editor)
-        btn_edit_results.pack(side="left", padx=5, expand=True, fill="x")
+    def receive_shared_dataset(self, *, dataset, filtered_dataset=None, filter_summary=None, metadata=None, source_widget=None):
+        """Recibe el dataset compartido de la aplicación principal."""
+        if source_widget is self:
+            return
+
+        if dataset is None:
+            self.data = None
+            self.filtered_data = None
+            self.shared_filter_summary = []
+            self.lbl_file.config(text="Ningún archivo cargado.")
+            self.listbox_dep_vars_spec.delete(0, tk.END)
+            self.listbox_indep_vars_spec.delete(0, tk.END)
+            self.cmb_group_var['values'] = ['']
+            self.cmb_group_var.set('')
+            if hasattr(self, 'filter_component') and self.filter_component:
+                try:
+                    self.filter_component.set_dataframe(None)
+                except Exception:
+                    pass
+            self.log_message("Dataset compartido limpiado en Regresiones.")
+            return
+
+        # Si recibimos un dataset, lo usamos
+        if dataset is not None:
+            self.data = dataset
+            
+            # Usar el dataset filtrado si está disponible
+            if filtered_dataset is not None and isinstance(filtered_dataset, pd.DataFrame):
+                self.filtered_data = filtered_dataset
+                self.shared_filter_summary = list(filter_summary or [])
+            else:
+                self.filtered_data = dataset.copy()
+                self.shared_filter_summary = []
+            
+            # Actualizar etiqueta de archivo
+            source_name = "Dataset Compartido"
+            if metadata and 'source_path' in metadata:
+                source_name = os.path.basename(metadata['source_path'])
+            
+            # Intentar obtener dimensiones - mostrar del filtrado
+            try:
+                rows_orig, cols = self.data.shape
+                rows_filt = self.filtered_data.shape[0] if self.filtered_data is not None else rows_orig
+                
+                if self.shared_filter_summary:
+                    filter_info = f" | {len(self.shared_filter_summary)} filtro(s): {rows_filt} filas"
+                else:
+                    filter_info = ""
+                
+                self.lbl_file.config(text=f"{source_name} ({rows_orig}x{cols}){filter_info}")
+                print(f"[RegresionesTab] Dataset recibido: {rows_filt} filas (de {rows_orig} original){filter_info}")
+            except Exception as e:
+                self.lbl_file.config(text=f"{source_name} [Compartido]")
+                print(f"[RegresionesTab] Dataset recibido: {source_name}")
+
+            # Actualizar selectores (esto respetará el orden de columnas del dataset recibido)
+            self._update_variable_selectors()
+            
+            # Actualizar componente de filtros si existe
+            if hasattr(self, 'filter_component') and self.filter_component:
+                self.filter_component.set_dataframe(self.data)
+            
+            # Limpiar resultados anteriores ya que cambiaron los datos
+            self.txt_results.config(state="normal")
+            self.txt_results.delete("1.0", tk.END)
+            self.txt_results.config(state="disabled")
+            self.fig.clear()
+            self.canvas.draw()
+            self.log_message("Dataset compartido listo en Regresiones. Selecciones por defecto actualizadas.")
 
     def _update_variable_selectors(self):
         """Actualiza todos los selectores de variables después de un cambio en las columnas del DataFrame."""
@@ -869,26 +1096,1027 @@ class RegresionesTab(ttk.Frame):
             all_cols = list(self.data.columns)
             num_cols = list(self.data.select_dtypes(include=np.number).columns)
 
-        # Guardar selecciones actuales
-        current_dep_var = self.combo_dep_var_spec.get()
+        # Guardar selecciones actuales de variables dependientes
+        current_dep_indices = self.listbox_dep_vars_spec.curselection()
+        current_dep_vars = {self.listbox_dep_vars_spec.get(i) for i in current_dep_indices}
+
         current_indep_indices = self.listbox_indep_vars_spec.curselection()
         current_indep_vars = {self.listbox_indep_vars_spec.get(i) for i in current_indep_indices}
 
-        # Actualizar ComboBox de variable dependiente
-        self.combo_dep_var_spec['values'] = num_cols
-        if current_dep_var in num_cols:
-            self.combo_dep_var_spec.set(current_dep_var)
-        elif num_cols:
-            self.combo_dep_var_spec.set(num_cols[0])
-        else:
-            self.combo_dep_var_spec.set('')
-
+        # Actualizar Listbox de variables dependientes
+        self.listbox_dep_vars_spec.delete(0, tk.END)
+        for idx, col in enumerate(num_cols):
+            self.listbox_dep_vars_spec.insert(tk.END, col)
+            if col in current_dep_vars:
+                self.listbox_dep_vars_spec.selection_set(idx)
+        if not current_dep_vars and num_cols:
+            self.listbox_dep_vars_spec.selection_set(0)
+        
         # Actualizar Listbox de variables independientes
         self._update_indep_vars_listbox(current_indep_vars=current_indep_vars)
+
+        # Actualizar combo de variable de agrupación (todas las columnas, no solo numéricas)
+        current_group = self.cmb_group_var.get()
+        self.cmb_group_var['values'] = [''] + all_cols
+        if current_group in all_cols:
+            self.cmb_group_var.set(current_group)
+        else:
+            self.cmb_group_var.set('')
 
         # Actualizar componente de filtro si existe
         if hasattr(self, 'filter_component') and self.filter_component:
             self.filter_component.set_dataframe(self.data)
+
+    def _toggle_group_comparison(self):
+        """Activa o desactiva los controles de comparación por grupos."""
+        enabled = self.var_compare_groups.get()
+        state = "readonly" if enabled else "disabled"
+        entry_state = "normal" if enabled else "disabled"
+        
+        self.cmb_group_var.config(state=state)
+        self.entry_group_filter.config(state=entry_state)
+        self.chk_separate_plots.config(state=entry_state)
+        self.chk_group_stats.config(state=entry_state)
+        self.chk_interaction.config(state=entry_state)
+        self.chk_ancova.config(state=entry_state)
+        self.chk_chow.config(state=entry_state)
+        self.chk_nls.config(state=entry_state)
+
+    def _run_interaction_analysis(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta el análisis de regresión con término de interacción.
+        
+        Modelo: Y = β₀ + β₁(X) + β₂(G) + β₃(X·G) + ε
+        
+        Donde:
+        - β₀: Intercepto para el grupo de referencia
+        - β₁: Pendiente para el grupo de referencia  
+        - β₂: Diferencia en intercepto entre grupos
+        - β₃: Diferencia en pendientes (término de interacción)
+        
+        Si β₃ es significativo (p < 0.05), las pendientes son diferentes entre grupos.
+        """
+        # Nombres de variables para mostrar
+        dep_display = f"ln({dep_var})" if apply_ln_y else dep_var
+        indep_display = f"ln({indep_var})" if apply_ln_x else indep_var
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("ANÁLISIS DE INTERACCIÓN (Comparación Formal de Pendientes)")
+        results_text.append("=" * 70)
+        results_text.append(f"\nModelo: {dep_display} = β₀ + β₁({indep_display}) + β₂({group_var}) + β₃({indep_display}·{group_var})")
+        if apply_ln_x or apply_ln_y:
+            results_text.append(f"[Transformaciones aplicadas: {'ln(X) ' if apply_ln_x else ''}{'ln(Y)' if apply_ln_y else ''}]")
+        results_text.append("")
+        
+        try:
+            # Preparar datos
+            temp_df = df[[dep_var, indep_var, group_var]].dropna().copy()
+            
+            # Aplicar transformaciones ln
+            if apply_ln_x:
+                temp_df = temp_df[temp_df[indep_var] > 0]
+                temp_df[indep_var] = np.log(temp_df[indep_var])
+            if apply_ln_y:
+                temp_df = temp_df[temp_df[dep_var] > 0]
+                temp_df[dep_var] = np.log(temp_df[dep_var])
+            
+            if len(groups) != 2:
+                results_text.append(f"⚠ Se requieren exactamente 2 grupos para este análisis.")
+                results_text.append(f"  Grupos recibidos: {groups}")
+                return "\n".join(results_text), None
+            
+            # Filtrar solo los grupos seleccionados
+            temp_df = temp_df[temp_df[group_var].astype(str).isin([str(g) for g in groups])]
+            
+            results_text.append(f"Grupos comparados: {groups[0]} vs {groups[1]}")
+            
+            if temp_df.shape[0] < 10:
+                results_text.append(f"⚠ Datos insuficientes para el análisis (n={temp_df.shape[0]})")
+                return "\n".join(results_text)
+            
+            # Crear variable dummy para el grupo (0 = grupo referencia, 1 = otro grupo)
+            ref_group = str(groups[0])
+            other_group = str(groups[1]) if len(groups) > 1 else None
+            
+            temp_df['G'] = (temp_df[group_var].astype(str) == str(other_group)).astype(int)
+            
+            # Crear término de interacción
+            X = temp_df[indep_var].values
+            Y = temp_df[dep_var].values
+            G = temp_df['G'].values
+            XG = X * G  # Término de interacción
+            
+            # Construir matriz de diseño: [1, X, G, X*G]
+            design_matrix = sm.add_constant(np.column_stack([X, G, XG]))
+            
+            # Ajustar modelo
+            model = sm.OLS(Y, design_matrix).fit()
+            
+            # Extraer coeficientes
+            beta0, beta1, beta2, beta3 = model.params
+            pvals = model.pvalues
+            conf_int = model.conf_int()
+            
+            results_text.append(f"Grupo de referencia: {ref_group}")
+            results_text.append(f"Grupo de comparación: {other_group}")
+            results_text.append(f"n total: {len(temp_df)}")
+            results_text.append("")
+            
+            # Resultados del modelo
+            results_text.append("COEFICIENTES DEL MODELO:")
+            results_text.append("-" * 50)
+            results_text.append(f"{'Término':<25} {'Coef':>10} {'IC 95%':>20} {'p-valor':>12}")
+            results_text.append("-" * 50)
+            
+            terms = [
+                ("β₀ (Intercepto)", beta0, conf_int[0], pvals[0]),
+                (f"β₁ ({indep_var})", beta1, conf_int[1], pvals[1]),
+                (f"β₂ ({group_var})", beta2, conf_int[2], pvals[2]),
+                (f"β₃ (Interacción)", beta3, conf_int[3], pvals[3])
+            ]
+            
+            for name, coef, ci, pval in terms:
+                sig = "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
+                ci_str = f"[{format_number(ci[0])}, {format_number(ci[1])}]"
+                results_text.append(f"{name:<25} {format_number(coef):>10} {ci_str:>20} {format_number(pval):>10} {sig}")
+            
+            results_text.append("-" * 50)
+            results_text.append(f"R² = {format_number(model.rsquared)}  |  R² ajustado = {format_number(model.rsquared_adj)}")
+            results_text.append(f"F = {format_number(model.fvalue)}  |  p(F) = {format_number(model.f_pvalue)}")
+            results_text.append("")
+            
+            # Interpretación clínica
+            results_text.append("INTERPRETACIÓN:")
+            results_text.append("-" * 50)
+            
+            # Pendientes por grupo
+            slope_ref = beta1
+            slope_other = beta1 + beta3
+            
+            results_text.append(f"• Pendiente en {ref_group}: {format_number(slope_ref)}")
+            results_text.append(f"• Pendiente en {other_group}: {format_number(slope_other)}")
+            results_text.append("")
+            
+            # Interpretación del término de interacción
+            if pvals[3] < 0.05:
+                results_text.append(f"✓ El término de INTERACCIÓN ES SIGNIFICATIVO (p = {format_number(pvals[3])})")
+                results_text.append(f"  → Las pendientes son DIFERENTES entre los grupos.")
+                results_text.append(f"  → Por cada unidad de {indep_var}:")
+                results_text.append(f"     - En {ref_group}: {dep_var} cambia {format_number(slope_ref)} unidades")
+                results_text.append(f"     - En {other_group}: {dep_var} cambia {format_number(slope_other)} unidades")
+                diff_effect = abs(beta3)
+                if beta3 < 0:
+                    results_text.append(f"  → El efecto de {indep_var} es {format_number(diff_effect)} unidades MÁS AGRESIVO en {other_group}")
+                else:
+                    results_text.append(f"  → El efecto de {indep_var} es {format_number(diff_effect)} unidades MÁS AGRESIVO en {ref_group}")
+            else:
+                results_text.append(f"✗ El término de interacción NO es significativo (p = {format_number(pvals[3])})")
+                results_text.append(f"  → Las pendientes son PARALELAS (no hay diferencia significativa).")
+                results_text.append(f"  → El efecto de {indep_var} sobre {dep_var} es similar en ambos grupos.")
+            
+            results_text.append("")
+            
+            # Interpretación del efecto del grupo (β₂)
+            if pvals[2] < 0.05:
+                results_text.append(f"✓ El efecto del GRUPO ES SIGNIFICATIVO (p = {format_number(pvals[2])})")
+                if beta2 < 0:
+                    results_text.append(f"  → {other_group} tiene valores de {dep_var} {format_number(abs(beta2))} unidades MENORES que {ref_group}")
+                else:
+                    results_text.append(f"  → {other_group} tiene valores de {dep_var} {format_number(abs(beta2))} unidades MAYORES que {ref_group}")
+            else:
+                results_text.append(f"✗ El efecto del grupo NO es significativo (p = {format_number(pvals[2])})")
+                results_text.append(f"  → No hay diferencia vertical significativa entre las líneas.")
+            
+            results_text.append("")
+            results_text.append("=" * 70)
+            
+            return "\n".join(results_text), {
+                'model': model,
+                'ref_group': ref_group,
+                'other_group': other_group,
+                'slope_ref': slope_ref,
+                'slope_other': slope_other,
+                'beta3_pval': pvals[3]
+            }
+            
+        except Exception as e:
+            results_text.append(f"Error en análisis de interacción: {e}")
+            import traceback
+            results_text.append(traceback.format_exc())
+            return "\n".join(results_text), None
+
+    def _run_pairwise_interaction(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta análisis de interacción para todas las combinaciones de pares de grupos.
+        """
+        from itertools import combinations
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("ANÁLISIS DE INTERACCIÓN - COMPARACIONES PAIRWISE")
+        results_text.append(f"({len(groups)} grupos: {len(list(combinations(groups, 2)))} comparaciones)")
+        results_text.append("=" * 70)
+        
+        # Tabla resumen
+        summary_data = []
+        
+        for g1, g2 in combinations(groups, 2):
+            pair_groups = [g1, g2]
+            text, data = self._run_interaction_analysis(
+                df, dep_var, indep_var, group_var, pair_groups, format_number,
+                apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y
+            )
+            
+            if data and 'beta3_pval' in data:
+                sig = "***" if data['beta3_pval'] < 0.001 else "**" if data['beta3_pval'] < 0.01 else "*" if data['beta3_pval'] < 0.05 else "ns"
+                summary_data.append({
+                    'comparacion': f"{g1} vs {g2}",
+                    'pendiente_1': data.get('slope_ref', 'NA'),
+                    'pendiente_2': data.get('slope_other', 'NA'),
+                    'p_interaccion': data['beta3_pval'],
+                    'sig': sig
+                })
+        
+        # Mostrar tabla resumen
+        if summary_data:
+            results_text.append("\nRESUMEN DE COMPARACIONES:")
+            results_text.append("-" * 80)
+            results_text.append(f"{'Comparación':<25} {'Pend.G1':>12} {'Pend.G2':>12} {'p(Interacc)':>15} {'Sig':>6}")
+            results_text.append("-" * 80)
+            
+            for row in summary_data:
+                p1 = format_number(row['pendiente_1']) if isinstance(row['pendiente_1'], (int, float)) else row['pendiente_1']
+                p2 = format_number(row['pendiente_2']) if isinstance(row['pendiente_2'], (int, float)) else row['pendiente_2']
+                results_text.append(f"{row['comparacion']:<25} {p1:>12} {p2:>12} {format_number(row['p_interaccion']):>15} {row['sig']:>6}")
+            
+            results_text.append("-" * 80)
+            results_text.append("Sig: *** p<0.001, ** p<0.01, * p<0.05, ns = no significativo")
+            
+            # Contar significativos
+            n_sig = sum(1 for r in summary_data if r['p_interaccion'] < 0.05)
+            results_text.append(f"\n→ {n_sig} de {len(summary_data)} comparaciones tienen pendientes significativamente diferentes (p<0.05)")
+        
+        return "\n".join(results_text)
+
+    def _run_pairwise_ancova(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta ANCOVA para todas las combinaciones de pares de grupos.
+        """
+        from itertools import combinations
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("ANCOVA - COMPARACIONES PAIRWISE")
+        results_text.append(f"({len(groups)} grupos: {len(list(combinations(groups, 2)))} comparaciones)")
+        results_text.append("=" * 70)
+        
+        summary_data = []
+        
+        for g1, g2 in combinations(groups, 2):
+            pair_groups = [g1, g2]
+            text, data = self._run_ancova(
+                df, dep_var, indep_var, group_var, pair_groups, format_number,
+                apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y
+            )
+            
+            if data and 'group_pval' in data:
+                sig = "***" if data['group_pval'] < 0.001 else "**" if data['group_pval'] < 0.01 else "*" if data['group_pval'] < 0.05 else "ns"
+                summary_data.append({
+                    'comparacion': f"{g1} vs {g2}",
+                    'media_aj_1': data.get('adj_mean_ref', 'NA'),
+                    'media_aj_2': data.get('adj_mean_other', 'NA'),
+                    'diferencia': data.get('diff_adj_means', 'NA'),
+                    'p_grupo': data['group_pval'],
+                    'sig': sig
+                })
+        
+        if summary_data:
+            results_text.append("\nRESUMEN DE COMPARACIONES:")
+            results_text.append("-" * 90)
+            results_text.append(f"{'Comparación':<25} {'Media Aj.G1':>12} {'Media Aj.G2':>12} {'Diferencia':>12} {'p(Grupo)':>12} {'Sig':>6}")
+            results_text.append("-" * 90)
+            
+            for row in summary_data:
+                m1 = format_number(row['media_aj_1']) if isinstance(row['media_aj_1'], (int, float)) else row['media_aj_1']
+                m2 = format_number(row['media_aj_2']) if isinstance(row['media_aj_2'], (int, float)) else row['media_aj_2']
+                diff = format_number(row['diferencia']) if isinstance(row['diferencia'], (int, float)) else row['diferencia']
+                results_text.append(f"{row['comparacion']:<25} {m1:>12} {m2:>12} {diff:>12} {format_number(row['p_grupo']):>12} {row['sig']:>6}")
+            
+            results_text.append("-" * 90)
+            results_text.append("Sig: *** p<0.001, ** p<0.01, * p<0.05, ns = no significativo")
+            
+            n_sig = sum(1 for r in summary_data if r['p_grupo'] < 0.05)
+            results_text.append(f"\n→ {n_sig} de {len(summary_data)} comparaciones tienen medias ajustadas significativamente diferentes (p<0.05)")
+        
+        return "\n".join(results_text)
+
+    def _run_pairwise_chow(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta prueba de Chow para todas las combinaciones de pares de grupos.
+        """
+        from itertools import combinations
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("PRUEBA DE CHOW - COMPARACIONES PAIRWISE")
+        results_text.append(f"({len(groups)} grupos: {len(list(combinations(groups, 2)))} comparaciones)")
+        results_text.append("=" * 70)
+        
+        summary_data = []
+        
+        for g1, g2 in combinations(groups, 2):
+            pair_groups = [g1, g2]
+            text, data = self._run_chow_test(
+                df, dep_var, indep_var, group_var, pair_groups, format_number,
+                apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y
+            )
+            
+            if data and 'p_value' in data:
+                sig = "***" if data['p_value'] < 0.001 else "**" if data['p_value'] < 0.01 else "*" if data['p_value'] < 0.05 else "ns"
+                summary_data.append({
+                    'comparacion': f"{g1} vs {g2}",
+                    'n1': data.get('n1', 'NA'),
+                    'n2': data.get('n2', 'NA'),
+                    'F_stat': data.get('F_stat', 'NA'),
+                    'p_value': data['p_value'],
+                    'sig': sig
+                })
+        
+        if summary_data:
+            results_text.append("\nRESUMEN DE COMPARACIONES:")
+            results_text.append("-" * 80)
+            results_text.append(f"{'Comparación':<25} {'n(G1)':>8} {'n(G2)':>8} {'F':>12} {'p-valor':>12} {'Sig':>6}")
+            results_text.append("-" * 80)
+            
+            for row in summary_data:
+                f_stat = format_number(row['F_stat']) if isinstance(row['F_stat'], (int, float)) else row['F_stat']
+                results_text.append(f"{row['comparacion']:<25} {row['n1']:>8} {row['n2']:>8} {f_stat:>12} {format_number(row['p_value']):>12} {row['sig']:>6}")
+            
+            results_text.append("-" * 80)
+            results_text.append("Sig: *** p<0.001, ** p<0.01, * p<0.05, ns = no significativo")
+            
+            n_sig = sum(1 for r in summary_data if r['p_value'] < 0.05)
+            results_text.append(f"\n→ {n_sig} de {len(summary_data)} comparaciones requieren modelos separados (ruptura estructural, p<0.05)")
+        
+        return "\n".join(results_text)
+
+    def _run_pairwise_nls(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta comparación NLS para todas las combinaciones de pares de grupos.
+        """
+        from itertools import combinations
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("COMPARACIÓN NLS (AIC/BIC) - COMPARACIONES PAIRWISE")
+        results_text.append(f"({len(groups)} grupos: {len(list(combinations(groups, 2)))} comparaciones)")
+        results_text.append("=" * 70)
+        
+        summary_data = []
+        
+        for g1, g2 in combinations(groups, 2):
+            pair_groups = [g1, g2]
+            text, data = self._run_nls_comparison(
+                df, dep_var, indep_var, group_var, pair_groups, format_number,
+                apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y
+            )
+            
+            if data and 'best_model' in data:
+                best = data['best_model']
+                summary_data.append({
+                    'comparacion': f"{g1} vs {g2}",
+                    'mejor_modelo': best.get('model_name', 'NA'),
+                    'delta_AIC': best.get('delta_aic', 'NA'),
+                    'LRT_pval': best.get('p_value_lr', 'NA')
+                })
+        
+        if summary_data:
+            results_text.append("\nRESUMEN DE COMPARACIONES (mejor modelo por par):")
+            results_text.append("-" * 80)
+            results_text.append(f"{'Comparación':<25} {'Mejor Modelo':>20} {'ΔAIC':>12} {'p(LRT)':>12}")
+            results_text.append("-" * 80)
+            
+            for row in summary_data:
+                delta = format_number(row['delta_AIC']) if isinstance(row['delta_AIC'], (int, float)) else str(row['delta_AIC'])
+                lrt = format_number(row['LRT_pval']) if isinstance(row['LRT_pval'], (int, float)) else str(row['LRT_pval'])
+                sig = "*" if isinstance(row['LRT_pval'], (int, float)) and row['LRT_pval'] < 0.05 else ""
+                results_text.append(f"{row['comparacion']:<25} {str(row['mejor_modelo']):>20} {delta:>12} {lrt:>10}{sig}")
+            
+            results_text.append("-" * 80)
+            results_text.append("ΔAIC > 0: Modelos separados son mejores | * p(LRT) < 0.05: Diferencia significativa")
+            
+            # Contar pares que requieren modelos separados
+            n_sep = sum(1 for r in summary_data if isinstance(r['LRT_pval'], (int, float)) and r['LRT_pval'] < 0.05)
+            results_text.append(f"\n→ {n_sep} de {len(summary_data)} pares requieren modelos separados (p<0.05)")
+        
+        return "\n".join(results_text)
+
+    def _run_ancova(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta ANCOVA (Análisis de Covarianza).
+        
+        Modelo de efectos principales (asume pendientes paralelas):
+        Y = β₀ + β₁(X) + β₂(G) + ε
+        
+        Compara las medias ajustadas de Y entre grupos, controlando por la covariable X.
+        REQUISITO: Las pendientes deben ser paralelas (verificar con análisis de interacción).
+        """
+        # Nombres de variables para mostrar
+        dep_display = f"ln({dep_var})" if apply_ln_y else dep_var
+        indep_display = f"ln({indep_var})" if apply_ln_x else indep_var
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("ANCOVA (Análisis de Covarianza)")
+        results_text.append("Comparación de medias ajustadas controlando por covariable")
+        results_text.append("=" * 70)
+        results_text.append(f"\nModelo: {dep_display} = β₀ + β₁({indep_display}) + β₂({group_var})")
+        results_text.append("(Asume pendientes PARALELAS entre grupos)")
+        if apply_ln_x or apply_ln_y:
+            results_text.append(f"[Transformaciones aplicadas: {'ln(X) ' if apply_ln_x else ''}{'ln(Y)' if apply_ln_y else ''}]")
+        results_text.append("")
+        
+        try:
+            # Preparar datos
+            temp_df = df[[dep_var, indep_var, group_var]].dropna().copy()
+            
+            # Aplicar transformaciones ln
+            if apply_ln_x:
+                temp_df = temp_df[temp_df[indep_var] > 0]
+                temp_df[indep_var] = np.log(temp_df[indep_var])
+            if apply_ln_y:
+                temp_df = temp_df[temp_df[dep_var] > 0]
+                temp_df[dep_var] = np.log(temp_df[dep_var])
+            
+            if len(groups) != 2:
+                results_text.append(f"⚠ Se requieren exactamente 2 grupos para este análisis.")
+                results_text.append(f"  Grupos recibidos: {groups}")
+                return "\n".join(results_text), None
+            
+            # Filtrar solo los grupos seleccionados
+            temp_df = temp_df[temp_df[group_var].astype(str).isin([str(g) for g in groups])]
+            
+            results_text.append(f"Grupos comparados: {groups[0]} vs {groups[1]}")
+            
+            if temp_df.shape[0] < 10:
+                results_text.append(f"⚠ Datos insuficientes para el análisis (n={temp_df.shape[0]})")
+                return "\n".join(results_text), None
+            
+            # Crear variable dummy para el grupo
+            ref_group = str(groups[0])
+            other_group = str(groups[1]) if len(groups) > 1 else None
+            
+            temp_df['G'] = (temp_df[group_var].astype(str) == str(other_group)).astype(int)
+            
+            X = temp_df[indep_var].values
+            Y = temp_df[dep_var].values
+            G = temp_df['G'].values
+            
+            # Modelo ANCOVA (sin interacción): [1, X, G]
+            design_matrix = sm.add_constant(np.column_stack([X, G]))
+            model = sm.OLS(Y, design_matrix).fit()
+            
+            beta0, beta1, beta2 = model.params
+            pvals = model.pvalues
+            conf_int = model.conf_int()
+            
+            # Calcular medias ajustadas
+            X_mean = X.mean()
+            adjusted_mean_ref = beta0 + beta1 * X_mean
+            adjusted_mean_other = beta0 + beta1 * X_mean + beta2
+            
+            # Medias crudas para comparación
+            raw_mean_ref = temp_df[temp_df['G'] == 0][dep_var].mean()
+            raw_mean_other = temp_df[temp_df['G'] == 1][dep_var].mean()
+            
+            n_ref = (temp_df['G'] == 0).sum()
+            n_other = (temp_df['G'] == 1).sum()
+            
+            results_text.append(f"Grupo de referencia: {ref_group} (n={n_ref})")
+            results_text.append(f"Grupo de comparación: {other_group} (n={n_other})")
+            results_text.append(f"Covariable ({indep_var}) media: {format_number(X_mean)}")
+            results_text.append("")
+            
+            # Resultados del modelo
+            results_text.append("COEFICIENTES DEL MODELO ANCOVA:")
+            results_text.append("-" * 50)
+            results_text.append(f"{'Término':<25} {'Coef':>10} {'IC 95%':>20} {'p-valor':>12}")
+            results_text.append("-" * 50)
+            
+            terms = [
+                ("β₀ (Intercepto)", beta0, conf_int[0], pvals[0]),
+                (f"β₁ ({indep_var})", beta1, conf_int[1], pvals[1]),
+                (f"β₂ ({group_var})", beta2, conf_int[2], pvals[2])
+            ]
+            
+            for name, coef, ci, pval in terms:
+                sig = "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
+                ci_str = f"[{format_number(ci[0])}, {format_number(ci[1])}]"
+                results_text.append(f"{name:<25} {format_number(coef):>10} {ci_str:>20} {format_number(pval):>10} {sig}")
+            
+            results_text.append("-" * 50)
+            results_text.append(f"R² = {format_number(model.rsquared)}  |  R² ajustado = {format_number(model.rsquared_adj)}")
+            results_text.append(f"F = {format_number(model.fvalue)}  |  p(F) = {format_number(model.f_pvalue)}")
+            results_text.append("")
+            
+            # Medias ajustadas vs crudas
+            results_text.append("COMPARACIÓN DE MEDIAS:")
+            results_text.append("-" * 50)
+            results_text.append(f"{'Grupo':<20} {'Media Cruda':>15} {'Media Ajustada':>15}")
+            results_text.append("-" * 50)
+            results_text.append(f"{ref_group:<20} {format_number(raw_mean_ref):>15} {format_number(adjusted_mean_ref):>15}")
+            results_text.append(f"{other_group:<20} {format_number(raw_mean_other):>15} {format_number(adjusted_mean_other):>15}")
+            results_text.append("-" * 50)
+            results_text.append(f"{'Diferencia':<20} {format_number(raw_mean_other - raw_mean_ref):>15} {format_number(beta2):>15}")
+            results_text.append("")
+            
+            # Interpretación
+            results_text.append("INTERPRETACIÓN:")
+            results_text.append("-" * 50)
+            results_text.append(f"• Pendiente común: {format_number(beta1)} (asumiendo líneas paralelas)")
+            results_text.append(f"• Por cada unidad de {indep_var}, {dep_var} cambia {format_number(beta1)} unidades")
+            results_text.append("")
+            
+            if pvals[2] < 0.05:
+                results_text.append(f"✓ La diferencia entre grupos ES SIGNIFICATIVA (p = {format_number(pvals[2])})")
+                results_text.append(f"  → Controlando por {indep_var}:")
+                if beta2 < 0:
+                    results_text.append(f"     {other_group} tiene valores de {dep_var} {format_number(abs(beta2))} unidades MENORES")
+                else:
+                    results_text.append(f"     {other_group} tiene valores de {dep_var} {format_number(abs(beta2))} unidades MAYORES")
+                results_text.append(f"  → Si todos los sujetos tuvieran el mismo nivel de {indep_var},")
+                results_text.append(f"     la diferencia en {dep_var} entre grupos sería {format_number(abs(beta2))} unidades.")
+            else:
+                results_text.append(f"✗ La diferencia entre grupos NO es significativa (p = {format_number(pvals[2])})")
+                results_text.append(f"  → Después de controlar por {indep_var}, no hay diferencia significativa")
+                results_text.append(f"     en {dep_var} entre los grupos.")
+            
+            results_text.append("")
+            results_text.append("NOTA: Este análisis asume que las pendientes son paralelas.")
+            results_text.append("      Verifique con el análisis de interacción que β₃ ≈ 0.")
+            results_text.append("=" * 70)
+            
+            return "\n".join(results_text), {
+                'model': model,
+                'adj_mean_ref': adjusted_mean_ref,
+                'adj_mean_other': adjusted_mean_other,
+                'diff_adj_means': beta2,
+                'group_pval': pvals[2]
+            }
+            
+        except Exception as e:
+            results_text.append(f"Error en ANCOVA: {e}")
+            import traceback
+            results_text.append(traceback.format_exc())
+            return "\n".join(results_text), None
+
+    def _run_chow_test(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Ejecuta la Prueba de Chow para detectar ruptura estructural.
+        
+        Compara la bondad de ajuste de:
+        - Un modelo combinado (pooled) con todos los datos
+        - Dos modelos separados, uno por cada grupo
+        
+        Estadístico F:
+        F = [(RSS_pool - (RSS_1 + RSS_2)) / k] / [(RSS_1 + RSS_2) / (N₁ + N₂ - 2k)]
+        
+        Donde k = número de parámetros (2 para regresión lineal simple)
+        """
+        # Nombres de variables para mostrar
+        dep_display = f"ln({dep_var})" if apply_ln_y else dep_var
+        indep_display = f"ln({indep_var})" if apply_ln_x else indep_var
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("PRUEBA DE CHOW (Ruptura Estructural)")
+        results_text.append("¿Son necesarios modelos separados para cada grupo?")
+        results_text.append("=" * 70)
+        if apply_ln_x or apply_ln_y:
+            results_text.append(f"[Transformaciones aplicadas: {'ln(X) ' if apply_ln_x else ''}{'ln(Y)' if apply_ln_y else ''}]")
+        results_text.append("")
+        
+        try:
+            # Preparar datos
+            temp_df = df[[dep_var, indep_var, group_var]].dropna().copy()
+            
+            # Aplicar transformaciones ln
+            if apply_ln_x:
+                temp_df = temp_df[temp_df[indep_var] > 0]
+                temp_df[indep_var] = np.log(temp_df[indep_var])
+            if apply_ln_y:
+                temp_df = temp_df[temp_df[dep_var] > 0]
+                temp_df[dep_var] = np.log(temp_df[dep_var])
+            
+            if len(groups) != 2:
+                results_text.append(f"⚠ Se requieren exactamente 2 grupos para este análisis.")
+                results_text.append(f"  Grupos recibidos: {groups}")
+                return "\n".join(results_text), None
+            
+            # Filtrar solo los grupos seleccionados
+            temp_df = temp_df[temp_df[group_var].astype(str).isin([str(g) for g in groups])]
+            
+            results_text.append(f"Grupos comparados: {groups[0]} vs {groups[1]}")
+            
+            group1_name = str(groups[0])
+            group2_name = str(groups[1]) if len(groups) > 1 else None
+            
+            df1 = temp_df[temp_df[group_var].astype(str) == group1_name]
+            df2 = temp_df[temp_df[group_var].astype(str) == group2_name]
+            
+            n1 = len(df1)
+            n2 = len(df2)
+            k = 2  # Número de parámetros (intercepto + pendiente)
+            
+            if n1 < k + 1 or n2 < k + 1:
+                results_text.append(f"⚠ Datos insuficientes (n1={n1}, n2={n2}, k={k})")
+                return "\n".join(results_text), None
+            
+            results_text.append(f"Grupo 1: {group1_name} (n={n1})")
+            results_text.append(f"Grupo 2: {group2_name} (n={n2})")
+            results_text.append(f"Total: n={n1 + n2}")
+            results_text.append(f"Parámetros por modelo: k={k}")
+            results_text.append("")
+            
+            # Modelo combinado (pooled)
+            X_pool = sm.add_constant(temp_df[indep_var].values)
+            Y_pool = temp_df[dep_var].values
+            model_pool = sm.OLS(Y_pool, X_pool).fit()
+            RSS_pool = model_pool.ssr  # Sum of Squared Residuals
+            
+            # Modelo para grupo 1
+            X1 = sm.add_constant(df1[indep_var].values)
+            Y1 = df1[dep_var].values
+            model1 = sm.OLS(Y1, X1).fit()
+            RSS1 = model1.ssr
+            
+            # Modelo para grupo 2
+            X2 = sm.add_constant(df2[indep_var].values)
+            Y2 = df2[dep_var].values
+            model2 = sm.OLS(Y2, X2).fit()
+            RSS2 = model2.ssr
+            
+            # Calcular estadístico F de Chow
+            numerator = (RSS_pool - (RSS1 + RSS2)) / k
+            denominator = (RSS1 + RSS2) / (n1 + n2 - 2 * k)
+            F_chow = numerator / denominator
+            
+            # Calcular p-valor
+            df_num = k
+            df_denom = n1 + n2 - 2 * k
+            p_value = 1 - stats.f.cdf(F_chow, df_num, df_denom)
+            
+            # Resultados de los modelos
+            results_text.append("MODELOS DE REGRESIÓN:")
+            results_text.append("-" * 60)
+            
+            # Modelo pooled
+            results_text.append(f"\n1. MODELO COMBINADO (todos los datos):")
+            results_text.append(f"   {dep_var} = {format_number(model_pool.params[0])} + {format_number(model_pool.params[1])}·{indep_var}")
+            results_text.append(f"   R² = {format_number(model_pool.rsquared)}")
+            results_text.append(f"   RSS_pool = {format_number(RSS_pool)}")
+            
+            # Modelo grupo 1
+            results_text.append(f"\n2. MODELO {group1_name}:")
+            results_text.append(f"   {dep_var} = {format_number(model1.params[0])} + {format_number(model1.params[1])}·{indep_var}")
+            results_text.append(f"   R² = {format_number(model1.rsquared)}")
+            results_text.append(f"   RSS_1 = {format_number(RSS1)}")
+            
+            # Modelo grupo 2
+            results_text.append(f"\n3. MODELO {group2_name}:")
+            results_text.append(f"   {dep_var} = {format_number(model2.params[0])} + {format_number(model2.params[1])}·{indep_var}")
+            results_text.append(f"   R² = {format_number(model2.rsquared)}")
+            results_text.append(f"   RSS_2 = {format_number(RSS2)}")
+            
+            results_text.append("")
+            results_text.append("-" * 60)
+            results_text.append("PRUEBA DE CHOW:")
+            results_text.append("-" * 60)
+            results_text.append(f"RSS_pool = {format_number(RSS_pool)}")
+            results_text.append(f"RSS_1 + RSS_2 = {format_number(RSS1 + RSS2)}")
+            results_text.append(f"Reducción en RSS = {format_number(RSS_pool - (RSS1 + RSS2))}")
+            results_text.append("")
+            results_text.append(f"F = [(RSS_pool - (RSS_1+RSS_2))/k] / [(RSS_1+RSS_2)/(N-2k)]")
+            results_text.append(f"F = [{format_number(RSS_pool - (RSS1 + RSS2))}/{k}] / [{format_number(RSS1 + RSS2)}/{df_denom}]")
+            results_text.append(f"F = {format_number(numerator)} / {format_number(denominator)}")
+            results_text.append(f"F = {format_number(F_chow)}")
+            results_text.append(f"Grados de libertad: ({df_num}, {df_denom})")
+            results_text.append(f"p-valor = {format_number(p_value)}")
+            
+            sig = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+            results_text.append(f"Significancia: {sig}" if sig else "No significativo")
+            results_text.append("")
+            
+            # Interpretación
+            results_text.append("INTERPRETACIÓN:")
+            results_text.append("-" * 60)
+            
+            if p_value < 0.05:
+                results_text.append(f"✓ HAY RUPTURA ESTRUCTURAL (p = {format_number(p_value)})")
+                results_text.append(f"  → Los datos de {group1_name} y {group2_name} NO pueden explicarse")
+                results_text.append(f"     con la misma ecuación de regresión.")
+                results_text.append(f"  → Se recomienda usar MODELOS SEPARADOS para cada grupo.")
+                results_text.append(f"  → La diferencia puede ser en:")
+                results_text.append(f"     • La pendiente (tasa de cambio)")
+                results_text.append(f"     • El intercepto (nivel base)")
+                results_text.append(f"     • Ambos")
+                results_text.append("")
+                results_text.append("  Use el análisis de INTERACCIÓN para determinar")
+                results_text.append("  si la diferencia está en las pendientes.")
+            else:
+                results_text.append(f"✗ NO hay ruptura estructural (p = {format_number(p_value)})")
+                results_text.append(f"  → Un modelo combinado es suficiente para ambos grupos.")
+                results_text.append(f"  → La relación entre {indep_var} y {dep_var} es similar")
+                results_text.append(f"     en {group1_name} y {group2_name}.")
+            
+            results_text.append("")
+            results_text.append("=" * 70)
+            
+            return "\n".join(results_text), {
+                'F_stat': F_chow,
+                'p_value': p_value,
+                'n1': n1,
+                'n2': n2,
+                'RSS_pool': RSS_pool,
+                'RSS1': RSS1,
+                'RSS2': RSS2,
+                'model_pool': model_pool,
+                'model1': model1,
+                'model2': model2
+            }
+            
+        except Exception as e:
+            results_text.append(f"Error en Prueba de Chow: {e}")
+            import traceback
+            results_text.append(traceback.format_exc())
+            return "\n".join(results_text), None
+
+    def _run_nls_comparison(self, df, dep_var, indep_var, group_var, groups, format_number, apply_ln_x=False, apply_ln_y=False):
+        """
+        Comparación de modelos de Regresión No Lineal (NLS).
+        
+        Compara múltiples modelos no lineales entre grupos usando:
+        - AIC (Akaike Information Criterion)
+        - BIC (Bayesian Information Criterion)
+        - Likelihood Ratio Test aproximado
+        
+        Modelos soportados:
+        - Potencia: Y = a · X^b
+        - Exponencial: Y = a · e^(b·X)
+        - Logarítmico: Y = a + b·ln(X)
+        - Sigmoide: Y = L / (1 + e^(-k·(X-x0))) + c
+        """
+        from scipy.optimize import curve_fit
+        
+        # Nombres de variables para mostrar
+        dep_display = f"ln({dep_var})" if apply_ln_y else dep_var
+        indep_display = f"ln({indep_var})" if apply_ln_x else indep_var
+        
+        results_text = []
+        results_text.append("\n" + "=" * 70)
+        results_text.append("COMPARACIÓN DE MODELOS NO LINEALES (NLS)")
+        results_text.append("AIC, BIC y Likelihood Ratio Test")
+        results_text.append("=" * 70)
+        if apply_ln_x or apply_ln_y:
+            results_text.append(f"[Transformaciones aplicadas: {'ln(X) ' if apply_ln_x else ''}{'ln(Y)' if apply_ln_y else ''}]")
+        results_text.append("")
+        
+        # Definir modelos no lineales
+        def power_model(x, a, b):
+            """Y = a · X^b"""
+            return a * np.power(x, b)
+        
+        def exp_model(x, a, b):
+            """Y = a · e^(b·X)"""
+            return a * np.exp(b * x)
+        
+        def log_model(x, a, b):
+            """Y = a + b·ln(X)"""
+            return a + b * np.log(x)
+        
+        def sigmoid_model(x, L, k, x0, c):
+            """Y = L / (1 + e^(-k·(X-x0))) + c"""
+            return L / (1 + np.exp(-k * (x - x0))) + c
+        
+        def exp_decay_model(x, a, b):
+            """Y = a · e^(-b·X)"""
+            return a * np.exp(-b * x)
+        
+        # Lista de modelos a probar (ajustar según transformaciones)
+        # Si ya transformamos ln, algunos modelos cambian su interpretación
+        models_config = [
+            ("Potencia (Y=a·X^b)", power_model, [100.0, -1.0], 2, True, False),  # (nombre, func, p0, k, need_pos_x, need_pos_y)
+            ("Exponencial (Y=a·e^(bX))", exp_model, [50.0, -0.05], 2, False, True),
+            ("Logarítmico (Y=a+b·ln(X))", log_model, [50.0, -10.0], 2, True, False),
+            ("Exp Decreciente (Y=a·e^(-bX))", exp_decay_model, [100.0, 0.05], 2, False, True),
+        ]
+        
+        try:
+            # Preparar datos
+            temp_df = df[[dep_var, indep_var, group_var]].dropna().copy()
+            
+            # Aplicar transformaciones ln ANTES de ajustar modelos
+            if apply_ln_x:
+                temp_df = temp_df[temp_df[indep_var] > 0]
+                temp_df[indep_var] = np.log(temp_df[indep_var])
+            if apply_ln_y:
+                temp_df = temp_df[temp_df[dep_var] > 0]
+                temp_df[dep_var] = np.log(temp_df[dep_var])
+            
+            if len(groups) != 2:
+                results_text.append(f"⚠ Se requieren exactamente 2 grupos para este análisis.")
+                results_text.append(f"  Grupos recibidos: {groups}")
+                return "\n".join(results_text), None
+            
+            # Filtrar solo los grupos seleccionados
+            temp_df = temp_df[temp_df[group_var].astype(str).isin([str(g) for g in groups])]
+            
+            results_text.append(f"Grupos comparados: {groups[0]} vs {groups[1]}")
+            
+            group1_name = str(groups[0])
+            group2_name = str(groups[1]) if len(groups) > 1 else None
+            
+            df1 = temp_df[temp_df[group_var].astype(str) == group1_name]
+            df2 = temp_df[temp_df[group_var].astype(str) == group2_name]
+            
+            n1_orig = len(df1)
+            n2_orig = len(df2)
+            
+            results_text.append(f"Grupo 1: {group1_name} (n={n1_orig})")
+            results_text.append(f"Grupo 2: {group2_name} (n={n2_orig})")
+            results_text.append("")
+            
+            # Función para calcular AIC y BIC
+            def calc_aic_bic(y_true, y_pred, k, n):
+                """Calcula AIC y BIC dado los residuos"""
+                rss = np.sum((y_true - y_pred) ** 2)
+                if rss <= 0 or n <= k:
+                    return np.inf, np.inf, -np.inf, rss
+                sigma2 = rss / n
+                ll = -n/2 * np.log(2*np.pi) - n/2 * np.log(sigma2) - rss/(2*sigma2)
+                aic = 2*k - 2*ll
+                bic = k*np.log(n) - 2*ll
+                return aic, bic, ll, rss
+            
+            # Tabla de resultados
+            all_model_results = []
+            
+            for model_name, model_func, p0, k, need_pos_x, need_pos_y in models_config:
+                try:
+                    # Filtrar datos según requerimientos del modelo
+                    df1_filt = df1.copy()
+                    df2_filt = df2.copy()
+                    temp_df_filt = temp_df.copy()
+                    
+                    if need_pos_x:
+                        df1_filt = df1_filt[df1_filt[indep_var] > 0]
+                        df2_filt = df2_filt[df2_filt[indep_var] > 0]
+                        temp_df_filt = temp_df_filt[temp_df_filt[indep_var] > 0]
+                    if need_pos_y:
+                        df1_filt = df1_filt[df1_filt[dep_var] > 0]
+                        df2_filt = df2_filt[df2_filt[dep_var] > 0]
+                        temp_df_filt = temp_df_filt[temp_df_filt[dep_var] > 0]
+                    
+                    x1, y1 = df1_filt[indep_var].values, df1_filt[dep_var].values
+                    x2, y2 = df2_filt[indep_var].values, df2_filt[dep_var].values
+                    x_pool = temp_df_filt[indep_var].values
+                    y_pool = temp_df_filt[dep_var].values
+                    
+                    n1, n2 = len(x1), len(x2)
+                    n_pool = len(x_pool)
+                    
+                    if n1 < k + 2 or n2 < k + 2:
+                        continue
+                    
+                    # Ajustar modelo combinado
+                    try:
+                        popt_pool, _ = curve_fit(model_func, x_pool, y_pool, p0=p0, maxfev=10000)
+                        y_pred_pool = model_func(x_pool, *popt_pool)
+                        aic_pool, bic_pool, ll_pool, rss_pool = calc_aic_bic(y_pool, y_pred_pool, k, n_pool)
+                    except:
+                        continue
+                    
+                    # Ajustar modelo grupo 1
+                    try:
+                        popt1, _ = curve_fit(model_func, x1, y1, p0=p0, maxfev=10000)
+                        y_pred1 = model_func(x1, *popt1)
+                        aic1, bic1, ll1, rss1 = calc_aic_bic(y1, y_pred1, k, n1)
+                        ss_tot1 = np.sum((y1 - np.mean(y1)) ** 2)
+                        r2_1 = 1 - rss1/ss_tot1 if ss_tot1 > 0 else 0
+                    except:
+                        continue
+                    
+                    # Ajustar modelo grupo 2
+                    try:
+                        popt2, _ = curve_fit(model_func, x2, y2, p0=p0, maxfev=10000)
+                        y_pred2 = model_func(x2, *popt2)
+                        aic2, bic2, ll2, rss2 = calc_aic_bic(y2, y_pred2, k, n2)
+                        ss_tot2 = np.sum((y2 - np.mean(y2)) ** 2)
+                        r2_2 = 1 - rss2/ss_tot2 if ss_tot2 > 0 else 0
+                    except:
+                        continue
+                    
+                    # Calcular métricas combinadas
+                    ll_sep = ll1 + ll2
+                    aic_sep = aic1 + aic2
+                    bic_sep = bic1 + bic2
+                    
+                    # Likelihood Ratio Test
+                    lr_stat = 2 * (ll_sep - ll_pool)
+                    p_value_lr = 1 - stats.chi2.cdf(lr_stat, k) if lr_stat > 0 else 1.0
+                    
+                    delta_aic = aic_pool - aic_sep
+                    delta_bic = bic_pool - bic_sep
+                    
+                    all_model_results.append({
+                        'model_name': model_name,
+                        'popt_pool': popt_pool,
+                        'popt1': popt1, 'popt2': popt2,
+                        'r2_1': r2_1, 'r2_2': r2_2,
+                        'aic_pool': aic_pool, 'aic_sep': aic_sep,
+                        'bic_pool': bic_pool, 'bic_sep': bic_sep,
+                        'delta_aic': delta_aic, 'delta_bic': delta_bic,
+                        'lr_stat': lr_stat, 'p_value_lr': p_value_lr,
+                        'n1': n1, 'n2': n2, 'k': k
+                    })
+                    
+                except Exception as e:
+                    self.log_message(f"Error en modelo {model_name}: {e}", "WARN")
+                    continue
+            
+            if not all_model_results:
+                results_text.append("⚠ No se pudo ajustar ningún modelo no lineal.")
+                return "\n".join(results_text), None
+            
+            # Mostrar tabla resumen de todos los modelos
+            results_text.append("=" * 70)
+            results_text.append("RESUMEN: COMPARACIÓN DE MODELOS POR GRUPO")
+            results_text.append("=" * 70)
+            results_text.append("")
+            results_text.append(f"{'Modelo':<30} {'AIC comb':>10} {'AIC sep':>10} {'ΔAIC':>8} {'p(LRT)':>10} {'Mejor':>8}")
+            results_text.append("-" * 76)
+            
+            for res in all_model_results:
+                mejor = "Separados" if res['delta_aic'] > 2 else "Combinado"
+                sig = "*" if res['p_value_lr'] < 0.05 else ""
+                results_text.append(
+                    f"{res['model_name']:<30} {res['aic_pool']:>10.1f} {res['aic_sep']:>10.1f} "
+                    f"{res['delta_aic']:>+8.1f} {res['p_value_lr']:>9.4f}{sig} {mejor:>8}"
+                )
+            
+            results_text.append("-" * 76)
+            results_text.append("ΔAIC > 0: Modelos separados son mejores | p(LRT) < 0.05*: Diferencia significativa")
+            results_text.append("")
+            
+            # Detalles por modelo
+            results_text.append("=" * 70)
+            results_text.append("DETALLE DE PARÁMETROS POR MODELO")
+            results_text.append("=" * 70)
+            
+            for res in all_model_results:
+                results_text.append(f"\n--- {res['model_name']} ---")
+                results_text.append(f"  Combinado: parámetros = {[format_number(p) for p in res['popt_pool']]}")
+                results_text.append(f"  {group1_name}: parámetros = {[format_number(p) for p in res['popt1']]}, R² = {format_number(res['r2_1'])}")
+                results_text.append(f"  {group2_name}: parámetros = {[format_number(p) for p in res['popt2']]}, R² = {format_number(res['r2_2'])}")
+                
+                # Interpretación específica
+                if res['p_value_lr'] < 0.05:
+                    results_text.append(f"  ✓ Diferencia SIGNIFICATIVA (p = {format_number(res['p_value_lr'])})")
+                else:
+                    results_text.append(f"  ✗ Sin diferencia significativa (p = {format_number(res['p_value_lr'])})")
+            
+            # Mejor modelo global (menor AIC combinado)
+            results_text.append("")
+            results_text.append("=" * 70)
+            results_text.append("RECOMENDACIÓN")
+            results_text.append("=" * 70)
+            
+            best_model = min(all_model_results, key=lambda x: x['aic_pool'])
+            results_text.append(f"\nMejor modelo (menor AIC combinado): {best_model['model_name']}")
+            results_text.append(f"  AIC = {format_number(best_model['aic_pool'])}")
+            
+            # Verificar si hay diferencia significativa en ese modelo
+            if best_model['p_value_lr'] < 0.05:
+                results_text.append(f"\n  → Se recomienda usar MODELOS SEPARADOS por grupo")
+                results_text.append(f"     (LRT p = {format_number(best_model['p_value_lr'])})")
+            else:
+                results_text.append(f"\n  → Un modelo COMBINADO puede ser suficiente")
+                results_text.append(f"     (LRT p = {format_number(best_model['p_value_lr'])})")
+            
+            results_text.append("")
+            results_text.append("=" * 70)
+            
+            return "\n".join(results_text), {
+                'all_results': all_model_results,
+                'best_model': best_model
+            }
+            
+        except Exception as e:
+            results_text.append(f"Error en comparación NLS: {e}")
+            import traceback
+            results_text.append(traceback.format_exc())
+            return "\n".join(results_text), None
 
     def rename_variable(self):
         selected_indices = self.listbox_indep_vars_spec.curselection()
@@ -954,6 +2182,26 @@ class RegresionesTab(ttk.Frame):
         print(f"[RegresionesTab - {level.upper()}] {msg}")
         sys.stdout.flush() # Asegurar que se imprima inmediatamente
 
+    def _apply_custom_labels_to_series(self, series, labels_string):
+        if not labels_string:
+            return series
+        
+        mapping = {}
+        for pair in labels_string.split(","):
+            if ":" in pair:
+                original, label = pair.split(":", 1)
+                try:
+                    # Try to convert original to numeric if the series is numeric
+                    if pd.api.types.is_numeric_dtype(series):
+                        mapping[float(original.strip())] = label.strip()
+                    else:
+                        mapping[original.strip()] = label.strip()
+                except ValueError:
+                    mapping[original.strip()] = label.strip()
+        
+        # Apply mapping. Use .get() with default to keep original if no mapping found
+        return series.apply(lambda x: mapping.get(x, x))
+
     def load_data(self):
         file_path = filedialog.askopenfilename(title="Selecciona archivo Excel",
                                                filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")])
@@ -1009,29 +2257,16 @@ class RegresionesTab(ttk.Frame):
                                          f"Detalle: {e_filter_comp_other}")
 
             # Actualizar selectores de variables de regresión
-            self.combo_dep_var_spec['values'] = num_cols
+            self.listbox_dep_vars_spec.delete(0, tk.END)
+            for col in num_cols:
+                self.listbox_dep_vars_spec.insert(tk.END, col)
             if num_cols:
-                self.combo_dep_var_spec.set(num_cols[0])
-            else:
-                self.combo_dep_var_spec.set("")
-            # self.entry_dep_var_spec.delete(0, tk.END) # Replaced by Combobox logic
-            # if num_cols: # Replaced by Combobox logic
-            # self.entry_dep_var_spec.insert(0, num_cols[0]) # Replaced by Combobox logic
-            
-            # self.text_indep_vars_spec.delete("1.0", tk.END) # Replaced by Listbox logic
-            # if num_cols: # Replaced by Listbox logic
-                # for col in num_cols: # Replaced by Listbox logic
-                    # self.text_indep_vars_spec.insert(tk.END, col + "\n") # Replaced by Listbox logic
+                self.listbox_dep_vars_spec.selection_set(0) # Select the first item by default
 
             self.listbox_indep_vars_spec.delete(0, tk.END)
-            selected_dep_var = self.combo_dep_var_spec.get()
-            # Populate independent variables listbox, excluding the selected dependent variable
-            # Using all_cols from earlier in the load_data method
-            available_indep_vars = [col for col in all_cols if col != selected_dep_var]
-            for var_name in available_indep_vars:
-                self.listbox_indep_vars_spec.insert(tk.END, var_name)
+            # Call _update_indep_vars_listbox to populate it based on initial dep var selection
+            self._update_indep_vars_listbox()
             
-            self._update_indep_vars_listbox() # Ensure list is correctly populated initially
             self.log_message("Datos cargados. Configure variables y filtros.")
         except Exception as e:
             self.log_message(f"Error al cargar datos: {e}")
@@ -1041,59 +2276,71 @@ class RegresionesTab(ttk.Frame):
                                  f"Ocurrió un error detallado al intentar cargar el archivo:\n\n{e}\n\nConsulte la consola para ver el traceback completo si es necesario.")
             self.data = None
             self.lbl_file.config(text="Ningún archivo cargado.")
-            self.combo_dep_var_spec['values'] = []
-            self.combo_dep_var_spec.set("")
-            # self.entry_dep_var_spec.delete(0, tk.END) # Replaced by Combobox logic
+            self.listbox_dep_vars_spec.delete(0, tk.END) # Clear the listbox
             self.listbox_indep_vars_spec.delete(0, tk.END)
             # Limpiar componente de filtro en caso de error
             if hasattr(self, 'filter_component') and self.filter_component:
                 self.filter_component.set_dataframe(None)
 
-    def _update_indep_vars_listbox(self, event=None):
+    def _update_indep_vars_listbox(self, event=None, current_indep_vars=None):
         if not hasattr(self, 'data') or self.data is None:
             return
 
-        selected_dep_var = self.combo_dep_var_spec.get()
-        current_indep_selection_indices = self.listbox_indep_vars_spec.curselection()
-        current_indep_selected_values = [self.listbox_indep_vars_spec.get(i) for i in current_indep_selection_indices]
+        # Get all currently selected dependent variables
+        selected_dep_indices = self.listbox_dep_vars_spec.curselection()
+        selected_dep_vars = {self.listbox_dep_vars_spec.get(i) for i in selected_dep_indices}
+
+        # If current_indep_vars is not provided (e.g., called from event), get current selection
+        if current_indep_vars is None:
+            current_indep_selection_indices = self.listbox_indep_vars_spec.curselection()
+            current_indep_vars = {self.listbox_indep_vars_spec.get(i) for i in current_indep_selection_indices}
 
         self.listbox_indep_vars_spec.delete(0, tk.END)
 
-        all_cols = list(self.data.columns)
-        available_indep_vars = [col for col in all_cols if col != selected_dep_var]
+        numeric_cols = list(self.data.select_dtypes(include=[np.number]).columns)
+        # Independent variables should not include any selected dependent variables
+        available_indep_vars = [col for col in numeric_cols if col not in selected_dep_vars]
 
-        for var_name in available_indep_vars:
+        for idx, var_name in enumerate(available_indep_vars):
             self.listbox_indep_vars_spec.insert(tk.END, var_name)
-            if var_name in current_indep_selected_values:
-                # Try to reselect previously selected items if they are still valid
-                try:
-                    idx = available_indep_vars.index(var_name) # Get new index in the (potentially) changed list
-                    self.listbox_indep_vars_spec.selection_set(idx)
-                except ValueError: # Should not happen if var_name is in available_indep_vars
-                    pass
+            if var_name in current_indep_vars:
+                self.listbox_indep_vars_spec.selection_set(idx)
+        if not current_indep_vars and available_indep_vars:
+            self.listbox_indep_vars_spec.selection_set(0)
 
     # Se eliminan apply_filter_criteria y apply_filter_qual
 
     def _get_filtered_data_for_regression(self):
-        """Obtiene los datos filtrados usando el FilterComponent."""
+        """Obtiene los datos filtrados. Usa primero los filtros del Archivo de Trabajo,
+        luego aplica filtros adicionales del FilterComponent si existe."""
         if self.data is None:
             self.log_message("Error: No hay datos cargados.")
             return None
 
-        df_filtered = None
+        # Paso 1: Usar datos filtrados del Archivo de Trabajo si existen
+        if hasattr(self, 'filtered_data') and self.filtered_data is not None:
+            df_filtered = self.filtered_data.copy()
+            if hasattr(self, 'shared_filter_summary') and self.shared_filter_summary:
+                self.log_message(f"Usando datos del Archivo de Trabajo: {df_filtered.shape[0]} filas (filtros: {len(self.shared_filter_summary)})")
+            else:
+                self.log_message(f"Usando datos del Archivo de Trabajo: {df_filtered.shape[0]} filas.")
+        else:
+            df_filtered = self.data.copy()
+            self.log_message("Usando datos originales (sin filtros del Archivo de Trabajo).")
+
+        # Paso 2: Aplicar filtros adicionales del FilterComponent si existe
         if hasattr(self, 'filter_component') and self.filter_component:
+            # El FilterComponent debe trabajar sobre los datos ya filtrados
+            self.filter_component.set_dataframe(df_filtered)
             df_filtered = self.filter_component.apply_filters()
             if df_filtered is None:
-                self.log_message("Error al aplicar filtros.")
-                return None # El componente ya mostró el error
-            self.log_message(f"Datos filtrados: {df_filtered.shape[0]} filas.")
-        else:
-            df_filtered = self.data.copy() # Usar original si no hay filtro
-            self.log_message("Usando datos originales (sin filtros).")
+                self.log_message("Error al aplicar filtros adicionales.")
+                return None
+            self.log_message(f"Después de filtros adicionales: {df_filtered.shape[0]} filas.")
 
         if df_filtered.empty:
             self.log_message("No hay datos después de aplicar filtros.")
-            return pd.DataFrame() # Devolver DF vacío en lugar de None
+            return pd.DataFrame()
 
         return df_filtered
 
@@ -1131,378 +2378,1236 @@ class RegresionesTab(ttk.Frame):
              self.log_message("Advertencia: Ninguna variable válida para regresión fue procesada.")
         return parsed_vars
 
-    def plot_regression(self):
-        self.log_message("Iniciando plot_regression...", "DEBUG")
+    @staticmethod
+    def get_p_values_from_curve_fit(popt, pcov, n):
+        p = len(popt)
+        dof = max(0, n - p)
+        
+        if np.isinf(pcov).any():
+            return [np.nan] * p
+
+        perr = np.sqrt(np.diag(pcov))
+        t_stats = popt / perr
+        p_values = [2 * stats.t.sf(np.abs(t), dof) for t in t_stats]
+        return p_values
+
+    def calculate_and_show_correlations(self):
+        self.log_message("Iniciando calculate_and_show_correlations...", "DEBUG")
         if self.data is None:
-            self.log_message("plot_regression: No hay datos cargados. Retornando.", "WARN")
+            self.log_message("calculate_and_show_correlations: No hay datos cargados. Retornando.", "WARN")
+            messagebox.showwarning("Sin datos", "No hay datos cargados en la pestaña Regresiones.", parent=self)
             return
 
         df_f = self._get_filtered_data_for_regression()
-        if df_f is None: # _get_filtered_data_for_regression ya loguea el error
+        if df_f is None:
+            self.log_message("calculate_and_show_correlations: _get_filtered_data_for_regression devolvió None. Retornando.", "ERROR")
+            messagebox.showerror("Error de filtros", "No se pudieron obtener datos filtrados para Regresiones.", parent=self)
+            return
+        if df_f.empty:
+            self.log_message("calculate_and_show_correlations: No hay datos después de aplicar filtros. Retornando.", "WARN")
+            messagebox.showwarning("Sin datos", "No hay datos disponibles después de aplicar filtros en Regresiones.", parent=self)
+            return
+
+        selected_dep_indices = self.listbox_dep_vars_spec.curselection()
+        selected_dep_vars_names = [self.listbox_dep_vars_spec.get(i) for i in selected_dep_indices]
+        if not selected_dep_vars_names:
+            messagebox.showwarning("Advertencia", "Por favor, seleccione al menos una variable dependiente.", parent=self)
+            return
+
+        selected_indep_indices = self.listbox_indep_vars_spec.curselection()
+        selected_indep_vars_names = [self.listbox_indep_vars_spec.get(i) for i in selected_indep_indices]
+        if not selected_indep_vars_names:
+            messagebox.showwarning("Advertencia", "Por favor, seleccione al menos una variable independiente.", parent=self)
+            return
+
+        all_results = []
+
+        for dep_var in selected_dep_vars_names:
+            for indep_var in selected_indep_vars_names:
+                if dep_var == indep_var:
+                    continue
+
+                temp_df = df_f[[dep_var, indep_var]].dropna()
+                if temp_df.shape[0] < 2:
+                    continue
+
+                x = temp_df[indep_var].values
+                y = temp_df[dep_var].values
+
+                # Pearson
+                pearson_r, pearson_p = safe_pearson(x, y)
+                all_results.append({
+                    "Variable Dependiente": dep_var,
+                    "Variable Independiente": indep_var,
+                    "Modelo": "Pearson",
+                    "r": pearson_r,
+                    "R²": pearson_r**2 if not np.isnan(pearson_r) else np.nan,
+                    "P-valor": pearson_p
+                })
+
+                # Spearman
+                spearman_r, spearman_p = safe_spearman(x, y)
+                all_results.append({
+                    "Variable Dependiente": dep_var,
+                    "Variable Independiente": indep_var,
+                    "Modelo": "Spearman",
+                    "r": spearman_r,
+                    "R²": np.nan, # R² is not typically reported for Spearman
+                    "P-valor": spearman_p
+                })
+
+                if self.var_linear.get():
+                    try:
+                        X_lin = sm.add_constant(x)
+                        mod = sm.OLS(y, X_lin).fit()
+                        yhat = mod.predict(X_lin)
+                        r, p_corr = safe_pearson(y, yhat)
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": "Lineal",
+                            "r": r,
+                            "R²": mod.rsquared,
+                            "P-valor": mod.f_pvalue
+                        })
+                    except Exception as e: self.log_message(f"Error en modelo Lineal: {e}", "ERROR")
+                
+                if self.var_quadratic.get() and len(x) >= 3:
+                    try:
+                        X_quad = sm.add_constant(np.column_stack((x, x**2)))
+                        mod_quad = sm.OLS(y, X_quad).fit()
+                        yhat_quad = mod_quad.predict(X_quad)
+                        p_quad, _ = safe_pearson(y, yhat_quad)
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": "Cuadrático",
+                            "r": p_quad,
+                            "R²": mod_quad.rsquared,
+                            "P-valor": mod_quad.f_pvalue
+                        })
+                    except Exception as e: self.log_message(f"Error en modelo Cuadrático: {e}", "ERROR")
+
+                if self.var_cubic.get() and len(x) >= 4:
+                    try:
+                        X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
+                        mod_cubic = sm.OLS(y, X_cubic).fit()
+                        yhat_cubic = mod_cubic.predict(X_cubic)
+                        p_cubic, _ = safe_pearson(y, yhat_cubic)
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": "Cúbico",
+                            "r": p_cubic,
+                            "R²": mod_cubic.rsquared,
+                            "P-valor": mod_cubic.f_pvalue
+                        })
+                    except Exception as e: self.log_message(f"Error en modelo Cúbico: {e}", "ERROR")
+
+                if self.var_power.get():
+                    mask_p = (x > 0) & (y > 0)
+                    if mask_p.sum() > 2:
+                        xp, yp = x[mask_p], y[mask_p]
+                        try:
+                            sl,it,_,p_val_b,_ = stats.linregress(np.log(xp),np.log(yp)); a,b=np.exp(it),sl; yhat=a*(xp**b)
+                            p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
+                            all_results.append({
+                                "Variable Dependiente": dep_var,
+                                "Variable Independiente": indep_var,
+                                "Modelo": "Potencia",
+                                "r": p,
+                                "R²": r2,
+                                "P-valor": pp
+                            })
+                        except Exception as e: self.log_message(f"Error en modelo Potencia: {e}", "ERROR")
+
+                if self.var_log.get():
+                    mask_l = x > 0
+                    if mask_l.sum() > 2:
+                        xp, yp = x[mask_l], y[mask_l]
+                        try:
+                            popt, pcov = curve_fit(lambda z,a,b:a+b*np.log(z),xp,yp,maxfev=10000); yhat=popt[0]+popt[1]*np.log(xp)
+                            p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
+                            all_results.append({
+                                "Variable Dependiente": dep_var,
+                                "Variable Independiente": indep_var,
+                                "Modelo": "Logarítmico",
+                                "r": p,
+                                "R²": r2,
+                                "P-valor": pp
+                            })
+                        except Exception as e: self.log_message(f"Error en modelo Logarítmico: {e}", "ERROR")
+
+                if self.var_inverse.get():
+                    mask_i = x != 0
+                    if mask_i.sum() > 2:
+                        xi, yi = x[mask_i], y[mask_i]
+                        try:
+                            X_inv = sm.add_constant(1 / xi)
+                            mod_inv = sm.OLS(yi, X_inv).fit()
+                            yhat_inv = mod_inv.predict(X_inv)
+                            p_inv, pp_inv = safe_pearson(yi, yhat_inv)
+                            all_results.append({
+                                "Variable Dependiente": dep_var,
+                                "Variable Independiente": indep_var,
+                                "Modelo": "Inverso",
+                                "r": p_inv,
+                                "R²": mod_inv.rsquared,
+                                "P-valor": mod_inv.f_pvalue
+                            })
+                        except Exception as e: self.log_message(f"Error en modelo Inverso: {e}", "ERROR")
+
+                if self.var_rcs.get():
+                    try:
+                        X_rcs = dmatrix(f"cr(x, df=4)", {"x": x}, return_type='dataframe')
+                        mod_rcs = sm.OLS(y, X_rcs).fit()
+                        yhat_rcs = mod_rcs.predict(X_rcs)
+                        p_rcs, _ = safe_pearson(y, yhat_rcs)
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": "Spline (RCS, df=4)",
+                            "r": p_rcs,
+                            "R²": mod_rcs.rsquared_adj,
+                            "P-valor": mod_rcs.f_pvalue
+                        })
+                    except Exception as e: self.log_message(f"Error en modelo Spline (RCS): {e}", "ERROR")
+
+                other_models_to_fit = []
+                if self.var_exp1.get(): other_models_to_fit.append(("Exp (a+b^x)", exp_model1))
+                if self.var_exp2.get(): other_models_to_fit.append(("Exp (a+x^b)", exp_model2))
+                if self.var_exp3.get(): other_models_to_fit.append(("Exp (A*B^x)", exp_model3))
+                if self.var_sigmoid.get(): other_models_to_fit.append(("Sigmoide", sigmoid))
+                if self.var_exp_decay.get(): other_models_to_fit.append(("Exp Decreciente", exp_decay))
+
+                for model_name, model_func in other_models_to_fit:
+                    try:
+                        p0_other = None
+                        if model_name == "Sigmoide" and len(y)>1 and len(x)>0 : p0_other = [max(y)-min(y), 1.0, np.median(x), min(y)]
+                        elif model_name == "Sigmoide": p0_other = [1,1,0,0]
+                        
+                        popt_other, pcov_other = curve_fit(model_func, x, y, p0=p0_other, maxfev=10000)
+                        yhat_other = model_func(x, *popt_other)
+                        pear_other, p_pear_other = safe_pearson(y, yhat_other)
+                        r2_other = pear_other**2 if not np.isnan(pear_other) else np.nan
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": model_name,
+                            "r": pear_other,
+                            "R²": r2_other,
+                            "P-valor": p_pear_other
+                        })
+                    except RuntimeError: self.log_message(f"No se pudo ajustar {model_name} para {indep_var} (RuntimeError).", "WARN")
+                    except Exception as e_other_model: self.log_message(f"Error en {model_name} para {indep_var}: {e_other_model}", "ERROR")
+
+                if self.var_cubic.get() and len(x) >= 4:
+                    try:
+                        X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
+                        mod_cubic = sm.OLS(y, X_cubic).fit()
+                        yhat_cubic = mod_cubic.predict(X_cubic)
+                        p_cubic, _ = safe_pearson(y, yhat_cubic)
+                        all_results.append({
+                            "Variable Dependiente": dep_var,
+                            "Variable Independiente": indep_var,
+                            "Modelo": "Cúbico",
+                            "r": p_cubic,
+                            "R²": mod_cubic.rsquared,
+                            "P-valor": mod_cubic.f_pvalue
+                        })
+                    except Exception as e: self.log_message(f"Error en modelo Cúbico: {e}", "ERROR")
+
+        if not all_results:
+            self.results_text_content = "No se pudieron calcular correlaciones para las variables seleccionadas."
+            self.show_results_tab()
+            return
+
+        df_results = pd.DataFrame(all_results)
+        df_results['is_significant'] = df_results['P-valor'] <= 0.05
+        df_results['abs_r'] = df_results['r'].abs()
+        df_results.sort_values(by=['is_significant', 'abs_r'], ascending=[False, False], inplace=True)
+        df_results.drop(columns=['is_significant', 'abs_r'], inplace=True)
+        
+        pd.options.display.float_format = '{:,.3f}'.format
+
+        self.results_text_content = df_results.to_string(index=False)
+        self.show_results_tab()
+        self.log_message("calculate_and_show_correlations: Tabla de correlaciones generada.", "INFO")
+
+    def plot_regression(self):
+        if self.var_table_only.get():
+            self.calculate_and_show_correlations()
+            return
+        self.log_message("Iniciando plot_regression...", "DEBUG")
+        if self.data is None:
+            self.log_message("plot_regression: No hay datos cargados. Retornando.", "WARN")
+            messagebox.showwarning("Sin datos", "No hay datos cargados en la pestaña Regresiones.", parent=self)
+            return
+
+        df_f = self._get_filtered_data_for_regression()
+        if df_f is None:
             self.log_message("plot_regression: _get_filtered_data_for_regression devolvió None. Retornando.", "ERROR")
+            messagebox.showerror("Error de filtros", "No se pudieron obtener datos filtrados para generar la regresión.", parent=self)
             return
         if df_f.empty:
             self.log_message("plot_regression: No hay datos después de aplicar filtros. Retornando.", "WARN")
+            messagebox.showwarning("Sin datos", "No hay datos disponibles después de aplicar filtros en Regresiones.", parent=self)
             return
 
         self.log_message(f"plot_regression: Datos filtrados obtenidos con {df_f.shape[0]} filas.", "DEBUG")
 
-        dep_var_selected = self.combo_dep_var_spec.get()
-        if not dep_var_selected:
-            self.log_message("plot_regression: Variable dependiente no seleccionada. Retornando.", "WARN")
-            return
-        dep_original, dep_display = dep_var_selected, dep_var_selected
-        self.log_message(f"plot_regression: Variable dependiente: '{dep_original}' (mostrada como '{dep_display}')", "DEBUG")
-
-        if dep_original not in df_f.columns:
-            self.log_message(f"plot_regression: Variable dependiente '{dep_original}' no encontrada en datos filtrados. Retornando.", "ERROR")
-            return
-        if not pd.api.types.is_numeric_dtype(df_f[dep_original]):
-            self.log_message(f"plot_regression: Variable dependiente '{dep_original}' no es numérica. Retornando.", "ERROR")
+        selected_dep_indices = self.listbox_dep_vars_spec.curselection()
+        selected_dep_vars_names = [self.listbox_dep_vars_spec.get(i) for i in selected_dep_indices]
+        if not selected_dep_vars_names:
+            messagebox.showwarning("Advertencia", "Por favor, seleccione al menos una variable dependiente.", parent=self)
+            self.log_message("plot_regression: No hay variables dependientes seleccionadas. Retornando.", "WARN")
             return
 
-        selected_indices = self.listbox_indep_vars_spec.curselection()
-        selected_indep_vars_names = [self.listbox_indep_vars_spec.get(i) for i in selected_indices]
-        self.log_message(f"plot_regression: Variables independientes seleccionadas de Listbox: {selected_indep_vars_names}", "DEBUG")
-
-        # The _parse_variable_specifications was also checking for numeric types and existence.
-        # We need to replicate that an d build parsed_indep_specs structure.
-        parsed_indep_specs = []
+        selected_indep_indices = self.listbox_indep_vars_spec.curselection()
+        selected_indep_vars_names = [self.listbox_indep_vars_spec.get(i) for i in selected_indep_indices]
         if not selected_indep_vars_names:
-            self.log_message("plot_regression: No se seleccionaron variables independientes. Retornando.", "WARN")
-            # Depending on desired behavior, either return or allow plotting with no indep vars (just scatter of dep var if that makes sense)
-            # For now, let's assume at least one independent variable is desired for regression lines.
-            # If only a scatter plot of dependent vs independent is desired, this logic might change.
-            return # Retornar si no hay VIs seleccionadas
-        else:
-            for var_name in selected_indep_vars_names:
-                if var_name not in df_f.columns:
-                    self.log_message(f"plot_regression: Variable independiente '{var_name}' no encontrada en datos filtrados. Omitida.", "WARN")
-                    continue
-                if not pd.api.types.is_numeric_dtype(df_f[var_name]):
-                    self.log_message(f"plot_regression: Variable independiente '{var_name}' no es numérica. Omitida para regresión.", "WARN")
-                    continue
-                parsed_indep_specs.append((var_name, var_name)) # Using var_name for both original and display name
-            self.log_message(f"plot_regression: Variables independientes parseadas y válidas: {parsed_indep_specs}", "DEBUG")
-
-        if not parsed_indep_specs:
-            self.log_message("plot_regression: No hay variables independientes válidas después del parseo. Retornando.", "WARN")
+            messagebox.showwarning("Advertencia", "Por favor, seleccione al menos una variable independiente.", parent=self)
+            self.log_message("plot_regression: No hay variables independientes seleccionadas. Retornando.", "WARN")
             return
-        
+
+        selected_model_flags = [
+            self.var_linear.get(),
+            self.var_quadratic.get(),
+            self.var_cubic.get(),
+            self.var_power.get(),
+            self.var_log.get(),
+            self.var_loess.get(),
+            self.var_inverse.get(),
+            self.var_rcs.get(),
+            self.var_exp1.get(),
+            self.var_exp2.get(),
+            self.var_exp3.get(),
+            self.var_sigmoid.get(),
+            self.var_exp_decay.get(),
+        ]
+        if not any(selected_model_flags):
+            self.var_linear.set(True)
+            self.log_message("No había modelos seleccionados; se activó 'Lineal' automáticamente.", "WARN")
+            messagebox.showinfo(
+                "Modelo automático",
+                "No había modelos seleccionados. Se activó automáticamente 'Lineal' para ejecutar la regresión.",
+                parent=self,
+            )
+
+        self.log_message(f"plot_regression: Variables dependientes seleccionadas: {selected_dep_vars_names}", "DEBUG")
+        self.log_message(f"plot_regression: Variables independientes seleccionadas: {selected_indep_vars_names}", "DEBUG")
+
         try:
             dpi = int(self.entry_dpi.get()); w_px = int(self.entry_width.get()); h_px = int(self.entry_height.get())
             w_in, h_in = w_px/dpi, h_px/dpi; pt_size = float(self.entry_pt_size.get()); txt_size = int(self.entry_text_size.get())
+            title_sz = int(self.entry_title_size.get())
             self.log_message(f"plot_regression: Parámetros gráficos leídos: DPI={dpi}, W={w_px}, H={h_px}, PtSize={pt_size}, TxtSize={txt_size}", "DEBUG")
         except ValueError as e_params:
             self.log_message(f"plot_regression: Error en parámetros DPI/tamaño: {e_params}. Retornando.", "ERROR")
             messagebox.showerror("Error de Parámetros", f"Error en los valores de DPI o tamaño de gráfico:\n{e_params}", parent=self)
             return
 
-        title_text = self.entry_title.get().strip() or f"Regresión de {dep_display} sobre Variables Seleccionadas"
-        xlabel_text = self.entry_xlabel.get().strip()
-        ylabel_text = self.entry_ylabel.get().strip() or dep_display
-        title_sz = int(self.entry_title_size.get())
-
-        xlim_raw    = self.entry_xlim.get().strip()
-        ylim_raw    = self.entry_ylim.get().strip()
-        xticks_raw  = self.entry_xticks.get().strip()
-        yticks_raw  = self.entry_yticks.get().strip()
-        grid_on     = self.var_grid.get()
-        show_info   = self.var_show_info.get()
-        plot_corr   = self.var_plot_corr.get()
-        
-        # Aplicar estilo de fuente
         font_family = self.font_family_var.get()
         font_size = int(self.entry_text_size.get())
         decimals = self.decimals_var.get()
+        if decimals is None:
+            decimals = 2
+        decimals = max(0, int(decimals))
         use_sci_notation = self.sci_notation_var.get()
         use_sci_notation_conditional = self.sci_notation_conditional_var.get()
 
+        def resolve_entry_text(entry_widget, default_value):
+            raw_value = entry_widget.get()
+            if raw_value == "":
+                return default_value
+            stripped = raw_value.strip()
+            if stripped == "":
+                return ""
+            return stripped
+
         def format_number(num):
+            try:
+                value = float(num)
+            except (TypeError, ValueError):
+                return str(num)
+
+            lower_threshold = 10 ** (-(decimals + 1)) if decimals is not None else 0.001
+            upper_threshold = 10 ** (decimals + 1) if decimals is not None else 1000
+
             if use_sci_notation:
-                return f"{num:.{decimals}e}"
-            elif use_sci_notation_conditional:
-                if abs(num) < 10**(-decimals):
-                    return f"{num:.{decimals}e}"
+                return f"{value:.{decimals}e}"
+            if use_sci_notation_conditional and value != 0:
+                abs_value = abs(value)
+                if abs_value >= upper_threshold or abs_value < lower_threshold:
+                    return f"{value:.{decimals}e}"
+            return f"{value:.{decimals}f}"
+
+        show_formula_flag = self.var_show_formula.get()
+        show_r2_flag = self.var_show_r2.get()
+        show_grid = self.var_grid.get()
+        show_info = self.var_show_info.get()
+        hide_point_legend = self.var_hide_points_labels.get()
+
+        def build_poly_formula(dep_name, coeffs, indep_name):
+            terms = []
+            for power, coef in enumerate(coeffs):
+                if coef is None:
+                    continue
+                try:
+                    if np.isnan(coef):
+                        continue
+                except TypeError:
+                    pass
+                if power == 0:
+                    terms.append(format_number(coef))
                 else:
-                    return f"{num:.{decimals}f}"
+                    sign = "-" if coef < 0 else "+"
+                    coef_abs = format_number(abs(coef))
+                    var_part = indep_name if power == 1 else f"{indep_name}^{power}"
+                    terms.append(f"{sign} {coef_abs}·{var_part}")
+            if not terms:
+                return f"{dep_name} = 0"
+            first = terms[0]
+            rest = " ".join(terms[1:]) if len(terms) > 1 else ""
+            body = f"{first} {rest}".strip()
+            return f"{dep_name} = {body}"
+
+        def build_label(base, formula=None, r2_value=None):
+            detail_parts = []
+            if show_formula_flag and formula:
+                detail_parts.append(formula)
+            if show_r2_flag and r2_value is not None:
+                try:
+                    if not np.isnan(r2_value):
+                        detail_parts.append(f"R²={format_number(r2_value)}")
+                except TypeError:
+                    detail_parts.append(f"R²={format_number(r2_value)}")
+            if detail_parts:
+                return f"{base} ({'; '.join(detail_parts)})"
+            return base
+
+        def normalize_p_values(p_values):
+            if p_values is None:
+                return []
+            if isinstance(p_values, pd.Series):
+                return list(p_values.items())
+            if isinstance(p_values, dict):
+                return list(p_values.items())
+            try:
+                return [(f"Coef {idx}", val) for idx, val in enumerate(p_values)]
+            except TypeError:
+                return [("Coef", p_values)]
+
+        def parse_range_string(text_value):
+            raw = (text_value or "").strip()
+            if not raw:
+                return None
+            try:
+                parts = [float(part.strip()) for part in raw.split(',') if part.strip()]
+                if len(parts) == 2:
+                    lo, hi = parts
+                    if lo == hi:
+                        return (lo, hi)
+                    return (min(lo, hi), max(lo, hi))
+            except ValueError:
+                self.log_message(f"Rango inválido ingresado: '{raw}'", "WARN")
+            return None
+
+        def parse_ticks_string(text_value):
+            raw = (text_value or "").strip()
+            if not raw:
+                return []
+            ticks = []
+            for piece in raw.split(','):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                try:
+                    ticks.append(float(piece))
+                except ValueError:
+                    self.log_message(f"Tick inválido ignorado: '{piece}'", "WARN")
+            return ticks
+
+        def configure_axis_format(axis):
+            formatter = ScalarFormatter(useMathText=True)
+            formatter.set_useOffset(False)
+            if use_sci_notation:
+                formatter.set_scientific(True)
+                formatter.set_powerlimits((0, 0))
+            elif use_sci_notation_conditional:
+                formatter.set_scientific(True)
+                power_limit = decimals + 1 if decimals is not None else 3
+                formatter.set_powerlimits((-(power_limit), power_limit))
             else:
-                return f"{num:.{decimals}f}"
+                formatter.set_scientific(False)
+            axis.set_major_formatter(formatter)
+
+        x_limits = parse_range_string(self.entry_xlim.get()) if hasattr(self, 'entry_xlim') else None
+        y_limits = parse_range_string(self.entry_ylim.get()) if hasattr(self, 'entry_ylim') else None
+        x_ticks_manual = parse_ticks_string(self.entry_xticks.get()) if hasattr(self, 'entry_xticks') else []
+        y_ticks_manual = parse_ticks_string(self.entry_yticks.get()) if hasattr(self, 'entry_yticks') else []
 
         plt.rcParams.update({
             'font.family': font_family,
             'font.size': font_size,
-            'axes.titlesize': int(self.entry_title_size.get()),
+            'axes.titlesize': title_sz,
             'axes.labelsize': font_size,
             'xtick.labelsize': font_size,
             'ytick.labelsize': font_size,
             'legend.fontsize': font_size
         })
 
-        fig, ax = plt.subplots(figsize=(w_in, h_in), dpi=dpi)
-        results_list = []
-        overall_scatter_x = []
-        overall_scatter_y = []
-        self.log_message(f"plot_regression: Iniciando bucle para {len(parsed_indep_specs)} variable(s) independiente(s).", "DEBUG")
+        all_results_summary = []
 
-        for idx, (indep_original, indep_display) in enumerate(parsed_indep_specs):
-            self.log_message(f"plot_regression: Procesando VI #{idx+1}: '{indep_original}' (mostrada como '{indep_display}')", "DEBUG")
-            if not pd.api.types.is_numeric_dtype(df_f[indep_original]):
-                self.log_message(f"plot_regression: VI '{indep_display}' no es numérica. Saltando.", "WARN")
-                continue
+        self.fig.clear()
 
-            temp_df = df_f[[dep_original, indep_original]].dropna()
-            if temp_df.shape[0] < 2:
-                self.log_message(f"plot_regression: No hay suficientes datos (pares) para VI '{indep_display}' después de dropna. Saltando.", "WARN")
-                continue
-
-            self.log_message(f"plot_regression: VI '{indep_display}' tiene {temp_df.shape[0]} pares de datos válidos.", "DEBUG")
-            x = temp_df[indep_original].values
-            y = temp_df[dep_original].values
-            
-            line_color = self.cmb_line_color.get()
-            line_width = float(self.entry_line_width.get())
-            point_color = self.cmb_pt_color.get()
-            scatter_label = f"{indep_display} (datos)" if not self.var_hide_points_labels.get() else None
-            ax.scatter(x, y, color=point_color, s=pt_size, alpha=0.6, label=scatter_label)
-            overall_scatter_x.extend(x)
-            overall_scatter_y.extend(y)
-
-            sort_idx = np.argsort(x)
-            x_sorted = x[sort_idx]
-            
-            if self.var_linear.get():
-                self.log_message(f"plot_regression: Intentando modelo lineal para VI '{indep_display}'.", "DEBUG")
-                try:
-                    X_lin = sm.add_constant(x)
-                    mod = sm.OLS(y, X_lin).fit()
-                    a, b = mod.params
-                    p_values = mod.pvalues
-                    formula = f"y = {format_number(a)} + {format_number(b)}x"
-                    yhat = mod.predict(X_lin)
-                    p, pp = safe_pearson(y, yhat)
-                    s, ps = safe_spearman(y, yhat)
-                    r2 = mod.rsquared if not np.isnan(p) else np.nan
-                    results_list.append({"model": "Lineal", "var": indep_display, "dep_var": dep_display, "r": p, "r2": r2, "formula": formula, "p_general": mod.f_pvalue, "p_values": p_values})
-                    ax.plot(x_sorted, mod.predict(sm.add_constant(x_sorted)), linestyle=self.model_styles["Lineal"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(a)} + {format_number(b)}x (R²={format_number(r2)})")
-                    self.log_message(f"plot_regression: Modelo lineal para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e_lin: self.log_message(f"Error en modelo Lineal ({indep_display}): {e_lin}", "ERROR")
-            if self.var_quadratic.get() and len(x) >= 3:
-                self.log_message(f"plot_regression: Intentando modelo cuadrático para VI '{indep_display}'.", "DEBUG")
-                try:
-                    X_quad = sm.add_constant(np.column_stack((x, x**2)))
-                    mod_quad = sm.OLS(y, X_quad).fit()
-                    c2, c1, c0 = mod_quad.params
-                    p_values_quad = mod_quad.pvalues
-                    formula_quad = f"y = {format_number(c0)} + {format_number(c1)}x + {format_number(c2)}x²"
-                    yhat_quad = mod_quad.predict(X_quad)
-                    p_quad, _ = safe_pearson(y, yhat_quad)
-                    r2_quad = p_quad**2 if not np.isnan(p_quad) else np.nan
-                    results_list.append({"model": "Cuadrático", "var": indep_display, "dep_var": dep_display, "r": p_quad, "r2": r2_quad, "formula": formula_quad, "p_general": mod_quad.f_pvalue, "p_values": p_values_quad})
-                    ax.plot(x_sorted, np.polyval(mod_quad.params[::-1], x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(c2)}x² + {format_number(c1)}x + {format_number(c0)} (R²={format_number(r2_quad)})")
-                    self.log_message(f"plot_regression: Modelo cuadrático para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e:
-                    self.log_message(f"Error Cuad ({indep_display}): {e}", "ERROR")
-            if self.var_cubic.get() and len(x) >= 4:
-                self.log_message(f"plot_regression: Intentando modelo cúbico para VI '{indep_display}'.", "DEBUG")
-                try:
-                    X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
-                    mod_cubic = sm.OLS(y, X_cubic).fit()
-                    p_values_cubic = mod_cubic.pvalues
-                    formula_cubic = f"y = {format_number(mod_cubic.params[0])} + {format_number(mod_cubic.params[1])}x + {format_number(mod_cubic.params[2])}x² + {format_number(mod_cubic.params[3])}x³"
-                    yhat_cubic = mod_cubic.predict(X_cubic)
-                    p_cubic, _ = safe_pearson(y, yhat_cubic)
-                    r2_cubic = p_cubic**2 if not np.isnan(p_cubic) else np.nan
-                    results_list.append({"model": "Cúbico", "var": indep_display, "dep_var": dep_display, "r": p_cubic, "r2": r2_cubic, "formula": formula_cubic, "p_general": mod_cubic.f_pvalue, "p_values": p_values_cubic})
-                    ax.plot(x_sorted, np.polyval(mod_cubic.params[::-1], x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=line_color, lw=line_width, label=f"y = {format_number(mod_cubic.params[3])}x³ + {format_number(mod_cubic.params[2])}x² + {format_number(mod_cubic.params[1])}x + {format_number(mod_cubic.params[0])} (R²={format_number(r2_cubic)})")
-                    self.log_message(f"plot_regression: Modelo cúbico para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e:
-                    self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
-            if self.var_power.get():
-                self.log_message(f"plot_regression: Intentando modelo potencia para VI '{indep_display}'.", "DEBUG")
-                mask_p = (x > 0) & (y > 0)
-                if mask_p.sum() > 2:
-                    xp, yp = x[mask_p], y[mask_p]
-                    try:
-                        sl,it,_,_,_ = stats.linregress(np.log(xp),np.log(yp)); a,b=np.exp(it),sl; yhat=a*(xp**b)
-                        p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
-                        results_list.append({"model":"Potencia", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(a)}x^{format_number(b)}"})
-                        ax.plot(np.sort(xp), a*np.power(np.sort(xp),b), linestyle=self.model_styles["Potencia"]["linestyle"], color=line_color, label=f"y = {format_number(a)}x^{format_number(b)} (R²={format_number(r2)})")
-                        self.log_message(f"plot_regression: Modelo potencia para VI '{indep_display}' ajustado.", "DEBUG")
-                    except Exception as e: self.log_message(f"Error Potencia ({indep_display}): {e}", "ERROR")
-                else: self.log_message(f"plot_regression: No suficientes datos positivos para modelo Potencia VI '{indep_display}'.", "WARN")
-            if self.var_log.get():
-                self.log_message(f"plot_regression: Intentando modelo logarítmico para VI '{indep_display}'.", "DEBUG")
-                mask_l = x > 0
-                if mask_l.sum() > 2:
-                    xp, yp = x[mask_l], y[mask_l]
-                    try:
-                        pop, _ = curve_fit(lambda z,a,b:a+b*np.log(z),xp,yp,maxfev=10000); yhat=pop[0]+pop[1]*np.log(xp)
-                        p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
-                        results_list.append({"model":"Logarítmico", "var":indep_display, "dep_var":dep_display, "r":p, "r2":r2, "formula":f"y = {format_number(pop[0])} + {format_number(pop[1])}ln(x)"})
-                        ax.plot(np.sort(xp), pop[0]+pop[1]*np.log(np.sort(xp)), linestyle=self.model_styles["Logarítmico"]["linestyle"], color=line_color, label=f"y = {format_number(pop[0])} + {format_number(pop[1])}ln(x) (R²={format_number(r2)})")
-                        self.log_message(f"plot_regression: Modelo logarítmico para VI '{indep_display}' ajustado.", "DEBUG")
-                    except Exception as e: self.log_message(f"Error Log ({indep_display}): {e}", "ERROR")
-                else: self.log_message(f"plot_regression: No suficientes datos x>0 para modelo Logarítmico VI '{indep_display}'.", "WARN")
-            if self.var_loess.get() and len(x) > 5:
-                self.log_message(f"plot_regression: Intentando modelo LOESS para VI '{indep_display}'.", "DEBUG")
-                try:
-                    lo=lowess(y,x,frac=0.3); xs,ys=lo[:,0],lo[:,1]; acme_x,acme_y=compute_acme(lambda z:np.interp(z,xs,ys),np.linspace(xs.min(),xs.max(),200))
-                    results_list.append({"model":"LOESS", "var":indep_display, "dep_var":dep_display, "r":np.nan, "r2":np.nan, "formula":f"LOESS para {indep_display}: acme en x={acme_x:.2f}, y={acme_y:.2f}"})
-                    ax.plot(xs,ys, linestyle=self.model_styles["LOESS"]["linestyle"], color=line_color, label=f"{indep_display} LOESS")
-                    self.log_message(f"plot_regression: Modelo LOESS para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e: self.log_message(f"Error LOESS ({indep_display}): {e}", "ERROR")
-            
-            if self.var_inverse.get():
-                self.log_message(f"plot_regression: Intentando modelo Inverso para VI '{indep_display}'.", "DEBUG")
-                mask_i = x != 0
-                if mask_i.sum() > 2:
-                    xi, yi = x[mask_i], y[mask_i]
-                    try:
-                        X_inv = sm.add_constant(1 / xi)
-                        mod_inv = sm.OLS(yi, X_inv).fit()
-                        a_inv, b_inv = mod_inv.params
-                        yhat_inv = mod_inv.predict(X_inv)
-                        p_inv, pp_inv = safe_pearson(yi, yhat_inv)
-                        s_inv, ps_inv = safe_spearman(yi, yhat_inv)
-                        r2_inv = mod_inv.rsquared
-                        results_list.append({"model": "Inverso", "var": indep_display, "dep_var": dep_display, "r": p_inv, "r2": r2_inv, "formula": f"{dep_display}={a_inv:.2f}+{b_inv:.2f}/({indep_display})\nP:{p_inv:.3f}(p={fmt_p(pp_inv)}) S:{s_inv:.3f}(p={fmt_p(ps_inv)})"})
-                        x_sorted_inv = np.sort(xi)
-                        ax.plot(x_sorted_inv, a_inv + b_inv / x_sorted_inv, linestyle="-", color=line_color, label=f"{indep_display} Inv (R²={format_number(r2_inv)})")
-                        self.log_message(f"plot_regression: Modelo Inverso para VI '{indep_display}' ajustado.", "DEBUG")
-                    except Exception as e_inv: self.log_message(f"Error Inverso ({indep_display}): {e_inv}", "ERROR")
-                else:
-                    self.log_message(f"plot_regression: No suficientes datos (x!=0) para modelo Inverso VI '{indep_display}'.", "WARN")
-
-            if self.var_rcs.get():
-                self.log_message(f"plot_regression: Intentando modelo Splines (RCS) para VI '{indep_display}'.", "DEBUG")
-                try:
-                    # Usar 4 nudos por defecto, que es un buen punto de partida.
-                    # dmatrix creará una matriz de diseño con la base del spline.
-                    X_rcs = dmatrix(f"cr(x, df=4)", {"x": x}, return_type='dataframe')
-                    mod_rcs = sm.OLS(y, X_rcs).fit()
-                    yhat_rcs = mod_rcs.predict(dmatrix(f"cr(x_sorted, df=4)", {"x_sorted": x_sorted}, return_type='dataframe'))
-
-                    p_rcs, pp_rcs = safe_pearson(y, mod_rcs.predict(X_rcs))
-                    s_rcs, ps_rcs = safe_spearman(y, mod_rcs.predict(X_rcs))
-                    r2_rcs = mod_rcs.rsquared_adj # Usar R^2 ajustado para splines es a menudo mejor
-
-                    results_list.append({"model": "Spline (RCS, df=4)", "var": indep_display, "dep_var": dep_display, "r": p_rcs, "r2": r2_rcs, "formula": f"Spline Cúbico Restringido (df=4)\nP:{p_rcs:.3f}(p={fmt_p(pp_rcs)}) S:{s_rcs:.3f}(p={fmt_p(ps_rcs)})"})
-                    ax.plot(x_sorted, yhat_rcs, linestyle="--", color=line_color, label=f"{indep_display} RCS (R²adj={format_number(r2_rcs)})")
-                    self.log_message(f"plot_regression: Modelo Spline (RCS) para VI '{indep_display}' ajustado.", "DEBUG")
-                except Exception as e_rcs:
-                    self.log_message(f"Error en modelo Spline (RCS) ({indep_display}): {e_rcs}", "ERROR")
-                    traceback.print_exc(limit=2)
-
-            other_models_to_fit = []
-            if self.var_exp1.get(): other_models_to_fit.append(("Exp (a+b^x)", exp_model1))
-            if self.var_exp2.get(): other_models_to_fit.append(("Exp (a+x^b)", exp_model2))
-            if self.var_exp3.get(): other_models_to_fit.append(("Exp (A*B^x)", exp_model3))
-            if self.var_sigmoid.get(): other_models_to_fit.append(("Sigmoide", sigmoid))
-            if self.var_exp_decay.get(): other_models_to_fit.append(("Exp Decreciente", exp_decay))
-
-            for model_name, model_func in other_models_to_fit:
-                try:
-                    p0_other = None
-                    if model_name == "Sigmoide" and len(y)>1 and len(x)>0 : p0_other = [max(y)-min(y), 1.0, np.median(x), min(y)]
-                    elif model_name == "Sigmoide": p0_other = [1,1,0,0]
-                    
-                    popt_other, _ = curve_fit(model_func, x, y, p0=p0_other, maxfev=10000)
-                    yhat_other = model_func(x, *popt_other)
-                    pear_other, p_pear_other = safe_pearson(y, yhat_other)
-                    spear_other, p_spear_other = safe_spearman(y, yhat_other)
-                    r2_other = pear_other**2 if not np.isnan(pear_other) else np.nan
-                    
-                    formula_str_other = f"{model_name} ({dep_display} vs {indep_display}): "
-                    if model_name == "Exp (a+b^x)": formula_str_other += f"{dep_display}={popt_other[0]:.2f}+{popt_other[1]:.2f}^{indep_display}"
-                    elif model_name == "Exp (a+x^b)": formula_str_other += f"{dep_display}={popt_other[0]:.2f}+{indep_display}^{popt_other[1]:.2f}"
-                    elif model_name == "Exp (A*B^x)": formula_str_other += f"{dep_display}={popt_other[0]:.2f}*{popt_other[1]:.2f}^{indep_display}"
-                    elif model_name == "Sigmoide": formula_str_other += f"L={popt_other[0]:.2f},k={popt_other[1]:.2f},x0={popt_other[2]:.2f},off={popt_other[3]:.2f}"
-                    elif model_name == "Exp Decreciente": formula_str_other += f"A={popt_other[0]:.2f},B={popt_other[1]:.2f}"
-                    
-                    results_list.append({"model":model_name,"var":indep_display, "dep_var":dep_display, "r":pear_other,"r2":r2_other, "formula":formula_str_other + f"\nP:{pear_other:.3f}(p={fmt_p(p_pear_other)}) S:{spear_other:.3f}(p={fmt_p(p_spear_other)})"})
-                    ax.plot(x_sorted, model_func(x_sorted, *popt_other), linestyle=self.model_styles[model_name]["linestyle"], color=line_color, label=f"{indep_display} {model_name.split(' ')[0]} (R²={format_number(r2_other)})")
-                    self.log_message(f"plot_regression: Modelo {model_name} para VI '{indep_display}' ajustado.", "DEBUG")
-                except RuntimeError: self.log_message(f"plot_regression: No se pudo ajustar {model_name} para {indep_display} (RuntimeError).", "WARN")
-                except Exception as e_other_model: self.log_message(f"plot_regression: Error en {model_name} para {indep_display}: {e_other_model}", "ERROR")
-        
-        self.log_message("plot_regression: Fin del bucle de procesamiento de VIs y modelos.", "DEBUG")
-
-        ax.set_xlabel(xlabel_text or (parsed_indep_specs[0][1] if len(parsed_indep_specs)==1 else "Variables Independientes"), fontsize=txt_size)
-        ax.set_ylabel(ylabel_text or dep_display, fontsize=txt_size)
-        ax.set_title(title_text or f"Regresión de {dep_display}", fontsize=title_sz) # Usar title_sz para título
-
-        if grid_on: ax.grid(True, linestyle='--', alpha=0.7)
-        else: ax.grid(False)
-
-        if xlim_raw:
-            try: 
-                lo, hi = map(float, xlim_raw.split(','))
-                ax.set_xlim(lo, hi) 
-            except Exception as e: 
-                self.log_message(f"Formato Xlim inválido (use min,max): {e}")
-        if ylim_raw:
-            try: 
-                lo, hi = map(float, ylim_raw.split(','))
-                ax.set_ylim(lo, hi)
-            except Exception as e: 
-                self.log_message(f"Formato Ylim inválido (use min,max): {e}")
-        if xticks_raw:
-            try: 
-                ax.set_xticks(list(map(float, xticks_raw.split(','))))
-            except Exception as e: 
-                self.log_message(f"Formato Xticks inválido (use a,b,c): {e}")
-        if yticks_raw:
-            try: 
-                ax.set_yticks(list(map(float, yticks_raw.split(','))))
-            except Exception as e: 
-                self.log_message(f"Formato Yticks inválido (use a,b,c): {e}")
-        
-        if plot_corr and len(overall_scatter_x) > 2 and len(overall_scatter_y) > 2:
+        total_filtered_rows = len(df_f)
+        filter_summary = ""
+        if show_info and hasattr(self, 'filter_component') and self.filter_component:
             try:
-                rp_overall, pp_overall = safe_pearson(overall_scatter_x, overall_scatter_y)
-                rs_overall, ps_overall = safe_spearman(overall_scatter_x, overall_scatter_y)
-                corr_text = f"Global (todas indep. vs dep):\nPearson: {rp_overall:.3f} (p={fmt_p(pp_overall)})\nSpearman: {rs_overall:.3f} (p={fmt_p(ps_overall)})"
-                ax.annotate(corr_text, xy=(0.02, 0.02), xycoords="axes fraction", fontsize=max(6,txt_size-2), ha="left", va="bottom", bbox=dict(boxstyle="round,pad=0.3", fc="wheat", alpha=0.5))
-            except Exception as e_corr: self.log_message(f"Error calculando correlación global: {e_corr}")
+                filter_summary = self.filter_component.get_active_filters_description()
+            except Exception as exc:
+                self.log_message(f"No se pudo obtener el resumen de filtros: {exc}", "WARN")
+                filter_summary = ""
 
-        if show_info:
-            n_tot_plot = len(overall_scatter_x)
-            info_str = f"n (puntos graficados) = {n_tot_plot}"
-            # La obtención de filtros se hará con el nuevo componente
-            if hasattr(self, 'filter_component') and self.filter_component:
-                active_filters_desc = self.filter_component.get_active_filters_description()
-                if active_filters_desc:
-                    info_str += "\nFiltros: " + active_filters_desc
-            ax.annotate(info_str, xy=(0.98, 0.98), xycoords="axes fraction", fontsize=max(6,txt_size-2), ha="right", va="top", bbox=dict(boxstyle="round,pad=0.3", fc="aliceblue", alpha=0.7))
+        # --- Manejo de comparación por grupos ---
+        compare_groups = self.var_compare_groups.get()
+        group_var = self.cmb_group_var.get().strip() if compare_groups else ""
+        groups_to_plot = []
+        group_colors = {}
+        
+        if compare_groups and group_var and group_var in df_f.columns:
+            # Obtener grupos a incluir
+            group_filter_str = self.entry_group_filter.get().strip()
+            if group_filter_str:
+                groups_to_plot = [g.strip() for g in group_filter_str.split(',') if g.strip()]
+            else:
+                groups_to_plot = df_f[group_var].dropna().unique().tolist()
+            
+            # Asignar colores a cada grupo
+            for idx, grp in enumerate(groups_to_plot):
+                group_colors[grp] = self.default_colors[idx % len(self.default_colors)]
+            
+            self.log_message(f"Comparación por grupos activada. Variable: {group_var}, Grupos: {groups_to_plot}", "DEBUG")
+        else:
+            groups_to_plot = [None]  # Sin agrupación
+            group_colors[None] = self.cmb_pt_color.get()
 
-        handles, labels = ax.get_legend_handles_labels()
-        if handles: 
-            ax.legend(fontsize=max(6, txt_size-2), loc='best')
+        for dep_original in selected_dep_vars_names:
+            dep_display = dep_original
+            self.log_message(f"plot_regression: Procesando VD: '{dep_original}'.", "DEBUG")
 
-        self.log_message("plot_regression: Configuración del gráfico completada. Intentando guardar...", "DEBUG")
-        plt.tight_layout()
-        fig.savefig(self.graph_path); plt.close(fig)
-        self.log_message(f"plot_regression: Gráfico guardado en {self.graph_path}.", "INFO")
+            if dep_original not in df_f.columns or not pd.api.types.is_numeric_dtype(df_f[dep_original]):
+                self.log_message(f"plot_regression: VD '{dep_original}' no es válida. Saltando.", "ERROR")
+                continue
 
-        results_list.sort(key=lambda x: x.get("r2", -1), reverse=True)
-        summary = f"Resumen de Modelos para VD: {dep_display}\n" + ("-" * 70) + "\n"
-        for r_item in results_list:
-            summary += f"Modelo: {r_item['model']} | VI: {r_item['var']}\n"
-            summary += f"Formula: {r_item['formula']}\n"
-            summary += f"  R² = {r_item.get('r2', np.nan):.3f}\n"
-            if 'p_general' in r_item and r_item['p_general'] is not None:
-                summary += f"  P-valor (general) = {fmt_p(r_item['p_general'])}\n"
-            if 'p_values' in r_item:
-                summary += "  P-valores de coeficientes:\n"
-                for i, p_val in enumerate(r_item['p_values']):
-                    summary += f"    Coef {i}: {fmt_p(p_val)}\n"
-            summary += ("-" * 70) + "\n"
-        self.results_text_content = summary
+            num_indep = len(selected_indep_vars_names)
+            if num_indep == 0:
+                continue
+
+            self.fig.set_size_inches(w_in, h_in * num_indep)
+            axes = self.fig.subplots(nrows=num_indep, ncols=1, squeeze=False)
+            
+            summary_for_dep = [f"Resumen de Modelos para VD: {dep_display}\n" + ("-" * 70) + "\n"]
+
+            for i, indep_original in enumerate(selected_indep_vars_names):
+                ax = axes[i, 0]
+                indep_display = indep_original
+                self.log_message(f"plot_regression: Procesando VI #{i+1}: '{indep_original}' para VD '{dep_original}'.", "DEBUG")
+
+                if indep_original not in df_f.columns or not pd.api.types.is_numeric_dtype(df_f[indep_original]):
+                    self.log_message(f"plot_regression: VI '{indep_original}' no es válida. Saltando.", "WARN")
+                    ax.text(0.5, 0.5, f"Variable '{indep_original}' no válida.", ha='center', va='center')
+                    continue
+
+                # --- Iterar por grupos si está activada la comparación ---
+                try:
+                    line_width = float(self.entry_line_width.get())
+                except (TypeError, ValueError):
+                    line_width = 2.0
+                    self.log_message("Grosor de línea inválido; se usará 2.0.", "WARN")
+                results_list = []
+                general_results_list = []  # Para el modelo GENERAL (todos los datos)
+                
+                # Verificar transformaciones ln
+                apply_ln_x = self.var_ln_x.get()
+                apply_ln_y = self.var_ln_y.get()
+                
+                # Sufijos para etiquetas si hay transformación
+                x_label_suffix = " [ln]" if apply_ln_x else ""
+                y_label_suffix = " [ln]" if apply_ln_y else ""
+                indep_display_transformed = indep_display + x_label_suffix
+                dep_display_transformed = dep_display + y_label_suffix
+                
+                # --- MODELO GENERAL (todos los datos combinados) ---
+                if compare_groups and group_var and len(groups_to_plot) >= 2:
+                    # Calcular regresión con TODOS los datos primero
+                    temp_df_all = df_f[[dep_original, indep_original]].dropna()
+                    if temp_df_all.shape[0] >= 2:
+                        x_all = temp_df_all[indep_original].values.astype(float)
+                        y_all = temp_df_all[dep_original].values.astype(float)
+                        
+                        # Aplicar transformaciones ln si están habilitadas
+                        if apply_ln_x:
+                            mask_x = x_all > 0
+                            x_all = x_all[mask_x]
+                            y_all = y_all[mask_x]
+                            x_all = np.log(x_all)
+                        if apply_ln_y:
+                            mask_y = y_all > 0
+                            x_all = x_all[mask_y]
+                            y_all = y_all[mask_y]
+                            y_all = np.log(y_all)
+                        
+                        n_all = len(x_all)
+                        if n_all >= 2:
+                            x_sorted_all = np.sort(x_all)
+                            
+                            # Modelo Lineal GENERAL
+                            if self.var_linear.get():
+                                try:
+                                    X_lin_all = sm.add_constant(x_all)
+                                    mod_all = sm.OLS(y_all, X_lin_all).fit()
+                                    const_all, slope_all = mod_all.params
+                                    formula_all = build_poly_formula(dep_display_transformed, [const_all, slope_all], indep_display_transformed)
+                                    r2_all = mod_all.rsquared
+                                    general_results_list.append({
+                                        "model": "Lineal",
+                                        "group": "GENERAL",
+                                        "var": indep_display_transformed,
+                                        "dep_var": dep_display_transformed,
+                                        "r2": r2_all,
+                                        "formula": formula_all,
+                                        "p_general": mod_all.f_pvalue,
+                                        "p_values": normalize_p_values(mod_all.pvalues),
+                                        "n": n_all
+                                    })
+                                except Exception as e: 
+                                    self.log_message(f"Error en modelo Lineal GENERAL: {e}", "ERROR")
+                            
+                            # Modelo Potencia GENERAL
+                            if self.var_power.get():
+                                mask_p = (x_all > 0) & (y_all > 0) if not apply_ln_x and not apply_ln_y else np.ones(len(x_all), dtype=bool)
+                                if mask_p.sum() > 2:
+                                    xp, yp = x_all[mask_p], y_all[mask_p]
+                                    try:
+                                        sl, it, _, p_val_b, _ = stats.linregress(np.log(xp) if not apply_ln_x else xp, 
+                                                                                   np.log(yp) if not apply_ln_y else yp)
+                                        a, b = np.exp(it), sl
+                                        formula_pow = f"{dep_display_transformed} = {format_number(a)}·{indep_display_transformed}^{format_number(b)}"
+                                        yhat_pow = a * (xp ** b) if not apply_ln_x else a * np.exp(xp * b)
+                                        r2_pow = stats.pearsonr(yp, yhat_pow)[0] ** 2
+                                        general_results_list.append({
+                                            "model": "Potencia",
+                                            "group": "GENERAL",
+                                            "var": indep_display_transformed,
+                                            "dep_var": dep_display_transformed,
+                                            "r2": r2_pow,
+                                            "formula": formula_pow,
+                                            "p_values": [("Intercepto", 0), ("Exponente", p_val_b)],
+                                            "n": n_all
+                                        })
+                                    except Exception as e:
+                                        self.log_message(f"Error en modelo Potencia GENERAL: {e}", "ERROR")
+                            
+                            # Modelo Cuadrático GENERAL
+                            if self.var_quadratic.get() and n_all >= 3:
+                                try:
+                                    X_quad_all = sm.add_constant(np.column_stack((x_all, x_all**2)))
+                                    mod_quad_all = sm.OLS(y_all, X_quad_all).fit()
+                                    params_quad = mod_quad_all.params
+                                    formula_quad = build_poly_formula(dep_display_transformed, params_quad, indep_display_transformed)
+                                    r2_quad = mod_quad_all.rsquared
+                                    general_results_list.append({
+                                        "model": "Cuadrático",
+                                        "group": "GENERAL",
+                                        "var": indep_display_transformed,
+                                        "dep_var": dep_display_transformed,
+                                        "r2": r2_quad,
+                                        "formula": formula_quad,
+                                        "p_general": mod_quad_all.f_pvalue,
+                                        "p_values": normalize_p_values(mod_quad_all.pvalues),
+                                        "n": n_all
+                                    })
+                                except Exception as e:
+                                    self.log_message(f"Error en modelo Cuadrático GENERAL: {e}", "ERROR")
+                            
+                            # Modelo Logarítmico GENERAL
+                            if self.var_log.get():
+                                mask_log = x_all > 0 if not apply_ln_x else np.ones(len(x_all), dtype=bool)
+                                if mask_log.sum() > 2:
+                                    xl, yl = x_all[mask_log], y_all[mask_log]
+                                    try:
+                                        log_x = np.log(xl) if not apply_ln_x else xl
+                                        X_log_all = sm.add_constant(log_x)
+                                        mod_log_all = sm.OLS(yl, X_log_all).fit()
+                                        const_log, slope_log = mod_log_all.params
+                                        formula_log = f"{dep_display_transformed} = {format_number(const_log)} + {format_number(slope_log)}·ln({indep_display})"
+                                        r2_log = mod_log_all.rsquared
+                                        general_results_list.append({
+                                            "model": "Logarítmico",
+                                            "group": "GENERAL",
+                                            "var": indep_display_transformed,
+                                            "dep_var": dep_display_transformed,
+                                            "r2": r2_log,
+                                            "formula": formula_log,
+                                            "p_general": mod_log_all.f_pvalue,
+                                            "p_values": normalize_p_values(mod_log_all.pvalues),
+                                            "n": n_all
+                                        })
+                                    except Exception as e:
+                                        self.log_message(f"Error en modelo Logarítmico GENERAL: {e}", "ERROR")
+                
+                for group_val in groups_to_plot:
+                    # Filtrar por grupo si aplica
+                    if group_val is not None and group_var:
+                        group_df = df_f[df_f[group_var].astype(str) == str(group_val)]
+                        group_label_prefix = f"[{group_val}] "
+                        point_color = group_colors.get(group_val, self.cmb_pt_color.get())
+                        line_color = point_color  # Mismo color para puntos y línea del grupo
+                    else:
+                        group_df = df_f
+                        group_label_prefix = ""
+                        point_color = self.cmb_pt_color.get()
+                        line_color = self.cmb_line_color.get()
+                    
+                    temp_df = group_df[[dep_original, indep_original]].dropna()
+                    if temp_df.shape[0] < 2:
+                        if group_val is not None:
+                            self.log_message(f"plot_regression: No hay suficientes datos para grupo '{group_val}'. Saltando.", "WARN")
+                        continue
+
+                    x = temp_df[indep_original].values.astype(float)
+                    y = temp_df[dep_original].values.astype(float)
+                    
+                    # Guardar originales para la tabla de frecuencia
+                    x_original = x.copy()
+                    y_original = y.copy()
+                    
+                    # Aplicar transformaciones ln si están habilitadas
+                    if apply_ln_x:
+                        mask_x = x > 0
+                        x = x[mask_x]
+                        y = y[mask_x]
+                        x_original = x_original[mask_x]
+                        y_original = y_original[mask_x]
+                        x = np.log(x)
+                    if apply_ln_y:
+                        mask_y = y > 0
+                        x = x[mask_y]
+                        y = y[mask_y]
+                        x_original = x_original[mask_y]
+                        y_original = y_original[mask_y]
+                        y = np.log(y)
+                    
+                    if len(x) < 2:
+                        if group_val is not None:
+                            self.log_message(f"plot_regression: No hay suficientes datos para grupo '{group_val}' después de transformación ln.", "WARN")
+                        continue
+                    
+                    # Apply custom labels to the dependent variable for display in summary
+                    custom_labels_str = self.entry_dep_var_labels.get().strip()
+                    y_for_summary = pd.Series(y_original)  # Usar valores originales para frecuencia
+                    if custom_labels_str:
+                        y_for_summary = self._apply_custom_labels_to_series(y_for_summary, custom_labels_str)
+
+                    # Mostrar encabezado de grupo si hay comparación de grupos
+                    if group_val is not None and self.var_show_group_stats.get():
+                        summary_for_dep.append(f"\n--- Grupo: {group_val} (n={len(x)}) ---\n")
+
+                    scatter_label = f"{group_label_prefix}{indep_display}" if not hide_point_legend else "_nolegend_"
+                    ax.scatter(x, y, color=point_color, s=pt_size, alpha=0.6, label=scatter_label)
+
+                    sort_idx = np.argsort(x)
+                    x_sorted = x[sort_idx]
+
+                    if self.var_linear.get():
+                        try:
+                            X_lin = sm.add_constant(x)
+                            mod = sm.OLS(y, X_lin).fit()
+                            const_lin, slope_lin = mod.params
+                            formula_lin = build_poly_formula(dep_display, [const_lin, slope_lin], indep_display)
+                            yhat = mod.predict(X_lin)
+                            p_lin, _ = safe_pearson(y, yhat)
+                            r2_lin = mod.rsquared
+                            legend_label = build_label(f"{group_label_prefix}Lineal", formula_lin, r2_lin)
+                            ax.plot(x_sorted, mod.predict(sm.add_constant(x_sorted)), linestyle=self.model_styles["Lineal"]["linestyle"], color=line_color, lw=line_width, label=legend_label)
+                            results_list.append({
+                                "model": "Lineal",
+                                "group": group_val,
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p_lin,
+                                "r2": r2_lin,
+                                "formula": formula_lin,
+                                "p_general": mod.f_pvalue,
+                                "p_values": normalize_p_values(mod.pvalues),
+                                "n": len(x)
+                            })
+                        except Exception as e: self.log_message(f"Error en modelo Lineal ({indep_display}, grupo={group_val}): {e}", "ERROR")
+
+                    if self.var_quadratic.get() and len(x) >= 3:
+                        try:
+                            X_quad = sm.add_constant(np.column_stack((x, x**2)))
+                            mod_quad = sm.OLS(y, X_quad).fit()
+                            const_quad, coef1_quad, coef2_quad = mod_quad.params
+                            formula_quad = build_poly_formula(dep_display, [const_quad, coef1_quad, coef2_quad], indep_display)
+                            yhat_quad = mod_quad.predict(X_quad)
+                            p_quad, _ = safe_pearson(y, yhat_quad)
+                            r2_quad = mod_quad.rsquared
+                            legend_label = build_label(f"{group_label_prefix}Cuadrático", formula_quad, r2_quad)
+                            ax.plot(x_sorted, np.polyval([coef2_quad, coef1_quad, const_quad], x_sorted), linestyle=self.model_styles["Cuadrático"]["linestyle"], color=line_color, lw=line_width, label=legend_label)
+                            results_list.append({
+                                "model": "Cuadrático",
+                                "group": group_val,
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p_quad,
+                                "r2": r2_quad,
+                                "formula": formula_quad,
+                                "p_general": mod_quad.f_pvalue,
+                                "p_values": normalize_p_values(mod_quad.pvalues),
+                                "n": len(x)
+                            })
+                        except Exception as e: self.log_message(f"Error Cuad ({indep_display}, grupo={group_val}): {e}", "ERROR")
+
+                    if self.var_cubic.get() and len(x) >= 4:
+                        try:
+                            X_cubic = sm.add_constant(np.column_stack((x, x**2, x**3)))
+                            mod_cubic = sm.OLS(y, X_cubic).fit()
+                            params_cubic = mod_cubic.params
+                            formula_cubic = build_poly_formula(dep_display, params_cubic, indep_display)
+                            yhat_cubic = mod_cubic.predict(X_cubic)
+                            p_cubic, _ = safe_pearson(y, yhat_cubic)
+                            r2_cubic = mod_cubic.rsquared
+                            legend_label = build_label(f"{group_label_prefix}Cúbico", formula_cubic, r2_cubic)
+                            ax.plot(x_sorted, np.polyval(params_cubic[::-1], x_sorted), linestyle=self.model_styles["Cúbico"]["linestyle"], color=line_color, lw=line_width, label=legend_label)
+                            results_list.append({
+                                "model": "Cúbico",
+                                "group": group_val,
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p_cubic,
+                                "r2": r2_cubic,
+                                "formula": formula_cubic,
+                                "p_general": mod_cubic.f_pvalue,
+                                "p_values": normalize_p_values(mod_cubic.pvalues)
+                            })
+                        except Exception as e: self.log_message(f"Error Cúbico ({indep_display}): {e}", "ERROR")
+
+                if self.var_power.get():
+                    mask_p = (x > 0) & (y > 0)
+                    if mask_p.sum() > 2:
+                        xp, yp = x[mask_p], y[mask_p]
+                        try:
+                            sl,it,_,p_val_b,_ = stats.linregress(np.log(xp),np.log(yp)); a,b=np.exp(it),sl; yhat=a*(xp**b)
+                            p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
+                            formula_power = f"{dep_display} = {format_number(a)}·{indep_display}^{format_number(b)}"
+                            legend_label = build_label("Potencia", formula_power, r2)
+                            ax.plot(np.sort(xp), a*np.power(np.sort(xp),b), linestyle=self.model_styles["Potencia"]["linestyle"], color=line_color, label=legend_label)
+                            results_list.append({
+                                "model": "Potencia",
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p,
+                                "r2": r2,
+                                "formula": formula_power,
+                                "p_values": [("Intercepto", np.nan), ("Exponente", p_val_b)]
+                            })
+                        except Exception as e: self.log_message(f"Error Potencia ({indep_display}): {e}", "ERROR")
+
+                if self.var_log.get():
+                    mask_l = x > 0
+                    if mask_l.sum() > 2:
+                        xp, yp = x[mask_l], y[mask_l]
+                        try:
+                            popt, pcov = curve_fit(lambda z,a,b:a+b*np.log(z),xp,yp,maxfev=10000); yhat=popt[0]+popt[1]*np.log(xp)
+                            p,pp=safe_pearson(yp,yhat); s,ps=safe_spearman(yp,yhat); r2=p**2 if not np.isnan(p) else np.nan
+                            p_values = self.get_p_values_from_curve_fit(popt, pcov, len(yp))
+                            formula_log = f"{dep_display} = {format_number(popt[0])} + {format_number(popt[1])}·ln({indep_display})"
+                            legend_label = build_label("Logarítmico", formula_log, r2)
+                            ax.plot(np.sort(xp), popt[0]+popt[1]*np.log(np.sort(xp)), linestyle=self.model_styles["Logarítmico"]["linestyle"], color=line_color, label=legend_label)
+                            p_values_named = [(f"Parámetro {idx}", val) for idx, val in enumerate(p_values)] if p_values is not None else []
+                            results_list.append({
+                                "model": "Logarítmico",
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p,
+                                "r2": r2,
+                                "formula": formula_log,
+                                "p_values": p_values_named
+                            })
+                        except Exception as e: self.log_message(f"Error Log ({indep_display}): {e}", "ERROR")
+
+                if self.var_loess.get() and len(x) > 5:
+                    try:
+                        lo=lowess(y,x,frac=0.3); xs,ys=lo[:,0],lo[:,1]; acme_x,acme_y=compute_acme(lambda z:np.interp(z,xs,ys),np.linspace(xs.min(),xs.max(),200))
+                        formula_loess = f"LOESS({indep_display})"
+                        legend_label = build_label("LOESS", formula_loess, None)
+                        results_list.append({"model":"LOESS", "var":indep_display, "dep_var":dep_display, "r":np.nan, "r2":np.nan, "formula":f"LOESS para {indep_display}: acme en x={format_number(acme_x)}, y={format_number(acme_y)}"})
+                        ax.plot(xs,ys, linestyle=self.model_styles["LOESS"]["linestyle"], color=line_color, label=legend_label)
+                    except Exception as e: self.log_message(f"Error LOESS ({indep_display}): {e}", "ERROR")
+
+                if self.var_inverse.get():
+                    mask_i = x != 0
+                    if mask_i.sum() > 2:
+                        xi, yi = x[mask_i], y[mask_i]
+                        try:
+                            X_inv = sm.add_constant(1 / xi)
+                            mod_inv = sm.OLS(yi, X_inv).fit()
+                            a_inv, b_inv = mod_inv.params
+                            yhat_inv = mod_inv.predict(X_inv)
+                            p_inv, pp_inv = safe_pearson(yi, yhat_inv)
+                            s_inv, ps_inv = safe_spearman(yi, yhat_inv)
+                            r2_inv = mod_inv.rsquared
+                            formula_inv = f"{dep_display} = {format_number(a_inv)} + {format_number(b_inv)}/{indep_display}"
+                            legend_label = build_label("Inverso", formula_inv, r2_inv)
+                            results_list.append({
+                                "model": "Inverso",
+                                "var": indep_display,
+                                "dep_var": dep_display,
+                                "r": p_inv,
+                                "r2": r2_inv,
+                                "formula": formula_inv,
+                                "p_general": mod_inv.f_pvalue,
+                                "p_values": normalize_p_values(mod_inv.pvalues)
+                            })
+                            x_sorted_inv = np.sort(xi)
+                            ax.plot(x_sorted_inv, a_inv + b_inv / x_sorted_inv, linestyle="-", color=line_color, label=legend_label)
+                        except Exception as e_inv: self.log_message(f"Error Inverso ({indep_display}): {e_inv}", "ERROR")
+
+                if self.var_rcs.get():
+                    try:
+                        X_rcs = dmatrix(f"cr(x, df=4)", {"x": x}, return_type='dataframe')
+                        mod_rcs = sm.OLS(y, X_rcs).fit()
+                        yhat_rcs = mod_rcs.predict(dmatrix(f"cr(x_sorted, df=4)", {"x_sorted": x_sorted}, return_type='dataframe'))
+                        p_rcs, pp_rcs = safe_pearson(y, mod_rcs.predict(X_rcs))
+                        s_rcs, ps_rcs = safe_spearman(y, mod_rcs.predict(X_rcs))
+                        r2_rcs = mod_rcs.rsquared_adj
+                        formula_rcs = "Spline Cúbico Restringido (df=4)"
+                        legend_label = build_label("Spline RCS", formula_rcs, r2_rcs)
+                        results_list.append({
+                            "model": "Spline (RCS, df=4)",
+                            "var": indep_display,
+                            "dep_var": dep_display,
+                            "r": p_rcs,
+                            "r2": r2_rcs,
+                            "formula": formula_rcs,
+                            "p_general": mod_rcs.f_pvalue,
+                            "p_values": normalize_p_values(mod_rcs.pvalues)
+                        })
+                        ax.plot(x_sorted, yhat_rcs, linestyle="--", color=line_color, label=legend_label)
+                    except Exception as e_rcs: self.log_message(f"Error en modelo Spline (RCS) ({indep_display}): {e_rcs}", "ERROR")
+
+                other_models_to_fit = []
+                if self.var_exp1.get(): other_models_to_fit.append(("Exp (a+b^x)", exp_model1))
+                if self.var_exp2.get(): other_models_to_fit.append(("Exp (a+x^b)", exp_model2))
+                if self.var_exp3.get(): other_models_to_fit.append(("Exp (A*B^x)", exp_model3))
+                if self.var_sigmoid.get(): other_models_to_fit.append(("Sigmoide", sigmoid))
+                if self.var_exp_decay.get(): other_models_to_fit.append(("Exp Decreciente", exp_decay))
+
+                for model_name, model_func in other_models_to_fit:
+                    try:
+                        p0_other = None
+                        if model_name == "Sigmoide" and len(y)>1 and len(x)>0 : p0_other = [max(y)-min(y), 1.0, np.median(x), min(y)]
+                        elif model_name == "Sigmoide": p0_other = [1,1,0,0]
+                        
+                        popt_other, pcov_other = curve_fit(model_func, x, y, p0=p0_other, maxfev=10000)
+                        yhat_other = model_func(x, *popt_other)
+                        pear_other, p_pear_other = safe_pearson(y, yhat_other)
+                        spear_other, p_spear_other = safe_spearman(y, yhat_other)
+                        r2_other = pear_other**2 if not np.isnan(pear_other) else np.nan
+                        p_values_other = self.get_p_values_from_curve_fit(popt_other, pcov_other, len(y))
+                        if model_name == "Exp (a+b^x)":
+                            formula_str_other = f"{dep_display} = {format_number(popt_other[0])} + {format_number(popt_other[1])}^{indep_display}"
+                        elif model_name == "Exp (a+x^b)":
+                            formula_str_other = f"{dep_display} = {format_number(popt_other[0])} + {indep_display}^{format_number(popt_other[1])}"
+                        elif model_name == "Exp (A*B^x)":
+                            formula_str_other = f"{dep_display} = {format_number(popt_other[0])}·{format_number(popt_other[1])}^{indep_display}"
+                        elif model_name == "Sigmoide":
+                            formula_str_other = (f"{dep_display} = {format_number(popt_other[0])} / (1 + exp(-{format_number(popt_other[1])}·({indep_display}-{format_number(popt_other[2])})))"
+                                                f" + {format_number(popt_other[3])}")
+                        elif model_name == "Exp Decreciente":
+                            formula_str_other = f"{dep_display} = {format_number(popt_other[0])}·exp(-{format_number(popt_other[1])}·{indep_display})"
+                        else:
+                            formula_str_other = f"{model_name}"
+
+                        legend_label = build_label(model_name, formula_str_other, r2_other)
+                        p_values_named = [(f"Parámetro {idx}", val) for idx, val in enumerate(p_values_other)] if p_values_other is not None else []
+                        results_list.append({
+                            "model": model_name,
+                            "var": indep_display,
+                            "dep_var": dep_display,
+                            "r": pear_other,
+                            "r2": r2_other,
+                            "formula": formula_str_other,
+                            "p_values": p_values_named
+                        })
+                        ax.plot(x_sorted, model_func(x_sorted, *popt_other), linestyle=self.model_styles[model_name]["linestyle"], color=line_color, label=legend_label)
+                    except RuntimeError: self.log_message(f"No se pudo ajustar {model_name} para {indep_display} (RuntimeError).", "WARN")
+                    except Exception as e_other_model: self.log_message(f"Error en {model_name} para {indep_display}: {e_other_model}", "ERROR")
+
+                resolved_xlabel = resolve_entry_text(self.entry_xlabel, indep_display)
+                ax.set_xlabel(resolved_xlabel, fontsize=txt_size)
+                resolved_ylabel = resolve_entry_text(self.entry_ylabel, dep_display)
+                ax.set_ylabel(resolved_ylabel, fontsize=txt_size)
+                resolved_title = resolve_entry_text(self.entry_title, f"Regresión de {dep_display} vs {indep_display}")
+                ax.set_title(resolved_title, fontsize=title_sz)
+
+                if self.var_plot_corr.get():
+                    try:
+                        r_p, _ = safe_pearson(x, y)
+                        r_s, _ = safe_spearman(x, y)
+                        corr_text = f"Pearson: {r_p:.3f}\nSpearman: {r_s:.3f}"
+                        ax.annotate(corr_text, xy=(0.05, 0.95), xycoords='axes fraction',
+                                    fontsize=max(6, txt_size-2), ha='left', va='top',
+                                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.7))
+                    except Exception as e: self.log_message(f"Error anotando correlaciones: {e}", "WARN")
+
+                if x_limits:
+                    ax.set_xlim(x_limits)
+                if y_limits:
+                    ax.set_ylim(y_limits)
+                if x_ticks_manual:
+                    ax.set_xticks(x_ticks_manual)
+                if y_ticks_manual:
+                    ax.set_yticks(y_ticks_manual)
+
+                configure_axis_format(ax.xaxis)
+                configure_axis_format(ax.yaxis)
+
+                if show_grid:
+                    ax.grid(True, linestyle='--', alpha=0.7)
+                else:
+                    ax.grid(False)
+
+                if show_info:
+                    info_lines = []
+                    if total_filtered_rows is not None:
+                        info_lines.append(f"n filtrado: {total_filtered_rows}")
+                    # Mostrar n por grupo si hay comparación de grupos
+                    if compare_groups and group_var and len(groups_to_plot) >= 2 and group_var in df_f.columns:
+                        for grp in groups_to_plot:
+                            grp_df = df_f[df_f[group_var].astype(str) == str(grp)]
+                            info_lines.append(f"n {grp}: {len(grp_df)}")
+                    else:
+                        info_lines.append(f"n modelo: {len(temp_df)}")
+                    if filter_summary:
+                        wrapped_filters = textwrap.wrap(filter_summary, width=45)
+                        if wrapped_filters:
+                            info_lines.append("Filtros:")
+                            info_lines.extend(wrapped_filters)
+                    info_text = "\n".join(info_lines)
+                    ax.annotate(info_text, xy=(0.95, 0.95), xycoords='axes fraction', fontsize=max(6, txt_size-2),
+                                ha='right', va='top', bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#666666", alpha=0.6))
+
+                handles, labels = ax.get_legend_handles_labels()
+                legend_pairs = [(h, l) for h, l in zip(handles, labels) if l and l != '_nolegend_']
+                if legend_pairs:
+                    handles, labels = zip(*legend_pairs)
+                    ax.legend(handles, labels, fontsize=max(6, txt_size-2), loc='best')
+                else:
+                    existing_legend = ax.get_legend()
+                    if existing_legend is not None:
+                        existing_legend.remove()
+
+                results_list.sort(key=lambda x: x.get("r2", -1), reverse=True)
+                
+                # Separar resultados por grupo si aplica
+                if compare_groups and group_var and len(groups_to_plot) >= 2:
+                    # --- PRIMERO: Mostrar modelo GENERAL (todos los datos) ---
+                    if general_results_list:
+                        n_total = general_results_list[0].get('n', '?') if general_results_list else '?'
+                        summary_for_dep.append(f"\n{'='*70}\n")
+                        summary_for_dep.append(f"MODELO GENERAL (todos los datos combinados, n={n_total})\n")
+                        summary_for_dep.append(f"{'='*70}\n")
+                        
+                        for r_item in general_results_list:
+                            summary_for_dep.append(f"\nModelo: {r_item['model']} | VI: {r_item['var']}\n")
+                            if show_formula_flag and r_item.get('formula'):
+                                summary_for_dep.append(f"  Fórmula: {r_item['formula']}\n")
+                            if show_r2_flag and ('r2' in r_item) and r_item['r2'] is not None:
+                                try:
+                                    summary_for_dep.append(f"  R² = {format_number(r_item['r2'])}\n")
+                                except Exception:
+                                    summary_for_dep.append(f"  R² = {r_item['r2']}\n")
+                            if 'p_general' in r_item and r_item['p_general'] is not None:
+                                summary_for_dep.append(f"  P-valor (F) = {fmt_p(r_item['p_general'])}\n")
+                            if 'p_values' in r_item:
+                                summary_for_dep.append("  P-valores de coeficientes:\n")
+                                p_iterable = r_item['p_values']
+                                if isinstance(p_iterable, list):
+                                    for entry in p_iterable:
+                                        if isinstance(entry, tuple) and len(entry) == 2:
+                                            label, p_val = entry
+                                            summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                                        else:
+                                            summary_for_dep.append(f"    Coef: {fmt_p(entry)}\n")
+                                elif isinstance(p_iterable, (pd.Series, dict)):
+                                    for label, p_val in (p_iterable.items() if hasattr(p_iterable, 'items') else p_iterable):
+                                        summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                        summary_for_dep.append(f"{'-' * 70}\n")
+                    
+                    # --- SEGUNDO: Agrupar y mostrar resultados por grupo ---
+                    results_by_group = {}
+                    for r_item in results_list:
+                        grp = r_item.get('group', 'General')
+                        if grp not in results_by_group:
+                            results_by_group[grp] = []
+                        results_by_group[grp].append(r_item)
+                    
+                    # Mostrar resultados por grupo
+                    for grp in groups_to_plot:
+                        if grp in results_by_group:
+                            grp_results = results_by_group[grp]
+                            # Obtener n del grupo
+                            n_grp = grp_results[0].get('n', '?') if grp_results else '?'
+                            summary_for_dep.append(f"\n{'='*70}\n")
+                            summary_for_dep.append(f"REGRESIONES PARA GRUPO: {grp} (n={n_grp})\n")
+                            summary_for_dep.append(f"{'='*70}\n")
+                            
+                            for r_item in grp_results:
+                                summary_for_dep.append(f"\nModelo: {r_item['model']} | VI: {r_item['var']}\n")
+                                if show_formula_flag and r_item.get('formula'):
+                                    summary_for_dep.append(f"  Fórmula: {r_item['formula']}\n")
+                                if show_r2_flag and ('r2' in r_item) and r_item['r2'] is not None:
+                                    try:
+                                        summary_for_dep.append(f"  R² = {format_number(r_item['r2'])}\n")
+                                    except Exception:
+                                        summary_for_dep.append(f"  R² = {r_item['r2']}\n")
+                                if 'p_general' in r_item and r_item['p_general'] is not None:
+                                    summary_for_dep.append(f"  P-valor (F) = {fmt_p(r_item['p_general'])}\n")
+                                if 'p_values' in r_item:
+                                    summary_for_dep.append("  P-valores de coeficientes:\n")
+                                    p_iterable = r_item['p_values']
+                                    if isinstance(p_iterable, list):
+                                        for entry in p_iterable:
+                                            if isinstance(entry, tuple) and len(entry) == 2:
+                                                label, p_val = entry
+                                                summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                                            else:
+                                                summary_for_dep.append(f"    Coef: {fmt_p(entry)}\n")
+                                    elif isinstance(p_iterable, pd.Series):
+                                        for label, p_val in p_iterable.items():
+                                            summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                                    elif isinstance(p_iterable, dict):
+                                        for label, p_val in p_iterable.items():
+                                            summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                                    else:
+                                        summary_for_dep.append(f"    Coef: {fmt_p(p_iterable)}\n")
+                            summary_for_dep.append(f"{'-' * 70}\n")
+                else:
+                    # Sin grupos - mostrar todos los resultados
+                    for r_item in results_list:
+                        summary_for_dep.append(f"Modelo: {r_item['model']} | VI: {r_item['var']}\n")
+                        if show_formula_flag and r_item.get('formula'):
+                            summary_for_dep.append(f"  Fórmula: {r_item['formula']}\n")
+                        if show_r2_flag and ('r2' in r_item) and r_item['r2'] is not None:
+                            try:
+                                summary_for_dep.append(f"  R² = {format_number(r_item['r2'])}\n")
+                            except Exception:
+                                summary_for_dep.append(f"  R² = {r_item['r2']}\n")
+                        if 'p_general' in r_item and r_item['p_general'] is not None:
+                            summary_for_dep.append(f"  P-valor (general) = {fmt_p(r_item['p_general'])}\n")
+                        if 'p_values' in r_item:
+                            summary_for_dep.append("  P-valores de coeficientes:\n")
+                            p_iterable = r_item['p_values']
+                            if isinstance(p_iterable, list):
+                                for entry in p_iterable:
+                                    if isinstance(entry, tuple) and len(entry) == 2:
+                                        label, p_val = entry
+                                        summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                                    else:
+                                        summary_for_dep.append(f"    Coef: {fmt_p(entry)}\n")
+                            elif isinstance(p_iterable, pd.Series):
+                                for label, p_val in p_iterable.items():
+                                    summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                            elif isinstance(p_iterable, dict):
+                                for label, p_val in p_iterable.items():
+                                    summary_for_dep.append(f"    {label}: {fmt_p(p_val)}\n")
+                            else:
+                                summary_for_dep.append(f"    Coef: {fmt_p(p_iterable)}\n")
+                        summary_for_dep.append(f"{'-' * 70}\n")
+
+                # --- Análisis de Interacción (comparación formal de pendientes) ---
+                if compare_groups and group_var and len(groups_to_plot) >= 2 and self.var_interaction_analysis.get():
+                    try:
+                        apply_ln_x = self.var_ln_x.get()
+                        apply_ln_y = self.var_ln_y.get()
+                        # Comparaciones pairwise de todos los grupos
+                        interaction_text = self._run_pairwise_interaction(
+                            df_f, dep_original, indep_original, group_var, groups_to_plot, format_number,
+                            apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y)
+                        if interaction_text:
+                            summary_for_dep.append("\n" + "=" * 70 + "\n")
+                            summary_for_dep.append(interaction_text)
+                            summary_for_dep.append("=" * 70 + "\n")
+                    except Exception as e_int:
+                        self.log_message(f"Error en análisis de interacción: {e_int}", "ERROR")
+                        summary_for_dep.append(f"\n[Error en análisis de interacción: {e_int}]\n")
+
+                # --- ANCOVA (Análisis de Covarianza) ---
+                if compare_groups and group_var and len(groups_to_plot) >= 2 and self.var_ancova.get():
+                    try:
+                        apply_ln_x = self.var_ln_x.get()
+                        apply_ln_y = self.var_ln_y.get()
+                        # Comparaciones pairwise de todos los grupos
+                        ancova_text = self._run_pairwise_ancova(
+                            df_f, dep_original, indep_original, group_var, groups_to_plot, format_number,
+                            apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y)
+                        if ancova_text:
+                            summary_for_dep.append("\n")
+                            summary_for_dep.append(ancova_text)
+                            summary_for_dep.append("\n")
+                    except Exception as e_ancova:
+                        self.log_message(f"Error en ANCOVA: {e_ancova}", "ERROR")
+                        summary_for_dep.append(f"\n[Error en ANCOVA: {e_ancova}]\n")
+
+                # --- Prueba de Chow (Ruptura Estructural) ---
+                if compare_groups and group_var and len(groups_to_plot) >= 2 and self.var_chow_test.get():
+                    try:
+                        apply_ln_x = self.var_ln_x.get()
+                        apply_ln_y = self.var_ln_y.get()
+                        # Comparaciones pairwise de todos los grupos
+                        chow_text = self._run_pairwise_chow(
+                            df_f, dep_original, indep_original, group_var, groups_to_plot, format_number,
+                            apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y)
+                        if chow_text:
+                            summary_for_dep.append("\n")
+                            summary_for_dep.append(chow_text)
+                            summary_for_dep.append("\n")
+                    except Exception as e_chow:
+                        self.log_message(f"Error en Prueba de Chow: {e_chow}", "ERROR")
+                        summary_for_dep.append(f"\n[Error en Prueba de Chow: {e_chow}]\n")
+
+                # --- Comparación NLS (Modelos No Lineales: AIC, BIC, LRT) ---
+                if compare_groups and group_var and len(groups_to_plot) >= 2 and self.var_nls_comparison.get():
+                    try:
+                        apply_ln_x = self.var_ln_x.get()
+                        apply_ln_y = self.var_ln_y.get()
+                        # Comparaciones pairwise de todos los grupos
+                        nls_text = self._run_pairwise_nls(
+                            df_f, dep_original, indep_original, group_var, groups_to_plot, format_number,
+                            apply_ln_x=apply_ln_x, apply_ln_y=apply_ln_y)
+                        if nls_text:
+                            summary_for_dep.append("\n")
+                            summary_for_dep.append(nls_text)
+                            summary_for_dep.append("\n")
+                    except Exception as e_nls:
+                        self.log_message(f"Error en comparación NLS: {e_nls}", "ERROR")
+                        summary_for_dep.append(f"\n[Error en comparación NLS: {e_nls}]\n")
+
+            all_results_summary.extend(summary_for_dep)
+            self.fig.tight_layout()
+            self.canvas.draw()
+            self.log_message(f"plot_regression: Gráfico para '{dep_display}' dibujado en el canvas.", "INFO")
+
+            # Switch to the graph tab
+            self.results_notebook.select(self.graph_frame)
+
+        self.results_text_content = "".join(all_results_summary)
         self.show_results_tab()
-        self.log_message("plot_regression: Gráfica y resumen generados.", "INFO")
-
-
+        self.log_message("plot_regression: Todas las gráficas y resúmenes generados.", "INFO")
     def show_results_tab(self):
         self.log_message("show_results_tab: Actualizando widget de texto con resultados.", "DEBUG")
         self.txt_results.config(state="normal")
@@ -1510,41 +3615,23 @@ class RegresionesTab(ttk.Frame):
         self.txt_results.insert("1.0", self.results_text_content)
         self.txt_results.config(state="disabled")
 
-    def view_graph_popup(self):
-        self.log_message("Iniciando view_graph_popup...", "DEBUG")
-        if not os.path.exists(self.graph_path):
-            self.log_message("view_graph_popup: No hay gráfica generada (archivo no existe). Retornando.", "WARN")
-            messagebox.showwarning("Sin Gráfica", "Primero genere una gráfica usando el botón 'Generar Dispersión y Regresión'.", parent=self)
-            return
 
-        self.log_message(f"view_graph_popup: Mostrando gráfica desde {self.graph_path}", "INFO")
-        popup = tk.Toplevel(self)
-        popup.title("Vista Ampliada de la Gráfica")
-        try:
-            img = tk.PhotoImage(file=self.graph_path)
-            lbl = tk.Label(popup, image=img)
-            lbl.image = img
-            lbl.pack(fill="both", expand=True)
-            popup.geometry("900x700") 
-        except Exception as e:
-            self.log_message(f"Error al abrir gráfica: {e}")
-            if popup: popup.destroy()
 
 
     def save_graph_directly(self):
         self.log_message("Iniciando save_graph_directly...", "DEBUG")
-        if not os.path.exists(self.graph_path):
-            self.log_message("save_graph_directly: No hay gráfica para guardar (archivo no existe). Retornando.", "WARN")
+        
+        if not self.fig.axes:
+            self.log_message("save_graph_directly: No hay gráfica para guardar (figura vacía). Retornando.", "WARN")
             messagebox.showwarning("Sin Gráfica", "No hay gráfica generada para guardar. Genere una primero.", parent=self)
             return
 
-        self.log_message(f"save_graph_directly: Solicitando ruta para guardar {self.graph_path}", "INFO")
         dest = filedialog.asksaveasfilename(initialfile="regresion_plot.png",
                                             defaultextension=".png",
                                             filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg;*.jpeg"), ("All files", "*.*")])
         if dest:
             try:
-                shutil.copy2(self.graph_path, dest)
+                self.fig.savefig(dest)
                 self.log_message(f"Gráfica guardada en {dest}")
             except Exception as e:
                 self.log_message(f"Error al guardar gráfica: {e}")
@@ -1552,9 +3639,11 @@ class RegresionesTab(ttk.Frame):
 def run_tkinter_app():
     root = tk.Tk()
     root.title("Regresiones y Dispersión")
-    root.geometry("1200x800")
+    root.geometry("1200x800") # Set initial size, but the window will be resizable
+    root.rowconfigure(0, weight=1)
+    root.columnconfigure(0, weight=1)
     nb = ttk.Notebook(root)
-    nb.pack(fill="both", expand=True)
+    nb.grid(row=0, column=0, sticky="nsew")
     tab = RegresionesTab(nb)
     nb.add(tab, text="Regresiones")
     root.mainloop()

@@ -2,12 +2,25 @@
 # -*- coding: utf-8 -*-
 
 # --- Importaciones Estándar de Python ---
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 from lifelines.utils import concordance_index
 from lifelines import CoxPHFitter, KaplanMeierFitter
 import lifelines # Importar lifelines directamente para verificar la versión
+
+# --- Uno's C-index (IPCW) + Antolini Ctd + Brier from scikit-survival ---
+try:
+    from sksurv.metrics import concordance_index_ipcw as _concordance_index_ipcw
+    from sksurv.metrics import cumulative_dynamic_auc as _cumulative_dynamic_auc
+    from sksurv.metrics import brier_score as _brier_score_cox
+    from sksurv.metrics import integrated_brier_score as _integrated_brier_score_cox
+except Exception:
+    _concordance_index_ipcw = None
+    _cumulative_dynamic_auc = None
+    _brier_score_cox = None
+    _integrated_brier_score_cox = None
 # Usar este para evitar problemas con LogFormatter
 from matplotlib.ticker import ScalarFormatter
+from matplotlib import transforms as mtransforms
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.pyplot as plt
 import os
@@ -18,6 +31,7 @@ import csv
 import json
 import re
 import math
+import copy
 import sys # Añadido para manipulación de sys.path
 
 # --- Importaciones de Tkinter ---
@@ -38,13 +52,6 @@ matplotlib.use('TkAgg')  # Backend para Tkinter
 from lifelines.exceptions import ConvergenceError
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 # check_assumptions lo reemplaza en gran medida
-
-try:
-    from lifelines.scoring import brier_score
-    LIFELINES_BRIER_SCORE_AVAILABLE = True
-except ImportError:
-    LIFELINES_BRIER_SCORE_AVAILABLE = False
-    print("ADVERTENCIA: La función 'brier_score' no pudo ser importada desde 'lifelines.scoring'.")
 
 try:
     from lifelines.calibration import survival_probability_calibration
@@ -89,6 +96,187 @@ def format_p_value(p_val, threshold=0.0001):
         return f"{p_val:.2e}"
     else:
         return f"{p_val:.4f}"
+
+
+def format_c_index_display(value, ci=None, decimals=3, na_text="N/A"):
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return na_text
+    if not np.isfinite(numeric_value):
+        return na_text
+
+    base_text = f"{numeric_value:.{decimals}f}"
+    if isinstance(ci, (list, tuple)) and len(ci) == 2:
+        try:
+            lower = float(ci[0])
+            upper = float(ci[1])
+        except (TypeError, ValueError):
+            return base_text
+        if np.isfinite(lower) and np.isfinite(upper):
+            if lower > upper:
+                lower, upper = upper, lower
+            return f"{base_text} ({lower:.{decimals}f}, {upper:.{decimals}f})"
+    return base_text
+
+
+def compute_mean_confidence_interval_from_samples(values, confidence_level=0.95, clip_min=None, clip_max=None):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+
+    center = float(np.nanmean(arr))
+    if arr.size == 1:
+        lower = upper = center
+    else:
+        stderr = float(np.nanstd(arr, ddof=1) / np.sqrt(arr.size))
+        z_value = float(scipy.stats.norm.ppf(0.5 + (float(np.clip(confidence_level, 0.50, 0.999)) / 2.0)))
+        margin = z_value * stderr if np.isfinite(stderr) else 0.0
+        lower = center - margin
+        upper = center + margin
+
+    if clip_min is not None:
+        lower = max(lower, clip_min)
+        upper = max(upper, clip_min)
+    if clip_max is not None:
+        lower = min(lower, clip_max)
+        upper = min(upper, clip_max)
+    if lower > upper:
+        lower, upper = upper, lower
+    return (float(lower), float(upper))
+
+
+def bootstrap_concordance_ci_from_scores(y_data, time_col, event_col, score_values, confidence_level=0.95, n_bootstrap=120, random_state=42):
+    if not isinstance(y_data, pd.DataFrame) or y_data.empty or time_col not in y_data.columns or event_col not in y_data.columns:
+        return None
+
+    scores = np.asarray(score_values, dtype=float).reshape(-1)
+    if scores.size != len(y_data) or scores.size < 5:
+        return None
+
+    times = pd.to_numeric(y_data[time_col], errors='coerce').to_numpy(dtype=float)
+    events = pd.to_numeric(y_data[event_col], errors='coerce').fillna(0).to_numpy(dtype=float)
+    valid_mask = np.isfinite(times) & np.isfinite(scores)
+    if valid_mask.sum() < 5:
+        return None
+
+    times = times[valid_mask]
+    scores = scores[valid_mask]
+    events = events[valid_mask]
+    if np.unique(events > 0).size < 2:
+        return None
+
+    rng = np.random.default_rng(random_state)
+    population_idx = np.arange(times.size)
+    sampled_cindices = []
+    alpha = 1.0 - float(np.clip(confidence_level, 0.50, 0.999))
+
+    for _ in range(int(max(20, n_bootstrap))):
+        bootstrap_idx = rng.choice(population_idx, size=population_idx.size, replace=True)
+        sampled_events = events[bootstrap_idx]
+        if np.unique(sampled_events > 0).size < 2:
+            continue
+        try:
+            c_value = float(concordance_index(times[bootstrap_idx], scores[bootstrap_idx], sampled_events))
+        except Exception:
+            continue
+        if np.isfinite(c_value):
+            sampled_cindices.append(c_value)
+
+    if len(sampled_cindices) < 10:
+        return None
+
+    lower = float(np.nanquantile(sampled_cindices, alpha / 2.0))
+    upper = float(np.nanquantile(sampled_cindices, 1.0 - (alpha / 2.0)))
+    lower = float(np.clip(lower, 0.0, 1.0))
+    upper = float(np.clip(upper, 0.0, 1.0))
+    return (min(lower, upper), max(lower, upper))
+
+
+def coerce_bool_option(value, default=None):
+    """Interpret assorted truthy/falsey representations from UI settings."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on", "si", "sí"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_schoenfeld_label(label):
+    """Produce a normalized string representation for Schoenfeld-related labels/index keys."""
+    if label is None:
+        return ""
+    if isinstance(label, tuple):
+        parts = [normalize_schoenfeld_label(part) for part in label if part is not None]
+        return " | ".join(part for part in parts if part)
+    label_str = str(label)
+    label_str = re.sub(r"\s+", " ", label_str)
+    return label_str.strip()
+
+
+def normalize_schoenfeld_dataframe(df):
+    """Return a copy of the Schoenfeld results dataframe with standardized column names."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+    normalized_df = df.copy()
+    rename_map = {}
+    for col in normalized_df.columns:
+        col_norm = normalize_schoenfeld_label(col).lower()
+        if col_norm in {"p", "p value", "p-value", "p_value", "pvalues", "p-values"}:
+            rename_map[col] = 'p'
+        elif col_norm in {"test statistic", "test_statistic", "test-statistic", "chi2", "chisq", "chi squared", "chi-squared"}:
+            rename_map[col] = 'test_statistic'
+        elif col_norm in {"-log2(p)", "-log2 p", "-log2p"}:
+            rename_map[col] = '-log2(p)'
+    if rename_map:
+        normalized_df = normalized_df.rename(columns=rename_map)
+    return normalized_df
+
+
+def extract_schoenfeld_p_value(df, term_label):
+    """Retrieve the p-value associated with a specific term from a Schoenfeld results dataframe."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    df_norm = normalize_schoenfeld_dataframe(df)
+    if 'p' not in df_norm.columns:
+        return None
+
+    candidates = []
+    if term_label in df_norm.index:
+        candidates.append(term_label)
+
+    term_norm = normalize_schoenfeld_label(term_label)
+    if not candidates:
+        for idx in df_norm.index:
+            if normalize_schoenfeld_label(idx) == term_norm:
+                candidates.append(idx)
+                break
+
+    for idx in candidates:
+        try:
+            value = df_norm.loc[idx, 'p']
+        except KeyError:
+            continue
+        if isinstance(value, pd.Series):
+            value = value.iloc[0]
+        elif isinstance(value, pd.DataFrame):
+            value = value.iloc[0, 0]
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 def parse_time_horizon_string(time_str: str, log_func=print) -> list[float]:
     """
@@ -138,7 +326,14 @@ def parse_time_horizon_string(time_str: str, log_func=print) -> list[float]:
 
 def compute_model_metrics(model, X_design, y_data, time_col, event_col,
                           c_index_cv_mean=None, c_index_cv_std=None,
-                          schoenfeld_results_df=None, loglik_null=None, log_func=print):
+                          schoenfeld_results_df=None, loglik_null=None, log_func=print,
+                          c_index_test=None, test_proportion=None, c_index_gap=None,
+                          c_index_train_ci=None, c_index_test_ci=None, c_index_cv_ci=None,
+                          c_index_uno=None, c_index_antolini=None, tau=None,
+                          ibs=None, brier_q25=None, brier_q50=None, brier_q75=None,
+                          auroc_q25=None, auroc_q50=None, auroc_q75=None,
+                          c_harrell_q25=None, c_harrell_q50=None, c_harrell_q75=None,
+                          time_q25=None, time_q50=None, time_q75=None):
     metrics = {}
     n_obs = y_data.shape[0] if y_data is not None and not y_data.empty else 0
     num_params = 0
@@ -165,6 +360,7 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
         else:
             log_func(f"DEBUG: compute_model_metrics: schoenfeld_results_df is not DataFrame.", "DEBUG")
 
+    schoenfeld_results_df = normalize_schoenfeld_dataframe(schoenfeld_results_df) if isinstance(schoenfeld_results_df, pd.DataFrame) else schoenfeld_results_df
     if schoenfeld_results_df is not None and isinstance(schoenfeld_results_df, pd.DataFrame) and not schoenfeld_results_df.empty:
         if 'p' in schoenfeld_results_df.columns:
             found_global_p = False
@@ -231,23 +427,29 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
     model_summary_df = getattr(model, "summary", None)
     if model_summary_df is not None and isinstance(model_summary_df, pd.DataFrame) and not model_summary_df.empty:
         summary_df = model_summary_df.copy() # Work with a copy
-        if 'z' in summary_df.columns:
-            z_scores = summary_df['z'].dropna() # z_scores is a Series
-            if not z_scores.empty: # Correct check for a Series
-                try:
-                    wald_stat = float((z_scores ** 2).sum()) # Should be scalar
-                    df_wald = len(z_scores) # Should be scalar
-                    if df_wald > 0: # Ensure df_wald is positive for chi2.sf
-                        metrics["Wald p-value (global approx)"] = scipy.stats.chi2.sf(wald_stat, df_wald)
-                    else:
-                        metrics["Wald p-value (global approx)"] = None
-                except Exception as e_wald:
-                    if log_func: log_func(f"DEBUG: Error calculating Wald p-value: {e_wald}", "WARN")
-                    metrics["Wald p-value (global approx)"] = None
-            else: # z_scores is empty
-                 metrics["Wald p-value (global approx)"] = None
-        else: # 'z' column not in summary_df
-            metrics["Wald p-value (global approx)"] = None
+        wald_global_p = None
+        try:
+            params_series = getattr(model, 'params_', None)
+            variance_matrix_obj = getattr(model, 'variance_matrix_', None)
+            if params_series is not None and variance_matrix_obj is not None and not params_series.empty:
+                params_vec = params_series.to_numpy(dtype=float)
+                if isinstance(variance_matrix_obj, pd.DataFrame):
+                    variance_matrix_obj = variance_matrix_obj.reindex(index=params_series.index, columns=params_series.index, fill_value=0.0)
+                    cov_matrix = variance_matrix_obj.to_numpy(dtype=float, copy=False)
+                else:
+                    cov_matrix = np.asarray(variance_matrix_obj, dtype=float)
+
+                # Usar pseudo-inversa por estabilidad numérica (cov puede ser singular con penalización)
+                cov_pinv = np.linalg.pinv(cov_matrix)
+                wald_stat = float(params_vec.T @ cov_pinv @ params_vec)
+                df_wald = params_vec.size
+                if df_wald > 0 and np.isfinite(wald_stat) and wald_stat >= 0:
+                    wald_global_p = scipy.stats.chi2.sf(wald_stat, df_wald)
+        except Exception as e_wald_global:
+            if log_func: log_func(f"DEBUG: Error calculating global Wald via covariance: {e_wald_global}", "WARN")
+            wald_global_p = None
+
+        metrics["Wald p-value (global approx)"] = wald_global_p
 
         if 'p' in summary_df.columns:
             metrics["Wald p-values (individual)"] = summary_df["p"].dropna().to_dict()
@@ -268,7 +470,21 @@ def compute_model_metrics(model, X_design, y_data, time_col, event_col,
 
     # Concordance Index
     metrics["C-Index (Training)"] = getattr(model, "concordance_index_", None) # This is usually a scalar
+    metrics["C-Index (Training) CI"] = c_index_train_ci
+    metrics["C-Index (Test)"] = c_index_test
+    metrics["C-Index (Test) CI"] = c_index_test_ci
+    metrics["C-Index Uno (IPCW)"] = c_index_uno
+    metrics["C-Index Antolini (Ctd)"] = c_index_antolini
+    metrics["τ (tau)"] = tau
+    metrics["IBS"] = ibs
+    metrics["Brier@Q25"] = brier_q25; metrics["Brier@Q50"] = brier_q50; metrics["Brier@Q75"] = brier_q75
+    metrics["AUC@Q25"] = auroc_q25; metrics["AUC@Q50"] = auroc_q50; metrics["AUC@Q75"] = auroc_q75
+    metrics["C@Q25"] = c_harrell_q25; metrics["C@Q50"] = c_harrell_q50; metrics["C@Q75"] = c_harrell_q75
+    metrics["t(Q25)"] = time_q25; metrics["t(Q50)"] = time_q50; metrics["t(Q75)"] = time_q75
+    metrics["Test Proportion"] = test_proportion
+    metrics["C-Index Gap (Test-Train)"] = c_index_gap
     metrics["C-Index (CV Mean)"] = c_index_cv_mean # Scalar or None
+    metrics["C-Index (CV Mean) CI"] = c_index_cv_ci
     metrics["C-Index (CV Std)"] = c_index_cv_std # Scalar or None
 
     # AIC and BIC calculations
@@ -350,39 +566,62 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             ref_combo.grid(row=1, column=1, columnspan=2, sticky=tk.EW, padx=5)
             self.row_configs[cov_name]['ref_combo'] = ref_combo
 
+            # Comparación categórica
+            ttk.Label(row_labelframe, text="Comparación:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+            compare_display_values = list(self.app_instance.categorical_compare_display_map.values())
+            cat_compare_mode_combo = ttk.Combobox(row_labelframe, values=compare_display_values, state="disabled", width=30)
+            cat_compare_mode_combo.set(self.app_instance._get_default_categorical_compare_display())
+            cat_compare_mode_combo.grid(row=2, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            cat_compare_mode_combo.bind("<<ComboboxSelected>>", lambda _event, c=cov_name: self._toggle_row_controls_state(c))
+            self.row_configs[cov_name]['cat_compare_mode_combo'] = cat_compare_mode_combo
+
+            ttk.Label(row_labelframe, text="  Grupos a comparar (coma):").grid(row=3, column=0, sticky=tk.W, padx=15, pady=2)
+            cat_compare_groups_var = tk.StringVar(value="")
+            self.row_configs[cov_name]['cat_compare_groups_var'] = cat_compare_groups_var
+            cat_compare_groups_entry = ttk.Entry(row_labelframe, textvariable=cat_compare_groups_var, width=28, state="disabled")
+            cat_compare_groups_entry.grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            self.row_configs[cov_name]['cat_compare_groups_entry'] = cat_compare_groups_entry
+
             # Usar Spline
-            ttk.Label(row_labelframe, text="Spline:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+            ttk.Label(row_labelframe, text="Spline:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=2)
             spline_var = tk.BooleanVar(value=False)
             self.row_configs[cov_name]['spline_var'] = spline_var
             cb_spline = ttk.Checkbutton(row_labelframe, text="Usar", variable=spline_var,
                                         command=lambda c=cov_name: self._toggle_row_controls_state(c))
-            cb_spline.grid(row=2, column=1, sticky=tk.W, padx=5)
+            cb_spline.grid(row=4, column=1, sticky=tk.W, padx=5)
             self.row_configs[cov_name]['cb_spline'] = cb_spline
 
             # Spline Tipo
-            ttk.Label(row_labelframe, text="  Tipo Spline:").grid(row=3, column=0, sticky=tk.W, padx=15, pady=2)
-            spline_type_combo = ttk.Combobox(row_labelframe, values=["Natural", "B-spline"], state="disabled", width=10,
-                                             command=lambda c=cov_name: self._toggle_row_controls_state(c)) # Añadido command
-            spline_type_combo.set("Natural")
-            spline_type_combo.grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            ttk.Label(row_labelframe, text="  Tipo Spline:").grid(row=5, column=0, sticky=tk.W, padx=15, pady=2)
+            display_values = list(self.app_instance.spline_type_display_map.values())
+            spline_type_combo = ttk.Combobox(row_labelframe, values=display_values, state="disabled", width=24)
+            spline_type_combo.set(self.app_instance._get_default_spline_display())
+            spline_type_combo.grid(row=5, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            spline_type_combo.bind("<<ComboboxSelected>>", lambda _event, c=cov_name: self._toggle_row_controls_state(c))
             self.row_configs[cov_name]['spline_type_combo'] = spline_type_combo
 
-            # Spline DF
-            ttk.Label(row_labelframe, text="  Spline DF:").grid(row=4, column=0, sticky=tk.W, padx=15, pady=2)
-            spline_df_var = tk.IntVar(value=4)
-            self.row_configs[cov_name]['spline_df_var'] = spline_df_var
-            spline_df_spinbox = ttk.Spinbox(row_labelframe, from_=2, to=10, textvariable=spline_df_var, width=5, state="disabled")
-            spline_df_spinbox.grid(row=4, column=1, sticky=tk.W, padx=5)
-            self.row_configs[cov_name]['spline_df_spinbox'] = spline_df_spinbox
+            ttk.Label(row_labelframe, text="  Nodos Internos (0 = polinómico):").grid(row=6, column=0, sticky=tk.W, padx=15, pady=2)
+            spline_knots_var = tk.IntVar(value=0)
+            self.row_configs[cov_name]['spline_knots_var'] = spline_knots_var
+            spline_knots_spinbox = ttk.Spinbox(row_labelframe, from_=0, to=15, textvariable=spline_knots_var, width=5, state="disabled")
+            spline_knots_spinbox.grid(row=6, column=1, sticky=tk.W, padx=5)
+            self.row_configs[cov_name]['spline_knots_spinbox'] = spline_knots_spinbox
 
             # Spline Degree (Nuevo para B-Splines)
-            ttk.Label(row_labelframe, text="  Spline Grado:").grid(row=5, column=0, sticky=tk.W, padx=15, pady=2)
+            ttk.Label(row_labelframe, text="  Grado (1=recta, 2=cuadrática, 3=cúbica):").grid(row=7, column=0, sticky=tk.W, padx=15, pady=2)
             spline_degree_var = tk.IntVar(value=3) # Default cúbico
             self.row_configs[cov_name]['spline_degree_var'] = spline_degree_var
             # Grados comunes: 1 (lineal), 2 (cuadrático), 3 (cúbico)
             spline_degree_spinbox = ttk.Spinbox(row_labelframe, from_=1, to=5, textvariable=spline_degree_var, width=5, state="disabled")
-            spline_degree_spinbox.grid(row=5, column=1, sticky=tk.W, padx=5)
+            spline_degree_spinbox.grid(row=7, column=1, sticky=tk.W, padx=5)
             self.row_configs[cov_name]['spline_degree_spinbox'] = spline_degree_spinbox
+
+            ttk.Label(row_labelframe, text="  Nodos Manuales Exactos (coma):").grid(row=8, column=0, sticky=tk.W, padx=15, pady=2)
+            spline_custom_knots_var = tk.StringVar(value="")
+            self.row_configs[cov_name]['spline_custom_knots_var'] = spline_custom_knots_var
+            spline_custom_knots_entry = ttk.Entry(row_labelframe, textvariable=spline_custom_knots_var, width=24, state="disabled")
+            spline_custom_knots_entry.grid(row=8, column=1, columnspan=2, sticky=tk.EW, padx=5)
+            self.row_configs[cov_name]['spline_custom_knots_entry'] = spline_custom_knots_entry
 
 
             # --- Load existing or inferred configuration for the row ---
@@ -394,29 +633,45 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
                 current_type = "Cuantitativa"
             type_var.set(current_type)
 
-            # Ref. Cat. (if Cualitativa)
+            # Ref. Cat. y comparación categórica (if Cualitativa)
             if current_type == "Cualitativa":
-                if self.app_instance.data is not None and cov_name in self.app_instance.data:
-                    unique_vals = sorted(self.app_instance.data[cov_name].astype(str).unique().tolist())
-                    ref_combo['values'] = unique_vals
-                    stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
-                    if stored_ref_cat in unique_vals:
-                        ref_combo.set(stored_ref_cat)
-                    elif unique_vals:
-                        ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
+                unique_vals = self.app_instance._get_reference_category_values(cov_name)
+                ref_combo['values'] = unique_vals
+                stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+                if stored_ref_cat in unique_vals:
+                    ref_combo.set(stored_ref_cat)
+                elif unique_vals:
+                    ref_combo.set(unique_vals[0]) # Default to first if not set or invalid
+
+                effective_ref_cat = ref_combo.get()
+                compare_cfg = self.app_instance._get_categorical_compare_config(cov_name, effective_ref_cat)
+                cat_compare_mode_combo.set(
+                    self.app_instance._get_categorical_compare_display_value(compare_cfg.get('mode', 'all'))
+                )
+                cat_compare_groups_var.set(
+                    self.app_instance._format_categorical_compare_groups(compare_cfg.get('selected_groups', []))
+                )
 
             # Spline (if Cuantitativa)
             if current_type == "Cuantitativa":
                 if cov_name in self.app_instance.spline_config_details:
                     spline_var.set(True)
                     spl_conf = self.app_instance.spline_config_details[cov_name]
-                    spline_type_combo.set(spl_conf.get('type', 'Natural'))
-                    spline_df_var.set(spl_conf.get('df', 4))
+                    internal_type_existing = spl_conf.get('type', 'Natural')
+                    spline_type_combo.set(self.app_instance._get_spline_display_value(internal_type_existing))
+                    spline_knots_var.set(spl_conf.get('num_knots', 0))
                     spline_degree_var.set(spl_conf.get('degree', 3)) # Cargar grado, default 3
+                    existing_manual_knots = spl_conf.get('custom_knots') or []
+                    if existing_manual_knots:
+                        spline_custom_knots_var.set(
+                            ", ".join(f"{val:g}" for val in existing_manual_knots)
+                        )
                 else:
                     spline_var.set(False)
                     # Asegurar defaults también para grado si no hay config de spline
+                    spline_knots_var.set(0)
                     spline_degree_var.set(3)
+                    spline_type_combo.set(self.app_instance._get_default_spline_display())
 
             # Update control states based on loaded/inferred config
             self._toggle_row_controls_state(cov_name)
@@ -441,10 +696,39 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
 
         # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': var_is_quantitative={var_is_quantitative}", "DEBUG")
 
-        # Configurar ComboBox de Categoría de Referencia
-        config['ref_combo'].config(state="readonly" if not var_is_quantitative else "disabled")
+        # Configurar ComboBox de Categoría de Referencia y comparación categórica
         if var_is_quantitative:
+            config['ref_combo'].config(state="disabled", values=[])
             config['ref_combo'].set("")
+            config['cat_compare_mode_combo'].set(self.app_instance._get_default_categorical_compare_display())
+            config['cat_compare_mode_combo'].config(state="disabled")
+            config['cat_compare_groups_entry'].config(state="disabled")
+        else:
+            unique_vals = self.app_instance._get_reference_category_values(cov_name)
+            config['ref_combo']['values'] = unique_vals
+            stored_ref_cat = self.app_instance.ref_categories_config.get(cov_name)
+            if stored_ref_cat in unique_vals:
+                config['ref_combo'].set(stored_ref_cat)
+            elif unique_vals and config['ref_combo'].get() not in unique_vals:
+                config['ref_combo'].set(unique_vals[0])
+            elif not unique_vals:
+                config['ref_combo'].set("")
+            config['ref_combo'].config(state="readonly" if unique_vals else "disabled")
+
+            if config['cat_compare_mode_combo'].get() not in self.app_instance.categorical_compare_reverse_map:
+                compare_cfg = self.app_instance._get_categorical_compare_config(cov_name, config['ref_combo'].get())
+                config['cat_compare_mode_combo'].set(
+                    self.app_instance._get_categorical_compare_display_value(compare_cfg.get('mode', 'all'))
+                )
+                if compare_cfg.get('selected_groups') and not config['cat_compare_groups_var'].get().strip():
+                    config['cat_compare_groups_var'].set(
+                        self.app_instance._format_categorical_compare_groups(compare_cfg.get('selected_groups', []))
+                    )
+
+            config['cat_compare_mode_combo'].config(state="readonly" if unique_vals else "disabled")
+            selected_compare_mode = self.app_instance._get_categorical_compare_internal_mode(config['cat_compare_mode_combo'].get())
+            groups_entry_state = tk.NORMAL if (selected_compare_mode == 'selected' and unique_vals) else tk.DISABLED
+            config['cat_compare_groups_entry'].config(state=groups_entry_state)
 
         # Configurar CheckBox "Usar Spline"
         config['cb_spline'].config(state=tk.NORMAL if var_is_quantitative else tk.DISABLED)
@@ -455,34 +739,50 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
         spline_is_active = config['spline_var'].get()
         # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': spline_is_active={spline_is_active}", "DEBUG")
 
-        # Configurar "Tipo Spline" y "Spline DF"
-        # Habilitados si la variable es cuantitativa Y el checkbox "Usar Spline" está marcado.
-        can_configure_spline_type_and_df = var_is_quantitative and spline_is_active
-        spline_type_df_control_state = tk.NORMAL if can_configure_spline_type_and_df else tk.DISABLED
+        # Configurar "Tipo Spline"
+        # Habilitado si la variable es cuantitativa Y el checkbox "Usar Spline" está marcado.
+        can_configure_spline_options = var_is_quantitative and spline_is_active
+        spline_type_control_state = tk.NORMAL if can_configure_spline_options else tk.DISABLED
 
-        config['spline_type_combo'].config(state=spline_type_df_control_state)
-        config['spline_df_spinbox'].config(state=spline_type_df_control_state)
+        config['spline_type_combo'].config(state=spline_type_control_state)
+        selected_spline_display = config['spline_type_combo'].get()
+        selected_spline_type = self.app_instance._get_spline_internal_type(selected_spline_display)
+
+        if spline_type_control_state == tk.NORMAL and selected_spline_type in ("B-spline", "Natural"):
+            knots_state = tk.NORMAL
+        else:
+            knots_state = tk.DISABLED
+        config['spline_knots_spinbox'].config(state=knots_state)
+        if knots_state == tk.DISABLED:
+            config['spline_knots_var'].set(0)
         # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': spline_type_df_control_state='{spline_type_df_control_state}'", "DEBUG")
 
         # Configurar "Spline Grado"
-        # Habilitado si los detalles del spline (tipo/df) están habilitados Y el tipo es "B-spline".
-        selected_spline_type = config['spline_type_combo'].get()
-        can_configure_degree = can_configure_spline_type_and_df and (selected_spline_type == "B-spline")
+        # Habilitado si los detalles del spline están habilitados y el tipo es "B-spline".
+        can_configure_degree = can_configure_spline_options and (selected_spline_type == "B-spline")
         spline_degree_control_state = tk.NORMAL if can_configure_degree else tk.DISABLED
         config['spline_degree_spinbox'].config(state=spline_degree_control_state)
+
+        # Los nodos manuales deben poder fijarse tanto para B-spline como para Natural.
+        custom_knots_state = tk.NORMAL if (can_configure_spline_options and selected_spline_type in ("B-spline", "Natural")) else tk.DISABLED
+        config['spline_custom_knots_entry'].config(state=custom_knots_state)
         # self.app_instance.log(f"DEBUG: _toggle_row_controls_state para '{cov_name}': selected_spline_type='{selected_spline_type}', spline_degree_control_state='{spline_degree_control_state}'", "DEBUG")
 
         # Resetear valores si los controles correspondientes están deshabilitados
-        if not can_configure_spline_type_and_df:
-            config['spline_type_combo'].set("Natural")
-            config['spline_df_var'].set(4)
+        if not can_configure_spline_options:
+            config['spline_type_combo'].set(self.app_instance._get_default_spline_display())
+            config['spline_knots_var'].set(0)
             config['spline_degree_var'].set(3) # Grado también se resetea
+            config['spline_custom_knots_var'].set("")
 
         if not can_configure_degree:
             # Si el grado no es configurable (pero tipo/df sí podrían serlo, ej. para Natural spline),
             # reseteamos la variable de grado a 3.
             # Esto es importante si se cambia de B-spline a Natural.
             config['spline_degree_var'].set(3)
+
+        if custom_knots_state == tk.DISABLED:
+            config['spline_custom_knots_var'].set("")
 
     def apply_configurations(self):
         self.app_instance.log("Aplicando configuraciones detalladas de covariables...", "INFO")
@@ -499,6 +799,25 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
                     if cov_name in self.app_instance.ref_categories_config: # Remove if it was set and now is invalid
                         del self.app_instance.ref_categories_config[cov_name]
 
+                compare_mode_display = config_widgets['cat_compare_mode_combo'].get()
+                compare_mode_internal = self.app_instance._get_categorical_compare_internal_mode(compare_mode_display)
+                compare_groups_raw = config_widgets['cat_compare_groups_var'].get()
+                compare_cfg = self.app_instance._build_categorical_compare_config(
+                    cov_name,
+                    ref_category=selected_ref_cat,
+                    mode=compare_mode_internal,
+                    selected_groups=compare_groups_raw
+                )
+                self.app_instance.categorical_compare_config[cov_name] = compare_cfg
+                config_widgets['cat_compare_groups_var'].set(
+                    self.app_instance._format_categorical_compare_groups(compare_cfg.get('selected_groups', []))
+                )
+                if compare_cfg.get('mode') == 'selected' and not compare_cfg.get('selected_groups'):
+                    self.app_instance.log(
+                        f"'{cov_name}': modo 'Comparar solo contra grupos elegidos' sin grupos válidos. Se usará el comportamiento estándar hasta que elijas grupos.",
+                        "WARN"
+                    )
+
                 if cov_name in self.app_instance.spline_config_details:
                     del self.app_instance.spline_config_details[cov_name]
                     self.app_instance.log(f"Config. spline eliminada para '{cov_name}' (cambiado a Cualitativa).", "DEBUG")
@@ -506,19 +825,77 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
             elif new_type == "Cuantitativa":
                 use_spline = config_widgets['spline_var'].get()
                 if use_spline:
-                    spline_type = config_widgets['spline_type_combo'].get()
-                    spline_df = config_widgets['spline_df_var'].get()
-                    spline_degree = config_widgets['spline_degree_var'].get()
+                    spline_type_display_row = config_widgets['spline_type_combo'].get()
+                    spline_type_internal_row = self.app_instance._get_spline_internal_type(spline_type_display_row)
+                    spline_num_knots = self.app_instance._coerce_int_value(
+                        config_widgets['spline_knots_spinbox'].get(),
+                        fallback=0,
+                        field_name=f"Nodos internos para '{cov_name}'",
+                        min_value=0
+                    )
+                    config_widgets['spline_knots_var'].set(spline_num_knots)
 
-                    spline_config_data = {'type': spline_type, 'df': spline_df}
-                    if spline_type == "B-spline":
-                        spline_config_data['degree'] = spline_degree
+                    custom_knots_raw = config_widgets['spline_custom_knots_var'].get().strip()
+                    custom_knots_list = []
+                    if custom_knots_raw:
+                        custom_knots_candidates = re.split(r"[,;]", custom_knots_raw)
+                        for candidate in custom_knots_candidates:
+                            candidate_clean = candidate.strip()
+                            if not candidate_clean:
+                                continue
+                            try:
+                                custom_knots_list.append(float(candidate_clean))
+                            except ValueError:
+                                self.app_instance.log(f"NODO manual inválido '{candidate_clean}' para '{cov_name}'. Entrada ignorada.", "WARN")
+                        if custom_knots_list:
+                            custom_knots_list = sorted(set(custom_knots_list))
+                            config_widgets['spline_custom_knots_var'].set(
+                                ", ".join(f"{val:g}" for val in custom_knots_list)
+                            )
+                            spline_num_knots = len(custom_knots_list)
+                            config_widgets['spline_knots_var'].set(spline_num_knots)
+                        else:
+                            config_widgets['spline_custom_knots_var'].set("")
+
+                    spline_degree = self.app_instance._coerce_int_value(
+                        config_widgets['spline_degree_spinbox'].get(),
+                        fallback=3,
+                        field_name=f"Grado de spline para '{cov_name}'",
+                        min_value=1
+                    )
+                    config_widgets['spline_degree_var'].set(spline_degree)
+
+                    if spline_type_internal_row == "Natural":
+                        spline_degree = 3
+                        config_widgets['spline_degree_var'].set(3)
+
+                    spline_df = self.app_instance._derive_spline_df(
+                        spline_type_internal_row,
+                        spline_degree,
+                        spline_num_knots,
+                        custom_knots_list
+                    )
+
+                    spline_config_data = {
+                        'type': spline_type_internal_row,
+                        'df': spline_df,
+                        'num_knots': spline_num_knots,
+                        'restricted': spline_type_internal_row == "Natural",
+                        'degree': spline_degree if spline_type_internal_row == "B-spline" else 3,
+                        'custom_knots': custom_knots_list
+                    }
 
                     self.app_instance.spline_config_details[cov_name] = spline_config_data
 
-                    log_message = f"Config. spline aplicada para '{cov_name}': Tipo={spline_type}, DF={spline_df}"
-                    if spline_type == "B-spline":
+                    log_message = f"Config. spline aplicada para '{cov_name}': Tipo={spline_type_display_row}, DF(auto)={spline_df}, Nodos={spline_num_knots}"
+                    if spline_type_internal_row == "B-spline":
                         log_message += f", Grado={spline_degree}"
+                        if spline_num_knots == 0 and not custom_knots_list:
+                            log_message += " (0 nodos => forma polinómica)"
+                    else:
+                        log_message += ", Grado=3 (natural)"
+                    if custom_knots_list:
+                        log_message += f", NodosManualExactos={custom_knots_list}"
                     log_message += "."
                     self.app_instance.log(log_message, "DEBUG")
                 else:
@@ -529,6 +906,9 @@ class DetailedCovariateConfigDialog(tk.Toplevel):
                 if cov_name in self.app_instance.ref_categories_config:
                     del self.app_instance.ref_categories_config[cov_name]
                     self.app_instance.log(f"Config. ref.cat. eliminada para '{cov_name}' (cambiado a Cuantitativa).", "DEBUG")
+                if cov_name in self.app_instance.categorical_compare_config:
+                    del self.app_instance.categorical_compare_config[cov_name]
+                    self.app_instance.log(f"Config. comparación categórica eliminada para '{cov_name}' (cambiado a Cuantitativa).", "DEBUG")
 
             self.app_instance.log(f"Configuración para '{cov_name}' actualizada: Tipo='{new_type}'.", "CONFIG")
 
@@ -722,11 +1102,27 @@ class ScrolledFrame(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.interior_id = self.canvas.create_window(0, 0, window=self.interior, anchor="nw")
         self.interior.bind('<Configure>', self._on_interior_configure)
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
         self.canvas.bind('<Enter>', self._bind_mousewheel_events)
         self.canvas.bind('<Leave>', self._unbind_mousewheel_events)
 
-    def _on_interior_configure(self, event):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    def _on_interior_configure(self, event=None):
+        bbox = self.canvas.bbox("all")
+        if bbox is not None:
+            self.canvas.configure(scrollregion=bbox)
+
+        interior_width = self.interior.winfo_reqwidth()
+        canvas_width = self.canvas.winfo_width()
+        target_width = max(interior_width, canvas_width)
+        if target_width > 1:
+            self.canvas.itemconfigure(self.interior_id, width=target_width)
+
+    def _on_canvas_configure(self, event):
+        interior_width = self.interior.winfo_reqwidth()
+        target_width = max(event.width, interior_width)
+        if target_width > 1:
+            self.canvas.itemconfigure(self.interior_id, width=target_width)
+        self._on_interior_configure()
 
     def _bind_mousewheel_events(self, event):
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
@@ -1123,9 +1519,13 @@ class CalibrationPlotOptionsDialog(tk.Toplevel):
 
 # --- CLASE PRINCIPAL DE LA APLICACIÓN ---
 class CoxModelingApp(ttk.Frame):
-    def __init__(self, parent_notebook_tab):
-        super().__init__(parent_notebook_tab)
+    def __init__(self, parent_notebook_tab, main_app_instance=None, **kwargs):
+        super().__init__(parent_notebook_tab, **kwargs)
         self.pack(fill=tk.BOTH, expand=True)
+        self.main_app = main_app_instance
+        self.using_shared_dataset = True
+        self.shared_dataset_metadata = {}
+        self.current_shared_filter_summary = []
         self.parent_for_dialogs = self.winfo_toplevel()
 
         # Variables para datos y configuración
@@ -1136,19 +1536,44 @@ class CoxModelingApp(ttk.Frame):
         self.selected_covariables_from_ui = []
         self.covariables_type_config = {}  # {var_name: "Cuantitativa" | "Cualitativa"}
         self.ref_categories_config = {}  # {cual_var_name: "ref_category_value"}
-        # {cuant_var_name: {'type': 'Natural'|'B-spline', 'df': int}}
+        self.categorical_compare_config = {}  # {cual_var_name: {'mode': 'all'|'selected'|'one_vs_rest', 'selected_groups': []}}
+        # {cuant_var_name: {'type': 'Natural'|'B-spline', 'df': int (auto), 'num_knots': int, 'degree': int, 'restricted': bool}}
         self.spline_config_details = {}
+        # Cache with the most recent spline metadata generated while building the design matrix
+        self._last_spline_basis_metadata = {}
+        self.spline_type_display_map = {
+            "Natural": "Restringido (Natural)",
+            "B-spline": "No restringido (B-spline)"
+        }
+        self.spline_type_reverse_map = {display: internal for internal, display in self.spline_type_display_map.items()}
+        self.categorical_compare_display_map = {
+            "all": "Comparar contra todos los grupos",
+            "selected": "Comparar solo contra grupos elegidos",
+            "one_vs_rest": "Dicotómica: elegida vs resto"
+        }
+        self.categorical_compare_reverse_map = {display: internal for internal, display in self.categorical_compare_display_map.items()}
         self.current_plot_options = {}  # Diccionario para guardar opciones de gráficos
+        self.nomogram_default_time_points = [5.0, 10.0, 15.0]  # Tiempo base para ejes de supervivencia en nomogramas
 
         # Variables para modelos
         # Lista de diccionarios, cada uno con datos de un modelo
         self.generated_models_data = []
         # Diccionario del modelo seleccionado en la Treeview
         self.selected_model_in_treeview = None
+        self.selected_models_in_treeview = []
         self.btn_oos_calibration = None
         self.btn_collinearity_diag = None # <-- NUEVO
+        self.btn_nomogram = None
+        self.btn_delete_model = None
         self.entry_custom_model_name = None # Placeholder for custom name Entry
         self.text_custom_model_notes = None # Placeholder for custom notes Text
+
+    # Grid de escenarios para experimentación con configuraciones
+        # Grid de escenarios para experimentación con configuraciones
+        self.model_grid_entries = []
+        self.model_grid_counter = 0
+        self.model_grid_tree = None
+        self.frame_model_grid = None
 
         # Variables de control para la UI (Pestaña 2: Modelado)
         self.cox_model_type_var = StringVar(value="Multivariado")  # "Univariado" | "Multivariado"
@@ -1167,7 +1592,13 @@ class CoxModelingApp(ttk.Frame):
         self.calculate_cv_cindex_var = BooleanVar(value=True)  # Calcular C-Index por CV
         self.cv_num_kfolds_var = IntVar(value=5)  # Número de folds para CV
         self.cv_random_seed_var = IntVar(value=42)  # Semilla aleatoria para CV
+        self.calculate_test_cindex_var = BooleanVar(value=False)  # Calcular C-Index con holdout train/test
+        self.test_size_var = DoubleVar(value=0.25)  # Proporción para holdout test
+        self.test_random_seed_var = IntVar(value=42)  # Semilla aleatoria para holdout
+        self.stratify_holdout_var = BooleanVar(value=True)  # Estratificar por evento en holdout
         self.covariate_scaling_method_var = StringVar(value="Ninguna")
+        self._manual_holdout_config_dirty = False
+        self._install_holdout_dirty_tracking()
 
         # Crear Notebook (pestañas)
         self.notebook = ttk.Notebook(self)
@@ -1222,6 +1653,7 @@ class CoxModelingApp(ttk.Frame):
         self.create_preproc_controls()
         self.create_grid_controls()
         self.create_results_controls()
+        self._install_holdout_dirty_tracking()
 
         self.log("Interfaz de CoxModelingApp inicializada y controles creados.", "INFO")
 
@@ -1239,6 +1671,403 @@ class CoxModelingApp(ttk.Frame):
                 self.parent_for_dialogs.bell()
         except Exception as e_logging:
             print(f"ERROR EN LOGGER: {e_logging}")
+
+    def _install_holdout_dirty_tracking(self):
+        tracked_var_names = (
+            'calculate_test_cindex_var',
+            'test_size_var',
+            'test_random_seed_var',
+            'stratify_holdout_var',
+            'tau_mode_var',
+            'tau_manual_var',
+        )
+        for var_name in tracked_var_names:
+            variable = getattr(self, var_name, None)
+            if variable is None or not hasattr(variable, 'trace_add'):
+                continue
+            try:
+                variable.trace_add("write", self._mark_holdout_config_dirty)
+            except Exception:
+                continue
+
+    def _mark_holdout_config_dirty(self, *_args):
+        self._manual_holdout_config_dirty = True
+
+    def _clear_holdout_config_dirty(self):
+        self._manual_holdout_config_dirty = False
+
+    def _get_spline_display_value(self, internal_type):
+        return self.spline_type_display_map.get(internal_type, internal_type)
+
+    def _get_spline_internal_type(self, display_value):
+        return self.spline_type_reverse_map.get(display_value, display_value)
+
+    def _get_default_spline_display(self):
+        return self._get_spline_display_value("Natural")
+
+    def _format_c_index_display(self, value, ci=None, decimals=3):
+        return format_c_index_display(value, ci=ci, decimals=decimals)
+
+    def _get_categorical_compare_display_value(self, internal_mode):
+        return self.categorical_compare_display_map.get(
+            internal_mode,
+            self.categorical_compare_display_map.get("all", "Comparar contra todos los grupos")
+        )
+
+    def _get_categorical_compare_internal_mode(self, display_value):
+        return self.categorical_compare_reverse_map.get(
+            display_value,
+            display_value if display_value in self.categorical_compare_display_map else "all"
+        )
+
+    def _get_default_categorical_compare_display(self):
+        return self.categorical_compare_display_map.get("all", "Comparar contra todos los grupos")
+
+    def _parse_categorical_compare_groups(self, raw_value):
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, (list, tuple, set)):
+            raw_items = list(raw_value)
+        else:
+            raw_items = re.split(r"[,;\n]+", str(raw_value))
+
+        clean_items = []
+        seen = set()
+        for item in raw_items:
+            item_str = str(item).strip()
+            if not item_str or item_str in seen:
+                continue
+            clean_items.append(item_str)
+            seen.add(item_str)
+        return clean_items
+
+    def _format_categorical_compare_groups(self, groups):
+        return ", ".join(str(item).strip() for item in (groups or []) if str(item).strip())
+
+    def _coerce_plot_value_for_column(self, column_name, raw_value, data=None):
+        raw_text = "" if raw_value is None else str(raw_value).strip()
+        if raw_text == "":
+            return None
+
+        data = data if isinstance(data, pd.DataFrame) else getattr(self, 'latest_fit_dataframe', None)
+        if isinstance(data, pd.DataFrame) and column_name in data.columns and pd.api.types.is_numeric_dtype(data[column_name]):
+            return float(raw_text)
+
+        lower_text = raw_text.lower()
+        if lower_text in {"nan", "none", "null"}:
+            return np.nan
+
+        return raw_text
+
+    def _parse_partial_effect_values(self, column_name, raw_value, data=None):
+        if raw_value is None:
+            return []
+
+        parts = [part.strip() for part in re.split(r'[,;]', str(raw_value)) if part.strip()]
+        parsed_values = []
+        for part in parts:
+            try:
+                coerced = self._coerce_plot_value_for_column(column_name, part, data=data)
+            except (TypeError, ValueError):
+                continue
+            if coerced is not None:
+                parsed_values.append(coerced)
+        return parsed_values
+
+    def _parse_partial_effect_baseline_overrides(self, raw_value, exclude_covariate=None, data=None, available_covariates=None):
+        overrides = {}
+        if raw_value is None:
+            return overrides
+
+        raw_text = str(raw_value).strip()
+        if not raw_text:
+            return overrides
+
+        data = data if isinstance(data, pd.DataFrame) else getattr(self, 'latest_fit_dataframe', None)
+        valid_covariates = available_covariates
+        if valid_covariates is None:
+            valid_covariates = list(getattr(self, 'latest_covariates', []) or [])
+            if not valid_covariates and isinstance(data, pd.DataFrame):
+                valid_covariates = list(data.columns)
+
+        normalized_chunks = [chunk.strip() for chunk in re.split(r'[;,\n]+', raw_text) if chunk.strip()]
+        for piece in normalized_chunks:
+            if '=' in piece:
+                key, value = piece.split('=', 1)
+            elif ':' in piece:
+                key, value = piece.split(':', 1)
+            else:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if not key or key == exclude_covariate or key not in valid_covariates:
+                continue
+            try:
+                coerced = self._coerce_plot_value_for_column(key, value, data=data)
+            except (TypeError, ValueError):
+                continue
+            if coerced is not None:
+                overrides[key] = coerced
+        return overrides
+
+    def _build_plot_reference_row(self, focal_covariate=None, overrides=None, data=None, covariates=None):
+        overrides = overrides or {}
+        base_row = {}
+        data = data if isinstance(data, pd.DataFrame) else getattr(self, 'latest_fit_dataframe', None)
+        if data is None:
+            data = pd.DataFrame()
+
+        if covariates is None:
+            covariates = list(getattr(self, 'latest_covariates', []) or [])
+            if not covariates and isinstance(data, pd.DataFrame):
+                covariates = list(data.columns)
+
+        for col in covariates:
+            if col == focal_covariate or col not in data.columns:
+                continue
+            if col in overrides:
+                base_row[col] = overrides[col]
+                continue
+
+            col_series = data[col].dropna()
+            if col_series.empty:
+                base_row[col] = 0.0 if pd.api.types.is_numeric_dtype(data[col]) else ""
+                continue
+
+            if pd.api.types.is_numeric_dtype(col_series):
+                mean_val = pd.to_numeric(col_series, errors='coerce').mean()
+                if pd.isna(mean_val):
+                    mean_val = pd.to_numeric(col_series, errors='coerce').median()
+                if pd.isna(mean_val):
+                    mean_val = pd.to_numeric(col_series, errors='coerce').dropna().iloc[0]
+                base_row[col] = float(mean_val)
+            else:
+                modes = col_series.astype(str).mode()
+                base_row[col] = modes.iloc[0] if not modes.empty else str(col_series.astype(str).iloc[0])
+
+        return base_row
+
+    def _format_plot_value_label(self, value):
+        if isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(value):
+            return f"{float(value):.3g}"
+        return str(value)
+
+    def _build_categorical_compare_config(self, var_name, ref_category=None, mode="all", selected_groups=None):
+        internal_mode = self._get_categorical_compare_internal_mode(mode)
+        available_values = self._get_reference_category_values(var_name)
+        available_lookup = {str(value): str(value) for value in available_values}
+        ref_value = str(ref_category).strip() if ref_category not in (None, "") else ""
+
+        parsed_groups = self._parse_categorical_compare_groups(selected_groups)
+        clean_groups = []
+        seen = set()
+        for group in parsed_groups:
+            if group == ref_value or group in seen:
+                continue
+            if available_lookup and group not in available_lookup:
+                continue
+            clean_groups.append(group)
+            seen.add(group)
+
+        return {
+            "mode": internal_mode if internal_mode in self.categorical_compare_display_map else "all",
+            "selected_groups": clean_groups
+        }
+
+    def _get_categorical_compare_config(self, var_name, ref_category=None):
+        stored = self.categorical_compare_config.get(var_name, {})
+        if not isinstance(stored, dict):
+            stored = {}
+        return self._build_categorical_compare_config(
+            var_name,
+            ref_category=ref_category,
+            mode=stored.get("mode", "all"),
+            selected_groups=stored.get("selected_groups", [])
+        )
+
+    def _coerce_int_value(self, raw_value, fallback, field_name, min_value=None):
+        """Sanitize integer inputs coming from Tk widgets or raw strings."""
+        extracted = raw_value
+        if hasattr(raw_value, "get"):
+            try:
+                extracted = raw_value.get()
+            except (tk.TclError, ValueError, TypeError):
+                extracted = ""
+
+        display_val = extracted if extracted not in ("", None) else "(vacío)"
+
+        try:
+            coerced = int(extracted)
+        except (TypeError, ValueError):
+            try:
+                coerced = int(float(extracted))
+            except (TypeError, ValueError):
+                adjusted_fallback = fallback
+                if min_value is not None and adjusted_fallback < min_value:
+                    adjusted_fallback = min_value
+                self.log(f"{field_name}: entrada inválida '{display_val}'. Se usa {adjusted_fallback}.", "WARN")
+                return adjusted_fallback
+
+        if min_value is not None and coerced < min_value:
+            self.log(f"{field_name}: valor {coerced} menor que {min_value}. Ajustado a {min_value}.", "WARN")
+            coerced = min_value
+
+        return coerced
+
+    def _coerce_float_value(self, raw_value, fallback, field_name, min_value=None):
+        """Sanitize float inputs coming from Tk widgets or raw strings."""
+        extracted = raw_value
+        if hasattr(raw_value, "get"):
+            try:
+                extracted = raw_value.get()
+            except (tk.TclError, ValueError, TypeError):
+                extracted = ""
+
+        display_val = extracted if extracted not in ("", None) else "(vacío)"
+
+        try:
+            coerced = float(extracted)
+        except (TypeError, ValueError):
+            adjusted_fallback = fallback
+            if min_value is not None and adjusted_fallback < min_value:
+                adjusted_fallback = min_value
+            self.log(f"{field_name}: entrada inválida '{display_val}'. Se usa {adjusted_fallback}.", "WARN")
+            return adjusted_fallback
+
+        if min_value is not None and coerced < min_value:
+            self.log(f"{field_name}: valor {coerced} menor que {min_value}. Ajustado a {min_value}.", "WARN")
+            coerced = min_value
+
+        return coerced
+
+    def _resolve_tau(self, times, events):
+        """Resolve τ truncation time for IPCW metrics."""
+        mode = getattr(self, 'tau_mode_var', None)
+        mode = mode.get() if mode else "Auto (P90)"
+        times_arr = np.asarray(times, dtype=float)
+        events_arr = np.asarray(events, dtype=bool)
+        event_times = times_arr[events_arr & np.isfinite(times_arr)]
+        if event_times.size == 0:
+            event_times = times_arr[np.isfinite(times_arr)]
+        if mode == "Manual":
+            try:
+                val = float(self.tau_manual_var.get())
+                if np.isfinite(val) and val > 0:
+                    return val
+            except Exception:
+                pass
+        if mode == "Último evento":
+            return float(np.max(event_times)) if event_times.size > 0 else None
+        return float(np.percentile(event_times, 90)) if event_times.size > 0 else None
+
+    def _build_evaluation_time_grid_cox(self, train_times, test_times, tau=None):
+        """Build evaluation time grid for Antolini's Ctd AUC."""
+        train_t = np.asarray(train_times, dtype=float)
+        test_t = np.asarray(test_times, dtype=float)
+        train_t = train_t[np.isfinite(train_t)]
+        test_t = test_t[np.isfinite(test_t)]
+        if train_t.size < 5 or test_t.size < 3:
+            return None
+        lower = max(float(np.nanpercentile(train_t, 10)), float(np.nanmin(test_t)))
+        upper = min(float(np.nanpercentile(train_t, 90)), float(np.nanmax(test_t)))
+        if tau is not None and np.isfinite(tau) and tau > 0:
+            upper = min(upper, float(tau))
+        if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+            return None
+        grid = np.unique(np.linspace(lower, upper, num=12))
+        return grid if grid.size >= 2 else None
+
+    def _resolve_holdout_split_settings(self, data, event_col, requested_test_size, min_train_rows=5, min_test_rows=2, prefer_stratify=True, context_label="holdout"):
+        if data is None or len(data) == 0:
+            raise ValueError("No hay datos suficientes para crear la partición train/test.")
+
+        total_rows = int(len(data))
+        requested = self._coerce_float_value(requested_test_size, 0.25, f"Proporción test ({context_label})", min_value=0.05)
+        requested = min(max(requested, 0.05), 0.95)
+
+        min_train_rows = max(int(min_train_rows or 0), 2)
+        min_test_rows = max(int(min_test_rows or 0), 1)
+        warnings = []
+        stratify_values = None
+
+        if prefer_stratify and event_col in data.columns:
+            event_series = pd.to_numeric(data[event_col], errors='coerce').fillna(0).astype(int)
+            n_classes = int(event_series.nunique())
+            if n_classes > 1 and event_series.value_counts().min() >= 2:
+                stratify_values = event_series
+                min_train_rows = max(min_train_rows, n_classes)
+                min_test_rows = max(min_test_rows, n_classes)
+            elif n_classes > 1:
+                warnings.append(
+                    "No se pudo estratificar por evento porque alguna clase tiene muy pocos casos; se usó partición aleatoria simple."
+                )
+
+        if total_rows <= (min_train_rows + min_test_rows):
+            fallback_train = max(2, min(total_rows - min_test_rows, min_train_rows))
+            if total_rows <= fallback_train:
+                raise ValueError(
+                    f"No hay suficientes observaciones ({total_rows}) para separar entrenamiento/prueba con al menos {min_train_rows} filas de entrenamiento."
+                )
+            min_train_rows = fallback_train
+
+        max_test_size = (total_rows - min_train_rows) / float(total_rows)
+        min_test_size = min_test_rows / float(total_rows)
+        adjusted = requested
+
+        if adjusted > max_test_size:
+            adjusted = max_test_size
+            warnings.append(
+                f"Proporción test ajustada de {requested:.2f} a {adjusted:.2f} para dejar al menos {min_train_rows} casos en entrenamiento."
+            )
+        if adjusted < min_test_size:
+            adjusted = min_test_size
+            if adjusted > requested + 1e-12:
+                warnings.append(
+                    f"Proporción test ajustada de {requested:.2f} a {adjusted:.2f} para dejar al menos {min_test_rows} casos en prueba."
+                )
+
+        adjusted = min(max(adjusted, 0.05), 0.95)
+        test_count = int(np.ceil(adjusted * total_rows))
+        train_count = total_rows - test_count
+        if train_count < min_train_rows or test_count < min_test_rows:
+            raise ValueError(
+                f"No se pudo crear una partición válida con {total_rows} filas (train={train_count}, test={test_count})."
+            )
+
+        return float(adjusted), stratify_values, warnings
+
+    def _derive_spline_df(self, spline_type, spline_degree, spline_num_knots, custom_knots=None):
+        """Infer a reasonable df for spline settings when the user only specifies grado/nodos."""
+        try:
+            knots_from_config = len(custom_knots) if custom_knots else 0
+        except TypeError:
+            knots_from_config = 0
+
+        effective_knots = knots_from_config if knots_from_config > 0 else max(0, int(spline_num_knots or 0))
+        effective_degree = max(1, int(spline_degree or 1))
+
+        if spline_type == "B-spline":
+            if effective_knots > 0:
+                derived_df = effective_knots + effective_degree
+            else:
+                derived_df = effective_degree
+            return max(derived_df, 1)
+
+        # Natural (restricted) splines default to cúbicos
+        if effective_knots > 0:
+            derived_df = effective_knots + 1
+        else:
+            derived_df = 4
+        return max(derived_df, 1)
+
+    def _build_degree_only_polynomial_formula(self, var_name, degree):
+        """Create a pure polynomial formula for the chosen degree, without internal spline knots."""
+        safe_term = f"Q('{var_name}')"
+        effective_degree = max(1, int(degree or 1))
+        formula_terms = [safe_term]
+        for power in range(2, effective_degree + 1):
+            formula_terms.append(f"I({safe_term} ** {power})")
+        return " + ".join(formula_terms)
 
     # --- MÉTODOS PARA PESTAÑA 1: CARGA, FILTROS Y PREPROCESO ---
 
@@ -1339,6 +2168,24 @@ class CoxModelingApp(ttk.Frame):
         ttk.Label(subframe_ref_categoria, text="Categoría de Referencia (si Cualitativa y una seleccionada):").pack(side=tk.LEFT, anchor='w')
         self.combo_ref_categoria_seleccionada = ttk.Combobox(subframe_ref_categoria, state="disabled", width=20)
         self.combo_ref_categoria_seleccionada.pack(side=tk.LEFT, padx=5, pady=2, fill=tk.X, expand=True)
+        self.combo_ref_categoria_seleccionada.bind("<<ComboboxSelected>>", self._on_categorical_panel_change)
+
+        subframe_comparacion_categoria = ttk.Frame(frame_config_covariable_seleccionada)
+        subframe_comparacion_categoria.pack(fill=tk.X, pady=5, padx=10)
+        ttk.Label(subframe_comparacion_categoria, text="Modo de comparación categórica:").grid(row=0, column=0, padx=5, pady=2, sticky="w")
+        compare_mode_values_simple = list(self.categorical_compare_display_map.values())
+        self.combo_modo_comparacion_categoria = ttk.Combobox(subframe_comparacion_categoria, values=compare_mode_values_simple, state="disabled", width=34)
+        self.combo_modo_comparacion_categoria.set(self._get_default_categorical_compare_display())
+        self.combo_modo_comparacion_categoria.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
+        self.combo_modo_comparacion_categoria.bind("<<ComboboxSelected>>", self._on_categorical_panel_change)
+
+        ttk.Label(subframe_comparacion_categoria, text="Grupos a comparar (coma):").grid(row=1, column=0, padx=5, pady=2, sticky="w")
+        self.var_grupos_comparacion_categoria = StringVar(value="")
+        self.entry_grupos_comparacion_categoria = ttk.Entry(subframe_comparacion_categoria, textvariable=self.var_grupos_comparacion_categoria, state="disabled")
+        self.entry_grupos_comparacion_categoria.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
+        self.entry_grupos_comparacion_categoria.bind("<FocusOut>", self._on_categorical_panel_change)
+        self.entry_grupos_comparacion_categoria.bind("<Return>", self._on_categorical_panel_change)
+        subframe_comparacion_categoria.columnconfigure(1, weight=1)
 
         subframe_spline_check = ttk.Frame(frame_config_covariable_seleccionada)
         subframe_spline_check.pack(fill=tk.X, pady=5, padx=10)
@@ -1349,18 +2196,18 @@ class CoxModelingApp(ttk.Frame):
         subframe_spline_detalles = ttk.Frame(frame_config_covariable_seleccionada)
         subframe_spline_detalles.pack(fill=tk.X, pady=5, padx=10)
         ttk.Label(subframe_spline_detalles, text="  Tipo de Spline:").pack(side=tk.LEFT, padx=(15, 5))
-        self.combo_tipo_spline_seleccionada = ttk.Combobox(subframe_spline_detalles, values=["Natural", "B-spline"], state="disabled", width=12)
-        self.combo_tipo_spline_seleccionada.set("Natural")
+        spline_type_values_simple = list(self.spline_type_display_map.values())
+        self.combo_tipo_spline_seleccionada = ttk.Combobox(subframe_spline_detalles, values=spline_type_values_simple, state="disabled", width=24)
+        self.combo_tipo_spline_seleccionada.set(self._get_default_spline_display())
         self.combo_tipo_spline_seleccionada.pack(side=tk.LEFT, padx=5)
 
-        # Spinbox para grados de libertad (df) del spline
-        ttk.Label(subframe_spline_detalles, text="  Grados de Libertad (df):").pack(side=tk.LEFT, padx=(15, 5))
-        self.var_df_spline_seleccionada = IntVar(value=4)
-        self.spinbox_df_spline = ttk.Spinbox(subframe_spline_detalles, from_=2, to=10, textvariable=self.var_df_spline_seleccionada, width=5, state="disabled")
-        self.spinbox_df_spline.pack(side=tk.LEFT, padx=5)
+        ttk.Label(subframe_spline_detalles, text="  Nodos internos (0 = polinómico):").pack(side=tk.LEFT, padx=(15, 5))
+        self.var_knots_spline_seleccionada = IntVar(value=0)
+        self.spinbox_knots_spline = ttk.Spinbox(subframe_spline_detalles, from_=0, to=15, textvariable=self.var_knots_spline_seleccionada, width=5, state="disabled")
+        self.spinbox_knots_spline.pack(side=tk.LEFT, padx=5)
 
-        # NUEVO: Spinbox para grado del B-spline en el panel simple
-        ttk.Label(subframe_spline_detalles, text="  Grado (B-spline):").pack(side=tk.LEFT, padx=(15, 5))
+        # NUEVO: Spinbox para grado del spline en el panel simple
+        ttk.Label(subframe_spline_detalles, text="  Grado (1=recta, 2=cuadrática, 3=cúbica):").pack(side=tk.LEFT, padx=(15, 5))
         self.var_degree_spline_seleccionada = IntVar(value=3) # Default cúbico
         self.spinbox_degree_spline = ttk.Spinbox(subframe_spline_detalles, from_=1, to=5, textvariable=self.var_degree_spline_seleccionada, width=5, state="disabled")
         self.spinbox_degree_spline.pack(side=tk.LEFT, padx=5)
@@ -1486,10 +2333,14 @@ class CoxModelingApp(ttk.Frame):
                                 if unique_cats:
                                     self.ref_categories_config[cov_name] = unique_cats[0]
                                     self.log(f"Categoría de referencia por defecto almacenada para '{cov_name}': {unique_cats[0]}", "DEBUG")
+                            if cov_name not in self.categorical_compare_config:
+                                self.categorical_compare_config[cov_name] = {"mode": "all", "selected_groups": []}
                         elif inferred_type == "Cuantitativa":
                             # Asegurar que no haya config de ref.cat. para cuantitativas
                             if cov_name in self.ref_categories_config:
                                 del self.ref_categories_config[cov_name]
+                            if cov_name in self.categorical_compare_config:
+                                del self.categorical_compare_config[cov_name]
 
                         # Si se cambia a Cualitativa y tenía config de spline, limpiarla
                         if inferred_type == "Cualitativa" and cov_name in self.spline_config_details:
@@ -1532,15 +2383,11 @@ class CoxModelingApp(ttk.Frame):
             self.log(f"Archivo '{os.path.basename(file_path)}' cargado exitosamente. Filas: {self.data.shape[0]}, Columnas: {self.data.shape[1]}", "SUCCESS")
             self.label_archivo_cargado_info.config(text=f"Cargado: {os.path.basename(file_path)} ({self.data.shape[0]} filas, {self.data.shape[1]} cols)")
             
-            # Resetear configuraciones de modelo previas
-            self.covariables_type_config = {}
-            self.ref_categories_config = {}
-            self.spline_config_details = {}
-            self.generated_models_data = [] # Limpiar modelos de datos anteriores
-            self.selected_model_in_treeview = None
-            if hasattr(self, 'treeview_lista_modelos'): self._update_models_treeview()
+            self.using_shared_dataset = False
+            self.shared_dataset_metadata = {}
+            self.current_shared_filter_summary = []
 
-
+            self._prepare_new_dataset()
             self.actualizar_controles_preproc()
             messagebox.showinfo("Carga Exitosa", f"Archivo '{os.path.basename(file_path)}' cargado.", parent=self.parent_for_dialogs)
 
@@ -1551,6 +2398,112 @@ class CoxModelingApp(ttk.Frame):
             self.data = None
             self.label_archivo_cargado_info.config(text="Error al cargar archivo.")
             traceback.print_exc(limit=3)
+
+    def _prepare_new_dataset(self):
+        self.covariables_type_config = {}
+        self.ref_categories_config = {}
+        self.categorical_compare_config = {}
+        self.spline_config_details = {}
+        self.generated_models_data = []
+        self.selected_model_in_treeview = None
+        if hasattr(self, 'treeview_lista_modelos'):
+            try:
+                self._update_models_treeview()
+            except Exception:
+                pass
+
+    def _describe_shared_source(self, metadata):
+        if metadata and metadata.get('source_path'):
+            try:
+                return os.path.basename(metadata['source_path'])
+            except Exception:
+                return metadata.get('source_path') or "Archivo compartido"
+        return "Archivo compartido"
+
+    def receive_shared_dataset(self, *, dataset, filtered_dataset=None, filter_summary=None, metadata=None, source_widget=None):
+        if not self.using_shared_dataset:
+            return
+
+        if source_widget is self:
+            return
+
+        previous_source_path = None
+        if hasattr(self, "shared_dataset_metadata") and isinstance(self.shared_dataset_metadata, dict):
+            previous_source_path = self.shared_dataset_metadata.get("source_path")
+        had_data_before = isinstance(getattr(self, "data", None), pd.DataFrame)
+
+        new_metadata = metadata or {}
+        new_source_path = new_metadata.get("source_path")
+
+        self.shared_dataset_metadata = new_metadata
+        self.current_shared_filter_summary = list(filter_summary or [])
+
+        if dataset is None:
+            self.raw_data = None
+            self.data = None
+            if getattr(self, 'custom_filter_component_instance', None):
+                try:
+                    self.custom_filter_component_instance.set_dataframe(pd.DataFrame())
+                except Exception:
+                    pass
+            if hasattr(self, 'label_archivo_cargado_info'):
+                self.label_archivo_cargado_info.config(text="Sin archivo compartido.")
+            self._prepare_new_dataset()
+            try:
+                self.actualizar_controles_preproc()
+            except Exception:
+                pass
+            return
+
+        try:
+            base_df = dataset.copy(deep=True)
+        except Exception:
+            base_df = dataset
+
+        try:
+            if filtered_dataset is not None and isinstance(filtered_dataset, pd.DataFrame):
+                active_df = filtered_dataset.copy(deep=True)
+            else:
+                active_df = base_df.copy(deep=True)
+        except Exception:
+            active_df = filtered_dataset if isinstance(filtered_dataset, pd.DataFrame) else base_df
+
+        self.raw_data = base_df
+        self.data = active_df
+
+        if getattr(self, 'custom_filter_component_instance', None):
+            try:
+                self.custom_filter_component_instance.set_dataframe(self.data)
+            except Exception:
+                pass
+
+        info_suffix = f" | Filtros: {len(self.current_shared_filter_summary)}" if self.current_shared_filter_summary else ""
+        source_name = self._describe_shared_source(self.shared_dataset_metadata)
+        if hasattr(self, 'label_archivo_cargado_info'):
+            try:
+                rows, cols = self.data.shape
+                self.label_archivo_cargado_info.config(text=f"Compartido: {source_name} ({rows} filas, {cols} cols){info_suffix}")
+            except Exception:
+                self.label_archivo_cargado_info.config(text=f"Compartido: {source_name}{info_suffix}")
+
+        should_reset_models = False
+        if not had_data_before:
+            should_reset_models = True
+        elif previous_source_path and new_source_path and previous_source_path != new_source_path:
+            should_reset_models = True
+        elif not previous_source_path and new_source_path:
+            should_reset_models = True
+        elif self.raw_data is None:
+            should_reset_models = True
+
+        if should_reset_models:
+            self._prepare_new_dataset()
+        else:
+            self.log("Se actualizó el dataset compartido; los modelos existentes se conservan.", "INFO")
+        try:
+            self.actualizar_controles_preproc()
+        except Exception:
+            pass
 
     def _apply_fc_filters_to_main_data(self):
         """Aplica los filtros definidos en FilterComponent al DataFrame principal."""
@@ -1598,6 +2551,73 @@ class CoxModelingApp(ttk.Frame):
             messagebox.showerror("Error de Filtro", f"No se pudieron aplicar los filtros:\n{e}", parent=self.parent_for_dialogs)
             traceback.print_exc(limit=3)
 
+    def _get_reference_category_values(self, var_name):
+        """Obtiene categorías de referencia únicas, limpias y en orden de aparición."""
+        if self.data is None or not var_name or var_name not in self.data.columns:
+            return []
+
+        try:
+            series = self.data[var_name].dropna()
+            if series.empty:
+                return []
+            return [str(value) for value in pd.unique(series.astype(str))]
+        except Exception as exc:
+            self.log(f"No se pudieron leer categorías para '{var_name}': {exc}", "WARN")
+            return []
+
+    def _persist_single_selected_categorical_config_from_panel(self, quiet=False):
+        """Guarda al vuelo la configuración categórica del panel simple para la variable seleccionada."""
+        if not all(hasattr(self, attr) for attr in [
+            'listbox_covariables_disponibles', 'var_tipo_covariable_seleccionada',
+            'combo_ref_categoria_seleccionada', 'combo_modo_comparacion_categoria',
+            'var_grupos_comparacion_categoria'
+        ]):
+            return False
+
+        sel_idx = self.listbox_covariables_disponibles.curselection()
+        if len(sel_idx) != 1:
+            return False
+        if self.var_tipo_covariable_seleccionada.get() != "Cualitativa":
+            return False
+
+        var_name = self.listbox_covariables_disponibles.get(sel_idx[0])
+        available_cats = self._get_reference_category_values(var_name)
+        if not available_cats:
+            return False
+
+        ref_cat = (self.combo_ref_categoria_seleccionada.get() or "").strip()
+        if ref_cat not in available_cats:
+            ref_cat = available_cats[0]
+            self.combo_ref_categoria_seleccionada.set(ref_cat)
+
+        mode_internal = self._get_categorical_compare_internal_mode(
+            self.combo_modo_comparacion_categoria.get()
+        )
+        compare_cfg = self._build_categorical_compare_config(
+            var_name,
+            ref_category=ref_cat,
+            mode=mode_internal,
+            selected_groups=self.var_grupos_comparacion_categoria.get()
+        )
+
+        self.covariables_type_config[var_name] = "Cualitativa"
+        self.ref_categories_config[var_name] = ref_cat
+        self.categorical_compare_config[var_name] = compare_cfg
+
+        formatted_groups = self._format_categorical_compare_groups(compare_cfg.get('selected_groups', []))
+        if self.var_grupos_comparacion_categoria.get() != formatted_groups:
+            self.var_grupos_comparacion_categoria.set(formatted_groups)
+
+        if not quiet:
+            mode_label = self._get_categorical_compare_display_value(compare_cfg.get('mode', 'all'))
+            self.log(f"Config. categórica guardada al vuelo para '{var_name}': Ref='{ref_cat}', Modo='{mode_label}'.", "DEBUG")
+
+        return True
+
+    def _on_categorical_panel_change(self, event=None):
+        self._persist_single_selected_categorical_config_from_panel(quiet=True)
+        self._toggle_spline_and_refcat_controls()
+
     def on_covariate_select_for_config(self, event=None):
         """Actualiza la UI de configuración de covariables cuando se selecciona una en la listbox."""
         sel_idx = self.listbox_covariables_disponibles.curselection()
@@ -1622,10 +2642,12 @@ class CoxModelingApp(ttk.Frame):
         ui_attrs_expected = [
             'label_cov_seleccionada_nombre', 'var_tipo_covariable_seleccionada',
             'radio_cuantitativa', 'radio_cualitativa',
-            'combo_ref_categoria_seleccionada', 'var_usar_spline_seleccionada',
-            'checkbutton_usar_spline', 'combo_tipo_spline_seleccionada',
-            'var_df_spline_seleccionada', 'spinbox_df_spline',
-            'var_degree_spline_seleccionada', 'spinbox_degree_spline' # Añadidos nuevos widgets
+            'combo_ref_categoria_seleccionada', 'combo_modo_comparacion_categoria',
+            'var_grupos_comparacion_categoria', 'entry_grupos_comparacion_categoria',
+            'var_usar_spline_seleccionada', 'checkbutton_usar_spline',
+            'combo_tipo_spline_seleccionada', 'var_knots_spline_seleccionada',
+            'spinbox_knots_spline', 'var_degree_spline_seleccionada',
+            'spinbox_degree_spline' # Añadidos nuevos widgets
         ]
         if not all(hasattr(self, attr) for attr in ui_attrs_expected):
             self.log("Advertencia: Faltan atributos de UI para configurar covariables. UI puede estar incompleta.", "WARN")
@@ -1639,9 +2661,13 @@ class CoxModelingApp(ttk.Frame):
             # Por ahora, permitir cambiar tipo. Spline se habilita/deshabilita en _toggle.
             self.radio_cuantitativa.config(state=tk.NORMAL)
             self.radio_cualitativa.config(state=tk.NORMAL)
-            # Ref categoría deshabilitada para múltiple selección
+            # Ref categoría y comparación categórica deshabilitadas para múltiple selección
             self.combo_ref_categoria_seleccionada.set("")
             self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
+            self.combo_modo_comparacion_categoria.set(self._get_default_categorical_compare_display())
+            self.combo_modo_comparacion_categoria.config(state="disabled")
+            self.var_grupos_comparacion_categoria.set("")
+            self.entry_grupos_comparacion_categoria.config(state="disabled")
             # Spline: se maneja en _toggle_spline_and_refcat_controls
         elif is_single_selection and self.data is not None and var_name_cfg in self.data.columns:
             self.label_cov_seleccionada_nombre.config(text=var_name_cfg)
@@ -1654,7 +2680,7 @@ class CoxModelingApp(ttk.Frame):
             self.var_tipo_covariable_seleccionada.set(current_var_type)
 
             if current_var_type == "Cualitativa":
-                unique_cats = sorted(list(self.data[var_name_cfg].astype(str).unique()))
+                unique_cats = self._get_reference_category_values(var_name_cfg)
                 self.combo_ref_categoria_seleccionada['values'] = unique_cats
                 current_ref_cat = self.ref_categories_config.get(var_name_cfg)
                 if current_ref_cat in unique_cats:
@@ -1663,24 +2689,37 @@ class CoxModelingApp(ttk.Frame):
                     self.combo_ref_categoria_seleccionada.set(unique_cats[0])
                 else: # Sin categorías
                     self.combo_ref_categoria_seleccionada.set("")
+
+                effective_ref_cat = self.combo_ref_categoria_seleccionada.get()
+                compare_cfg = self._get_categorical_compare_config(var_name_cfg, effective_ref_cat)
+                self.combo_modo_comparacion_categoria.set(
+                    self._get_categorical_compare_display_value(compare_cfg.get("mode", "all"))
+                )
+                self.var_grupos_comparacion_categoria.set(
+                    self._format_categorical_compare_groups(compare_cfg.get("selected_groups", []))
+                )
             else: # Cuantitativa
                 self.combo_ref_categoria_seleccionada.set("")
                 self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
+                self.combo_modo_comparacion_categoria.set(self._get_default_categorical_compare_display())
+                self.var_grupos_comparacion_categoria.set("")
             
             # Configuración de Spline
             if current_var_type == "Cuantitativa" and var_name_cfg in self.spline_config_details:
                 self.var_usar_spline_seleccionada.set(True)
                 spl_conf = self.spline_config_details[var_name_cfg]
-                self.combo_tipo_spline_seleccionada.set(spl_conf.get('type', 'Natural'))
-                self.var_df_spline_seleccionada.set(spl_conf.get('df', 4))
+                internal_type_cfg = spl_conf.get('type', 'Natural')
+                self.combo_tipo_spline_seleccionada.set(self._get_spline_display_value(internal_type_cfg))
+                self.var_knots_spline_seleccionada.set(spl_conf.get('num_knots', 0))
                 self.var_degree_spline_seleccionada.set(spl_conf.get('degree', 3)) # Cargar grado
             elif current_var_type == "Cuantitativa": # Es cuantitativa pero sin config de spline
                  self.var_usar_spline_seleccionada.set(False) # Asegurar que esté desactivado
-                 self.combo_tipo_spline_seleccionada.set('Natural') # Default
-                 self.var_df_spline_seleccionada.set(4) # Default
+                 self.combo_tipo_spline_seleccionada.set(self._get_default_spline_display()) # Default
+                 self.var_knots_spline_seleccionada.set(0)
                  self.var_degree_spline_seleccionada.set(3) # Default grado
             else: # Cualitativa, spline no aplica
                 self.var_usar_spline_seleccionada.set(False)
+                self.var_knots_spline_seleccionada.set(0)
                 self.var_degree_spline_seleccionada.set(3) # Resetear grado también
 
         else: # Ninguna seleccionada o error
@@ -1690,8 +2729,15 @@ class CoxModelingApp(ttk.Frame):
             self.var_tipo_covariable_seleccionada.set("Cuantitativa") # Reset a default
             self.combo_ref_categoria_seleccionada.set("")
             self.combo_ref_categoria_seleccionada.config(state="disabled", values=[])
+            self.combo_modo_comparacion_categoria.set(self._get_default_categorical_compare_display())
+            self.combo_modo_comparacion_categoria.config(state="disabled")
+            self.var_grupos_comparacion_categoria.set("")
+            self.entry_grupos_comparacion_categoria.config(state="disabled")
             self.var_usar_spline_seleccionada.set(False)
+            self.var_knots_spline_seleccionada.set(0)
             self.var_degree_spline_seleccionada.set(3) # Reset grado
+            if hasattr(self, 'combo_tipo_spline_seleccionada'):
+                self.combo_tipo_spline_seleccionada.set(self._get_default_spline_display())
             # Los demás (checkbutton_usar_spline, etc.) se manejan en _toggle
 
         self._toggle_spline_and_refcat_controls()
@@ -1702,8 +2748,9 @@ class CoxModelingApp(ttk.Frame):
         # Asegurarse que todos los widgets existen antes de intentar configurarlos
         expected_widgets_for_toggle = [
             'radio_cuantitativa', 'radio_cualitativa', 'combo_ref_categoria_seleccionada',
+            'combo_modo_comparacion_categoria', 'entry_grupos_comparacion_categoria',
             'checkbutton_usar_spline', 'combo_tipo_spline_seleccionada',
-            'spinbox_df_spline', 'spinbox_degree_spline' # Añadido spinbox_degree_spline
+            'spinbox_knots_spline', 'spinbox_degree_spline' # Añadido spinbox_degree_spline
         ]
         if not all(hasattr(self, attr) for attr in expected_widgets_for_toggle):
             self.log("DEBUG: _toggle_spline_and_refcat_controls - Faltan widgets, UI no completamente inicializada.", "DEBUG")
@@ -1719,14 +2766,51 @@ class CoxModelingApp(ttk.Frame):
 
         current_type_choice = self.var_tipo_covariable_seleccionada.get()
 
-        # Categoría de Referencia: solo para 1 cualitativa seleccionada
+        # Categoría de Referencia y comparación categórica: solo para 1 cualitativa seleccionada
         if num_selected == 1 and current_type_choice == "Cualitativa":
-            self.combo_ref_categoria_seleccionada.config(state="readonly")
+            selected_var_name = self.listbox_covariables_disponibles.get(sel_indices[0])
+            unique_cats = self._get_reference_category_values(selected_var_name)
+            self.combo_ref_categoria_seleccionada['values'] = unique_cats
+
+            widget_ref_cat = (self.combo_ref_categoria_seleccionada.get() or "").strip()
+            stored_ref_cat = self.ref_categories_config.get(selected_var_name)
+            if widget_ref_cat in unique_cats:
+                current_ref_cat = widget_ref_cat
+            elif stored_ref_cat in unique_cats:
+                current_ref_cat = stored_ref_cat
+            elif unique_cats:
+                current_ref_cat = unique_cats[0]
+            else:
+                current_ref_cat = ""
+
+            self.combo_ref_categoria_seleccionada.set(current_ref_cat)
+            self.combo_ref_categoria_seleccionada.config(state="readonly" if unique_cats else "disabled")
+
+            if self.combo_modo_comparacion_categoria.get() not in self.categorical_compare_reverse_map:
+                compare_cfg = self._get_categorical_compare_config(selected_var_name, self.combo_ref_categoria_seleccionada.get())
+                self.combo_modo_comparacion_categoria.set(
+                    self._get_categorical_compare_display_value(compare_cfg.get("mode", "all"))
+                )
+                if compare_cfg.get("selected_groups") and not self.var_grupos_comparacion_categoria.get().strip():
+                    self.var_grupos_comparacion_categoria.set(
+                        self._format_categorical_compare_groups(compare_cfg.get("selected_groups", []))
+                    )
+
+            self.combo_modo_comparacion_categoria.config(state="readonly" if unique_cats else "disabled")
+            selected_compare_mode = self._get_categorical_compare_internal_mode(self.combo_modo_comparacion_categoria.get())
+            groups_entry_state = tk.NORMAL if (selected_compare_mode == "selected" and unique_cats) else tk.DISABLED
+            self.entry_grupos_comparacion_categoria.config(state=groups_entry_state)
+            if unique_cats:
+                self._persist_single_selected_categorical_config_from_panel(quiet=True)
         else:
             self.combo_ref_categoria_seleccionada.config(state="disabled")
-            if num_selected != 1: # Limpiar si no es selección única
+            self.combo_modo_comparacion_categoria.config(state="disabled")
+            self.entry_grupos_comparacion_categoria.config(state="disabled")
+            if num_selected != 1 or current_type_choice != "Cualitativa":
                  self.combo_ref_categoria_seleccionada.set("")
                  self.combo_ref_categoria_seleccionada['values'] = []
+                 self.combo_modo_comparacion_categoria.set(self._get_default_categorical_compare_display())
+                 self.var_grupos_comparacion_categoria.set("")
 
 
         # Spline: solo para cuantitativas (1 o más)
@@ -1736,23 +2820,32 @@ class CoxModelingApp(ttk.Frame):
             self.var_usar_spline_seleccionada.set(False)
         
         # Detalles de Spline: si se marca "Usar Spline" y es aplicable
-        spline_general_details_state = "readonly" if self.var_usar_spline_seleccionada.get() and can_use_spline else "disabled"
+        spline_general_details_state = "normal" if self.var_usar_spline_seleccionada.get() and can_use_spline else "disabled"
         self.combo_tipo_spline_seleccionada.config(state=spline_general_details_state)
-        self.spinbox_df_spline.config(state=spline_general_details_state)
+        # Ajustar estado de nodos según tipo de spline
+        spline_type_selected_display = self.combo_tipo_spline_seleccionada.get()
+        spline_type_selected_simple = self._get_spline_internal_type(spline_type_selected_display)
+
+        if spline_general_details_state == "normal" and spline_type_selected_simple in ("B-spline", "Natural"):
+            knots_state = "normal"
+        else:
+            knots_state = "disabled"
+        self.spinbox_knots_spline.config(state=knots_state)
+        if knots_state == "disabled":
+            self.var_knots_spline_seleccionada.set(0)
 
         # El grado solo tiene sentido para B-spline
-        spline_type_selected_simple = self.combo_tipo_spline_seleccionada.get()
-        spline_degree_state_simple = "readonly" if (spline_general_details_state == "readonly" and spline_type_selected_simple == "B-spline") else "disabled"
+        spline_degree_state_simple = "normal" if (spline_general_details_state == "normal" and spline_type_selected_simple == "B-spline") else "disabled"
         self.spinbox_degree_spline.config(state=spline_degree_state_simple)
 
 
         # Asegurar que los valores de spline no se mantengan si se cambia de tipo o se desmarca
         if spline_general_details_state == "disabled":
-            self.combo_tipo_spline_seleccionada.set("Natural") # Reset
-            self.var_df_spline_seleccionada.set(4) # Reset
+            self.combo_tipo_spline_seleccionada.set(self._get_default_spline_display()) # Reset
+            self.var_knots_spline_seleccionada.set(0)
             self.var_degree_spline_seleccionada.set(3) # Reset grado
         elif spline_degree_state_simple == "disabled" and spline_type_selected_simple == "Natural":
-             # Si es Natural Spline, el grado no es aplicable, resetear/fijar a 3 (aunque no se use directamente)
+            # Si es Natural Spline, el grado no es aplicable, resetear/fijar a 3 (aunque no se use directamente)
             self.var_degree_spline_seleccionada.set(3)
 
     def apply_covariate_config_to_selected(self):
@@ -1760,24 +2853,57 @@ class CoxModelingApp(ttk.Frame):
         sel_indices = self.listbox_covariables_disponibles.curselection()
         if not sel_indices:
             messagebox.showwarning("Sin Selección", "Seleccione una o más covariables para aplicar la configuración.", parent=self.parent_for_dialogs)
-            return
+            return False
 
         selected_var_names = [self.listbox_covariables_disponibles.get(i) for i in sel_indices]
         
         new_var_type_bulk = self.var_tipo_covariable_seleccionada.get()
         use_spline_bulk = self.var_usar_spline_seleccionada.get()
-        spline_type_bulk = self.combo_tipo_spline_seleccionada.get()
-        spline_df_bulk = self.var_df_spline_seleccionada.get()
-        spline_degree_bulk = self.var_degree_spline_seleccionada.get() # NUEVO: Leer grado del panel simple
+        spline_type_display_bulk = self.combo_tipo_spline_seleccionada.get()
+        spline_type_internal_bulk = self._get_spline_internal_type(spline_type_display_bulk)
+
+        spline_degree_bulk = self._coerce_int_value(
+            self.spinbox_degree_spline.get(),
+            fallback=3,
+            field_name="Grado de spline (panel simple)",
+            min_value=1
+        )
+        self.var_degree_spline_seleccionada.set(spline_degree_bulk) # Mantener UI sincronizada
+
+        spline_num_knots_bulk = self._coerce_int_value(
+            self.spinbox_knots_spline.get(),
+            fallback=0,
+            field_name="Nodos internos (panel simple)",
+            min_value=0
+        )
+        self.var_knots_spline_seleccionada.set(spline_num_knots_bulk)
+        if spline_type_internal_bulk not in {"B-spline", "Natural"}:
+            spline_num_knots_bulk = 0
         
         ref_category_for_single_selection = None
+        categorical_compare_mode_bulk = "all"
+        comparison_groups_for_single_selection = []
         if len(selected_var_names) == 1 and new_var_type_bulk == "Cualitativa" and self.combo_ref_categoria_seleccionada.cget('state') != 'disabled':
             ref_category_for_single_selection = self.combo_ref_categoria_seleccionada.get()
             if not ref_category_for_single_selection:
                 messagebox.showwarning("Ref. Vacía",
                                        f"Para '{selected_var_names[0]}', seleccione una categoría de referencia o use el diálogo detallado.",
                                        parent=self.parent_for_dialogs)
-                return
+                return False
+
+            categorical_compare_mode_bulk = self._get_categorical_compare_internal_mode(
+                self.combo_modo_comparacion_categoria.get()
+            )
+            comparison_groups_for_single_selection = self._parse_categorical_compare_groups(
+                self.var_grupos_comparacion_categoria.get()
+            )
+            if categorical_compare_mode_bulk == "selected" and not comparison_groups_for_single_selection:
+                messagebox.showwarning(
+                    "Grupos requeridos",
+                    f"Para '{selected_var_names[0]}', escribe una o más categorías en 'Grupos a comparar (coma)'.",
+                    parent=self.parent_for_dialogs
+                )
+                return False
 
         num_applied = 0
         for var_name_apply in selected_var_names:
@@ -1815,20 +2941,60 @@ class CoxModelingApp(ttk.Frame):
                     else:
                         log_msgs_for_var.append("No hay datos para determinar Ref.Cat.(default).")
                 # If var_name_apply IS in ref_categories_config and it's a multiple selection, we keep the existing one.
+                if len(selected_var_names) == 1:
+                    compare_cfg_for_var = self._build_categorical_compare_config(
+                        var_name_apply,
+                        ref_category=self.ref_categories_config.get(var_name_apply),
+                        mode=categorical_compare_mode_bulk,
+                        selected_groups=comparison_groups_for_single_selection
+                    )
+                    self.categorical_compare_config[var_name_apply] = compare_cfg_for_var
+                    log_msgs_for_var.append(
+                        f"ModoCat='{self._get_categorical_compare_display_value(compare_cfg_for_var.get('mode', 'all'))}'"
+                    )
+                    if compare_cfg_for_var.get('selected_groups'):
+                        log_msgs_for_var.append(f"GruposCat={compare_cfg_for_var['selected_groups']}")
+                elif var_name_apply not in self.categorical_compare_config:
+                    self.categorical_compare_config[var_name_apply] = {"mode": "all", "selected_groups": []}
             
             elif new_var_type_bulk == "Cuantitativa":
                 # Remove ref category config if it exists
                 if var_name_apply in self.ref_categories_config:
                     del self.ref_categories_config[var_name_apply]
                     log_msgs_for_var.append("Config. Ref.Cat. eliminada (tipo cambiado a Cuantitativa).")
+                if var_name_apply in self.categorical_compare_config:
+                    del self.categorical_compare_config[var_name_apply]
+                    log_msgs_for_var.append("Config. comparación categórica eliminada (tipo cambiado a Cuantitativa).")
                 
                 # Apply or remove spline config based on main panel's "Usar Spline"
                 if use_spline_bulk:
-                    current_spline_config = {'type': spline_type_bulk, 'df': spline_df_bulk}
-                    log_spline_parts = [f"Tipo='{spline_type_bulk}'", f"DF={spline_df_bulk}"]
-                    if spline_type_bulk == "B-spline":
-                        current_spline_config['degree'] = spline_degree_bulk
+                    if spline_type_internal_bulk == "Natural":
+                        spline_degree_bulk = 3
+                        self.var_degree_spline_seleccionada.set(3)
+                        self.log(
+                            f"Spline natural para '{var_name_apply}' fijado a cúbico; los naturales requieren grado 3.",
+                            "INFO"
+                        )
+
+                    spline_df_bulk = self._derive_spline_df(
+                        spline_type_internal_bulk,
+                        spline_degree_bulk,
+                        spline_num_knots_bulk
+                    )
+                    current_spline_config = {
+                        'type': spline_type_internal_bulk,
+                        'df': spline_df_bulk,
+                        'num_knots': spline_num_knots_bulk,
+                        'restricted': spline_type_internal_bulk == "Natural",
+                        'degree': spline_degree_bulk if spline_type_internal_bulk == "B-spline" else 3
+                    }
+                    log_spline_parts = [f"Tipo='{spline_type_display_bulk}'", f"DF(auto)={spline_df_bulk}", f"Nodos={spline_num_knots_bulk}"]
+                    if spline_type_internal_bulk == "B-spline":
                         log_spline_parts.append(f"Grado={spline_degree_bulk}")
+                        if spline_num_knots_bulk == 0:
+                            log_spline_parts.append("0 nodos => forma polinómica")
+                    else:
+                        log_spline_parts.append("Grado=3 (natural)")
 
                     self.spline_config_details[var_name_apply] = current_spline_config
                     log_msgs_for_var.append(f"Spline: {', '.join(log_spline_parts)}")
@@ -1841,12 +3007,13 @@ class CoxModelingApp(ttk.Frame):
             num_applied += 1
 
         if num_applied > 0:
-            messagebox.showinfo("Configuración Aplicada", f"Configuración aplicada a {num_applied} variable(s).", parent=self.parent_for_dialogs)
+            self.log(f"Configuración aplicada a {num_applied} variable(s) desde el panel simple.", "INFO")
         
         # Re-actualizar la UI de configuración para reflejar los cambios,
         # especialmente si la selección actual es una de las modificadas.
         self.on_covariate_select_for_config()
         self.log(f"Current spline_config_details after apply: {self.spline_config_details}", "DEBUG")
+        return num_applied > 0
 
 
     def convert_to_log_transform(self):
@@ -1979,13 +3146,15 @@ class CoxModelingApp(ttk.Frame):
         frame_config_general = ttk.LabelFrame(g_content, text="Configuración General del Modelo Cox", padding=10)
         frame_config_general.pack(fill=tk.X, padx=10, pady=10)
 
-        # PanedWindow para dividir en dos columnas
-        paned_config = ttk.PanedWindow(frame_config_general, orient=tk.HORIZONTAL)
-        paned_config.pack(fill=tk.BOTH, expand=True)
+        # Contenedor responsivo en dos columnas para que el scroll capture todo el contenido.
+        two_column_container = ttk.Frame(frame_config_general)
+        two_column_container.pack(fill=tk.BOTH, expand=True)
+        two_column_container.columnconfigure(0, weight=1, uniform="cox_model_cols")
+        two_column_container.columnconfigure(1, weight=1, uniform="cox_model_cols")
 
         # --- Columna Izquierda ---
-        left_col_frame = ttk.Frame(paned_config, padding=5)
-        paned_config.add(left_col_frame, weight=1)
+        left_col_frame = ttk.Frame(two_column_container, padding=5)
+        left_col_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         # Tipo de Modelado
         frame_tipo_modelado = ttk.Frame(left_col_frame)
@@ -2022,8 +3191,8 @@ class CoxModelingApp(ttk.Frame):
         grid_sel_vars.columnconfigure(1, weight=1); grid_sel_vars.columnconfigure(3, weight=1)
 
         # --- Columna Derecha ---
-        right_col_frame = ttk.Frame(paned_config, padding=5)
-        paned_config.add(right_col_frame, weight=1)
+        right_col_frame = ttk.Frame(two_column_container, padding=5)
+        right_col_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
         # Regularización
         frame_reg = ttk.LabelFrame(right_col_frame, text="Regularización (Penalización)")
@@ -2085,39 +3254,142 @@ class CoxModelingApp(ttk.Frame):
         ttk.Label(grid_cv_ui, text="Semilla Aleatoria:").grid(row=0, column=3, padx=15, pady=3, sticky=tk.W)
         ttk.Entry(grid_cv_ui, textvariable=self.cv_random_seed_var, width=7).grid(row=0, column=4, padx=5, pady=3, sticky=tk.W)
 
+        ttk.Checkbutton(grid_cv_ui, text="Calcular C-Index con holdout train/test", variable=self.calculate_test_cindex_var).grid(row=1, column=0, padx=5, pady=3, sticky=tk.W)
+        ttk.Label(grid_cv_ui, text="Proporción test:").grid(row=1, column=1, padx=15, pady=3, sticky=tk.W)
+        ttk.Entry(grid_cv_ui, textvariable=self.test_size_var, width=6).grid(row=1, column=2, padx=5, pady=3, sticky=tk.W)
+        ttk.Label(grid_cv_ui, text="Semilla test:").grid(row=1, column=3, padx=15, pady=3, sticky=tk.W)
+        ttk.Entry(grid_cv_ui, textvariable=self.test_random_seed_var, width=7).grid(row=1, column=4, padx=5, pady=3, sticky=tk.W)
+        ttk.Checkbutton(grid_cv_ui, text="Estratificar por evento", variable=self.stratify_holdout_var).grid(row=2, column=0, padx=5, pady=3, sticky=tk.W)
+
+        ttk.Label(grid_cv_ui, text="τ (tau) IPCW:").grid(row=3, column=0, padx=5, pady=3, sticky=tk.W)
+        self.tau_mode_var = StringVar(value="Auto (P90)")
+        ttk.Combobox(grid_cv_ui, textvariable=self.tau_mode_var,
+                     values=["Auto (P90)", "Último evento", "Manual"],
+                     state="readonly", width=16).grid(row=3, column=1, padx=5, pady=3, sticky=tk.W)
+        self.tau_manual_var = StringVar(value="")
+        ttk.Entry(grid_cv_ui, textvariable=self.tau_manual_var, width=7).grid(row=3, column=2, padx=5, pady=3, sticky=tk.W)
+        ttk.Label(grid_cv_ui, text="(Uno, Antolini, Brier/IBS)", foreground="#555555").grid(row=3, column=3, padx=5, pady=3, sticky=tk.W)
+
+        # Grid y modelos en contenedor apilado para que el scroll vertical funcione con todo el contenido.
+        grid_and_results_container = ttk.Frame(g_content)
+        grid_and_results_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        grid_container = ttk.Frame(grid_and_results_container)
+        grid_container.pack(fill=tk.BOTH, expand=True)
+
+        # Grid de experimentos de modelos
+        self.frame_model_grid = ttk.LabelFrame(grid_container, text="Grid de escenarios (experimentos de modelos)", padding=10)
+        self.frame_model_grid.pack(fill=tk.BOTH, expand=True)
+
+        grid_columns = ("#", "Escenario", "Tipo", "Covariables", "Penalización", "Escalado", "Ties", "Splines", "Notas")
+        self.model_grid_tree = ttk.Treeview(
+            self.frame_model_grid,
+            columns=grid_columns,
+            show="headings",
+            height=6,
+            selectmode="extended"
+        )
+
+        column_widths = {
+            "#": 30,
+            "Escenario": 170,
+            "Tipo": 100,
+            "Covariables": 220,
+            "Penalización": 130,
+            "Escalado": 110,
+            "Ties": 90,
+            "Splines": 200,
+            "Notas": 160
+        }
+
+        column_anchors = {
+            "#": tk.CENTER,
+            "Tipo": tk.CENTER,
+            "Penalización": tk.W,
+            "Escalado": tk.W,
+            "Ties": tk.CENTER,
+            "Escenario": tk.W,
+            "Covariables": tk.W,
+            "Splines": tk.W,
+            "Notas": tk.W
+        }
+
+        for col in grid_columns:
+            self.model_grid_tree.heading(col, text=col, command=lambda c=col: self._sort_grid_tv_column(c))
+            self.model_grid_tree.column(col,
+                                        width=column_widths.get(col, 120),
+                                        minwidth=max(40, column_widths.get(col, 80)//2),
+                                        anchor=column_anchors.get(col, tk.W))
+
+        grid_tree_scroll_y = ttk.Scrollbar(self.frame_model_grid, orient=tk.VERTICAL, command=self.model_grid_tree.yview)
+        grid_tree_scroll_x = ttk.Scrollbar(self.frame_model_grid, orient=tk.HORIZONTAL, command=self.model_grid_tree.xview)
+        self.model_grid_tree.configure(yscrollcommand=grid_tree_scroll_y.set, xscrollcommand=grid_tree_scroll_x.set)
+
+        grid_tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        grid_tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self.model_grid_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.model_grid_tree.bind("<Double-1>", self._on_grid_entry_double_click)
+        self.model_grid_tree.bind("<Button-3>", self._show_grid_tv_column_menu)
+        self._grid_tv_col_config = {c: {"visible": True, "width": column_widths.get(c, 120), "heading": c} for c in grid_columns}
+        self._restore_saved_layout("cox_model_grid", self._grid_tv_col_config)
+        self._grid_sort_reversed = {}
+        self._apply_treeview_column_layout(self.model_grid_tree, self._grid_tv_col_config)
+        self._register_saved_layout("cox_model_grid", self._grid_tv_col_config, self.model_grid_tree)
+
+        grid_button_frame = ttk.Frame(self.frame_model_grid)
+        grid_button_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
+
+        ttk.Button(grid_button_frame, text="Agregar escenario actual", command=self._add_current_config_to_grid).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Button(grid_button_frame, text="Variaciones spline y penalización...", command=self._open_spline_penalization_variations_dialog).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Button(grid_button_frame, text="Ejecutar modelo", command=self._execute_selected_grid_entries).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Button(grid_button_frame, text="Eliminar selección", command=self._remove_selected_grid_entries).pack(side=tk.RIGHT, padx=4, pady=2)
+
         # Botón Ejecutar
-        frame_ejecutar = ttk.Frame(g_content); frame_ejecutar.pack(fill=tk.X, pady=(15, 10))
+        frame_ejecutar = ttk.Frame(grid_container)
+        frame_ejecutar.pack(fill=tk.X, pady=(10, 10))
         btn_ejecutar = ttk.Button(frame_ejecutar, text="▶ Ejecutar Modelado Cox", command=self._execute_cox_modeling_orchestrator)
         btn_ejecutar.pack(padx=10, pady=5, ipady=5)
 
         # Treeview para Modelos Generados
-        self.frame_modelos_generados_display = ttk.LabelFrame(g_content, text="Modelos Cox Generados en esta Sesión")
-        self.frame_modelos_generados_display.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        cols_tv = ("#", "Nombre Modelo", "Variables y Splines", "AIC", "-2 LogLik",
-                   "C-Index (Train)", "C-Index (CV)", "Schoenfeld (p min)", "Wald (p max)")
-        self.treeview_lista_modelos = ttk.Treeview(self.frame_modelos_generados_display, columns=cols_tv, show="headings", height=7)
-        self.treeview_sort_reversed = {} # Para guardar el estado de ordenamiento por columna
+        self.frame_modelos_generados_display = ttk.LabelFrame(grid_and_results_container, text="Modelos Cox Generados en esta Sesión", padding=10)
+        self.frame_modelos_generados_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        cols_tv = ("#", "Nombre Modelo", "Variables y Splines", "Test %", "AIC", "BIC", "-2 LogLik",
+                   "C-Index (Train)", "C-Index (Test)", "C-Index (CV/Test)", "ΔTest-Train",
+                   "C-Uno (IPCW)", "C-Antolini (Ctd)", "τ (tau)", "IBS",
+                   "C@Q25", "C@Q50", "C@Q75", "Brier@Q25", "Brier@Q50", "Brier@Q75",
+                   "AUC@Q25", "AUC@Q50", "AUC@Q75",
+                   "LR p (global)", "Wald p (global)",
+                   "Schoenfeld (p min)", "Wald (p max)")
+        self.treeview_lista_modelos = ttk.Treeview(
+            self.frame_modelos_generados_display,
+            columns=cols_tv,
+            show="headings",
+            height=12,
+            selectmode="extended"
+        )
+        self.treeview_sort_reversed = {}
 
         col_widths = {
-            "#": 30,
-            "Nombre Modelo": 180,
-            "Variables y Splines": 250,
-            "AIC": 80,
-            "-2 LogLik": 80,
-            "C-Index (Train)": 100,
-            "C-Index (CV)": 90,
-            "Schoenfeld (p min)": 110,
-            "Wald (p max)": 90
+            "#": 30, "Nombre Modelo": 180, "Variables y Splines": 250, "Test %": 70,
+            "AIC": 80, "BIC": 80, "-2 LogLik": 80,
+            "C-Index (Train)": 165, "C-Index (Test)": 165, "C-Index (CV/Test)": 175, "ΔTest-Train": 95,
+            "C-Uno (IPCW)": 110, "C-Antolini (Ctd)": 120, "τ (tau)": 80, "IBS": 80,
+            "C@Q25": 80, "C@Q50": 80, "C@Q75": 80,
+            "Brier@Q25": 85, "Brier@Q50": 85, "Brier@Q75": 85,
+            "AUC@Q25": 80, "AUC@Q50": 80, "AUC@Q75": 80,
+            "LR p (global)": 100, "Wald p (global)": 100,
+            "Schoenfeld (p min)": 110, "Wald (p max)": 90
         }
         col_anchors = {
-            "#": tk.CENTER,
-            "AIC": tk.E,
-            "-2 LogLik": tk.E,
-            "C-Index (Train)": tk.E,
-            "C-Index (CV)": tk.E,
-            "Schoenfeld (p min)": tk.E,
-            "Wald (p max)": tk.E
+            "#": tk.CENTER, "Test %": tk.E, "AIC": tk.E, "BIC": tk.E, "-2 LogLik": tk.E,
+            "C-Index (Train)": tk.E, "C-Index (Test)": tk.E, "C-Index (CV/Test)": tk.E,
+            "ΔTest-Train": tk.E, "C-Uno (IPCW)": tk.E, "C-Antolini (Ctd)": tk.E, "τ (tau)": tk.E,
+            "IBS": tk.E, "C@Q25": tk.E, "C@Q50": tk.E, "C@Q75": tk.E,
+            "Brier@Q25": tk.E, "Brier@Q50": tk.E, "Brier@Q75": tk.E,
+            "AUC@Q25": tk.E, "AUC@Q50": tk.E, "AUC@Q75": tk.E,
+            "LR p (global)": tk.E, "Wald p (global)": tk.E,
+            "Schoenfeld (p min)": tk.E, "Wald (p max)": tk.E
         }
         for col in cols_tv:
             # Usamos una función lambda que captura el valor de `col` en el momento de la definición
@@ -2133,6 +3405,11 @@ class CoxModelingApp(ttk.Frame):
         ysb_tv.pack(side=tk.RIGHT, fill=tk.Y); xsb_tv.pack(side=tk.BOTTOM, fill=tk.X)
         self.treeview_lista_modelos.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.treeview_lista_modelos.bind("<<TreeviewSelect>>", self._on_model_select_from_treeview)
+        self.treeview_lista_modelos.bind("<Button-3>", self._show_models_tv_column_menu)
+        self._models_tv_col_config = {c: {"visible": True, "width": col_widths.get(c, 120), "heading": c} for c in cols_tv}
+        self._restore_saved_layout("cox_generated_models", self._models_tv_col_config)
+        self._apply_treeview_column_layout(self.treeview_lista_modelos, self._models_tv_col_config)
+        self._register_saved_layout("cox_generated_models", self._models_tv_col_config, self.treeview_lista_modelos)
 
         # Botones de Acción para Modelo Seleccionado
         frame_acciones = ttk.Frame(self.frame_modelos_generados_display, padding=(0,5,0,0))
@@ -2141,6 +3418,7 @@ class CoxModelingApp(ttk.Frame):
         acciones_config_btns = [
             ("Ver Resumen", self.show_selected_model_summary),
             ("Generar Gráficos Cox", self.open_graph_selection_dialog),
+            ("Nomograma", self.generate_nomogram_for_selected_model),
             ("Calibración OOS (CV)", self.show_new_calibration_plots),
             ("Diagnóstico de Colinealidad", self._calculate_and_show_vif), # <-- NUEVO
             ("Predicción", self.realizar_prediccion),
@@ -2151,7 +3429,7 @@ class CoxModelingApp(ttk.Frame):
         ]
         
         # Layout dinámico para botones de acción
-        max_btns_per_row = 5 # Ajustado para mejor layout
+        max_btns_per_row = 4  # Menos botones por fila para evitar que se compriman o desaparezcan.
         current_row_frame_acciones = None
         for i, (text, cmd) in enumerate(acciones_config_btns):
             if i % max_btns_per_row == 0:
@@ -2165,16 +3443,24 @@ class CoxModelingApp(ttk.Frame):
                 self.btn_oos_calibration = button_widget
             elif text == "Diagnóstico de Colinealidad": # <-- NUEVO
                 self.btn_collinearity_diag = button_widget
+            elif text == "Nomograma":
+                self.btn_nomogram = button_widget
 
         if self.btn_oos_calibration:
             self.btn_oos_calibration.config(state=tk.DISABLED)
         if self.btn_collinearity_diag: # <-- NUEVO
             self.btn_collinearity_diag.config(state=tk.DISABLED)
+        if self.btn_nomogram:
+            self.btn_nomogram.config(state=tk.DISABLED)
 
         # Add the new button row for clear models
         clear_models_frame = ttk.Frame(frame_acciones)
         clear_models_frame.pack(fill=tk.X, pady=5)
+        self.btn_delete_model = ttk.Button(clear_models_frame, text="Eliminar modelos seleccionados", command=self._delete_selected_model)
+        self.btn_delete_model.pack(side=tk.LEFT, padx=5)
         ttk.Button(clear_models_frame, text="Limpiar Todos los Modelos", command=self._clear_all_generated_models).pack(side=tk.RIGHT, padx=5)
+        if self.btn_delete_model:
+            self.btn_delete_model.config(state=tk.DISABLED)
 
         # UI para Nombre Personalizado y Notas del Modelo Seleccionado
         frame_custom_details = ttk.LabelFrame(self.frame_modelos_generados_display, text="Detalles Personalizados del Modelo Seleccionado", padding=10)
@@ -2229,6 +3515,925 @@ class CoxModelingApp(ttk.Frame):
             elif pen_method == "L2 (Ridge)": self.l1_ratio_for_elasticnet_var.set(0.0)
             else: self.l1_ratio_for_elasticnet_var.set(0.5) # Default si no es relevante
 
+    # --- Grid de escenarios para exploración ---
+
+    def _capture_current_model_settings(self):
+        try:
+            selected_covs = []
+            if hasattr(self, 'listbox_covariables_disponibles'):
+                listbox_size = self.listbox_covariables_disponibles.size()
+                selected_indices = set(self.listbox_covariables_disponibles.curselection())
+                time_col = self.combo_col_tiempo.get().strip()
+                event_col = self.combo_col_evento.get().strip()
+                for idx in range(listbox_size):
+                    if idx not in selected_indices:
+                        continue
+                    item_value = self.listbox_covariables_disponibles.get(idx)
+                    if item_value in (time_col, event_col):
+                        continue
+                    selected_covs.append(item_value)
+                selected_covs = list(dict.fromkeys(selected_covs))
+        except Exception as exc:
+            self.log(f"No se pudieron capturar las covariables seleccionadas: {exc}", "WARN")
+            selected_covs = []
+
+        model_type = self.cox_model_type_var.get() if hasattr(self, 'cox_model_type_var') else "Multivariado"
+        selection_method = self.var_selection_method_var.get() if hasattr(self, 'var_selection_method_var') else "Ninguno (usar todas)"
+
+        p_enter_val = self._coerce_float_value(self.p_enter_var, 0.05, "P-valor de entrada", min_value=0.0)
+        p_remove_val = self._coerce_float_value(self.p_remove_var, 0.10, "P-valor de salida", min_value=0.0)
+
+        pen_method = self.penalization_method_var.get() if hasattr(self, 'penalization_method_var') else "Ninguna"
+        pen_value = self._coerce_float_value(self.penalizer_strength_var, 0.0, "Penalización (λ)", min_value=0.0)
+        pen_alpha = self._coerce_float_value(self.l1_ratio_for_elasticnet_var, 0.5, "Penalización α", min_value=0.0)
+        if pen_alpha > 1.0:
+            self.log(f"Penalización α: valor {pen_alpha} mayor a 1.0. Ajustado a 1.0.", "WARN")
+            pen_alpha = 1.0
+
+        scaling_method = self.covariate_scaling_method_var.get() if hasattr(self, 'covariate_scaling_method_var') else "Ninguna"
+        tie_method = self.tie_handling_method_var.get() if hasattr(self, 'tie_handling_method_var') else "efron"
+
+        calculate_cv = bool(self.calculate_cv_cindex_var.get()) if hasattr(self, 'calculate_cv_cindex_var') else False
+        cv_kfolds = self._coerce_int_value(self.cv_num_kfolds_var, 5, "CV K-folds", min_value=2) if hasattr(self, 'cv_num_kfolds_var') else 5
+        cv_seed = self._coerce_int_value(self.cv_random_seed_var, 42, "CV seed") if hasattr(self, 'cv_random_seed_var') else 42
+        calculate_test_holdout = bool(self.calculate_test_cindex_var.get()) if hasattr(self, 'calculate_test_cindex_var') else False
+        test_size = self._coerce_float_value(self.test_size_var, 0.25, "Proporción test", min_value=0.05) if hasattr(self, 'test_size_var') else 0.25
+        if test_size >= 0.95:
+            self.log(f"Proporción test: valor {test_size} mayor o igual a 0.95. Ajustado a 0.95.", "WARN")
+            test_size = 0.95
+        test_seed = self._coerce_int_value(self.test_random_seed_var, 42, "Semilla test") if hasattr(self, 'test_random_seed_var') else 42
+
+        time_column = self.combo_col_tiempo.get().strip() if hasattr(self, 'combo_col_tiempo') else ""
+        event_column = self.combo_col_evento.get().strip() if hasattr(self, 'combo_col_evento') else ""
+
+        dataset_metadata = copy.deepcopy(self.shared_dataset_metadata) if hasattr(self, 'shared_dataset_metadata') else {}
+        filter_summary = list(self.current_shared_filter_summary) if hasattr(self, 'current_shared_filter_summary') else []
+
+        config_snapshot = {
+            "model_type": model_type,
+            "selected_covariables": selected_covs,
+            "var_selection_method": selection_method,
+            "p_enter": p_enter_val,
+            "p_remove": p_remove_val,
+            "penalization": {
+                "method": pen_method,
+                "value": pen_value,
+                "l1_ratio": pen_alpha
+            },
+            "scaling_method": scaling_method,
+            "tie_method": tie_method,
+            "calculate_cv": calculate_cv,
+            "cv_kfolds": cv_kfolds,
+            "cv_seed": cv_seed,
+            "calculate_test_holdout": calculate_test_holdout,
+            "test_size": test_size,
+            "test_seed": test_seed,
+            "categorical_configs": copy.deepcopy(self.categorical_compare_config),
+            "spline_configs": copy.deepcopy(self.spline_config_details),
+            "generate_univariate_forest_plot": bool(self.generate_univariate_forest_plot_var.get()) if hasattr(self, 'generate_univariate_forest_plot_var') else True,
+            "time_column": time_column,
+            "event_column": event_column,
+            "dataset_metadata": dataset_metadata,
+            "filter_summary": filter_summary,
+            "notes": ""
+        }
+
+        return config_snapshot
+
+    def _add_current_config_to_grid(self):
+        config_snapshot = self._capture_current_model_settings()
+        if config_snapshot is None:
+            messagebox.showwarning("Sin configuración", "No se pudo capturar la configuración actual del modelo.", parent=self.parent_for_dialogs)
+            return
+
+        default_name = f"Escenario {self.model_grid_counter + 1}"
+        scenario_name = simpledialog.askstring(
+            "Nuevo escenario",
+            "Nombre para el escenario:",
+            initialvalue=default_name,
+            parent=self.parent_for_dialogs
+        )
+
+        if scenario_name is None:
+            self.log("Alta de escenario cancelada por el usuario.", "INFO")
+            return
+
+        scenario_name = scenario_name.strip() or default_name
+
+        entry = {
+            "id": self.model_grid_counter,
+            "name": scenario_name,
+            "config": config_snapshot,
+            "status": "pendiente",
+            "notes": "",
+            "origin": "manual"
+        }
+
+        self.model_grid_entries.append(entry)
+        self.model_grid_counter += 1
+        self._refresh_model_grid_tree()
+        self.log(f"Escenario '{scenario_name}' agregado al grid con {len(config_snapshot['selected_covariables'])} covariable(s).", "SUCCESS")
+
+    def _parse_optional_int_list(self, raw_text):
+        values = []
+        if not raw_text:
+            return values
+        for token in raw_text.split(','):
+            token = token.strip()
+            if not token:
+                continue
+            lower = token.lower()
+            if lower in {"auto", "", "none", "-"}:
+                values.append(None)
+                continue
+            try:
+                values.append(int(token))
+            except ValueError:
+                raise ValueError(f"'{token}' no es un entero válido.")
+        return values
+
+    def _add_spline_variations_to_grid(self):
+        self._open_spline_penalization_variations_dialog(default_tab="spline", section_overrides={"spline": True, "penal": False})
+
+    def _add_penalization_variations_to_grid(self):
+        self._open_spline_penalization_variations_dialog(default_tab="penal", section_overrides={"spline": False, "penal": True})
+
+    def _open_spline_penalization_variations_dialog(self, default_tab="combined", section_overrides=None):
+        base_snapshot = self._capture_current_model_settings()
+        if base_snapshot is None:
+            messagebox.showwarning("Sin configuración", "No se pudo capturar la configuración actual del modelo.", parent=self.parent_for_dialogs)
+            return
+
+        current_df = None
+        if isinstance(self.data, pd.DataFrame) and not self.data.empty:
+            current_df = self.data
+        elif isinstance(self.raw_data, pd.DataFrame) and not self.raw_data.empty:
+            current_df = self.raw_data
+
+        numeric_cols = []
+        if current_df is not None and not current_df.empty:
+            numeric_cols = [
+                col for col in current_df.columns
+                if pd.api.types.is_numeric_dtype(current_df[col])
+            ]
+
+        default_spline_enabled = bool(numeric_cols)
+        default_penal_enabled = True
+
+        if section_overrides:
+            if "spline" in section_overrides:
+                default_spline_enabled = section_overrides["spline"] and bool(numeric_cols)
+            if "penal" in section_overrides:
+                default_penal_enabled = section_overrides["penal"]
+
+        dialog = tk.Toplevel(self.parent_for_dialogs)
+        dialog.title("Variaciones de spline y penalización")
+        dialog.transient(self.parent_for_dialogs)
+        dialog.grab_set()
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        spline_tab = ttk.Frame(notebook)
+        penal_tab = ttk.Frame(notebook)
+        notebook.add(spline_tab, text="Splines")
+        notebook.add(penal_tab, text="Penalización")
+
+        # --- Tab Splines ---
+        spline_enabled_var = tk.BooleanVar(value=default_spline_enabled)
+
+        spline_header = ttk.Frame(spline_tab)
+        spline_header.pack(fill=tk.X, pady=(0, 5))
+        spline_toggle_btn = ttk.Checkbutton(
+            spline_header,
+            text="Generar variaciones de spline",
+            variable=spline_enabled_var
+        )
+        spline_toggle_btn.pack(side=tk.LEFT, anchor=tk.W)
+
+        spline_form = ttk.Frame(spline_tab)
+        spline_form.pack(fill=tk.X, pady=5)
+
+        ttk.Label(spline_form, text="Covariable:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        spline_var_combo = ttk.Combobox(spline_form, values=sorted(numeric_cols), state="readonly")
+        if numeric_cols:
+            spline_var_combo.set(sorted(numeric_cols)[0])
+        spline_var_combo.grid(row=0, column=1, sticky=tk.EW, pady=2)
+
+        ttk.Label(spline_form, text="Tipo de spline:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        spline_type_values = list(self.spline_type_display_map.values())
+        spline_type_combo = ttk.Combobox(spline_form, values=spline_type_values, state="readonly")
+        spline_type_combo.set(self._get_default_spline_display())
+        spline_type_combo.grid(row=1, column=1, sticky=tk.EW, pady=2)
+
+        ttk.Label(spline_form, text="DF (lista, ej. 3,4):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        spline_df_entry = ttk.Entry(spline_form)
+        spline_df_entry.insert(0, "3,4,5")
+        spline_df_entry.grid(row=2, column=1, sticky=tk.EW, pady=2)
+
+        ttk.Label(spline_form, text="Nodos internos (lista, opcional):").grid(row=3, column=0, sticky=tk.W, pady=2)
+        spline_knots_entry = ttk.Entry(spline_form)
+        spline_knots_entry.insert(0, "auto")
+        spline_knots_entry.grid(row=3, column=1, sticky=tk.EW, pady=2)
+
+        ttk.Label(spline_form, text="Grado (solo B-spline):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        spline_degree_entry = ttk.Entry(spline_form)
+        spline_degree_entry.insert(0, "3")
+        spline_degree_entry.grid(row=4, column=1, sticky=tk.EW, pady=2)
+
+        ttk.Label(spline_form, text="Nombre base para escenarios:").grid(row=5, column=0, sticky=tk.W, pady=(8, 2))
+        spline_base_name_entry = ttk.Entry(spline_form)
+        spline_base_name_entry.insert(0, f"Escenario spline {self.model_grid_counter + 1}")
+        spline_base_name_entry.grid(row=5, column=1, sticky=tk.EW, pady=(8, 2))
+
+        ttk.Label(spline_form, text="Notas (opcional):").grid(row=6, column=0, sticky=tk.W, pady=2)
+        spline_notes_entry = ttk.Entry(spline_form)
+        spline_notes_entry.grid(row=6, column=1, sticky=tk.EW, pady=2)
+
+        spline_form.columnconfigure(1, weight=1)
+
+        if not numeric_cols:
+            ttk.Label(
+                spline_tab,
+                text="No se encontraron covariables numéricas en el dataset actual.",
+                foreground="gray"
+            ).pack(pady=(0, 5), anchor="w")
+
+        # --- Tab Penalización ---
+        penal_enabled_var = tk.BooleanVar(value=default_penal_enabled)
+
+        penal_header = ttk.Frame(penal_tab)
+        penal_header.pack(fill=tk.X, pady=(0, 5))
+        ttk.Checkbutton(
+            penal_header,
+            text="Generar variaciones de penalización",
+            variable=penal_enabled_var
+        ).pack(side=tk.LEFT, anchor=tk.W)
+
+        penal_form = ttk.Frame(penal_tab)
+        penal_form.pack(fill=tk.X, pady=5)
+
+        ttk.Label(penal_form, text="Métodos disponibles:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        methods_available = ["Ninguna", "L2 (Ridge)", "L1 (Lasso)", "ElasticNet"]
+        current_method = base_snapshot.get("penalization", {}).get("method", "Ninguna") or "Ninguna"
+        penal_methods_frame = ttk.Frame(penal_form)
+        penal_methods_frame.grid(row=0, column=1, sticky=tk.W)
+        penal_method_vars = {}
+        penal_method_checkbuttons = []
+        for idx, method_name in enumerate(methods_available):
+            var = tk.BooleanVar(value=(method_name == current_method))
+            penal_method_vars[method_name] = var
+            chk = ttk.Checkbutton(penal_methods_frame, text=method_name, variable=var)
+            chk.grid(row=idx, column=0, sticky=tk.W, pady=2)
+            penal_method_checkbuttons.append(chk)
+
+        ttk.Label(penal_form, text="Valores λ (separados por coma):").grid(row=1, column=0, sticky=tk.W, pady=2)
+        penal_lambda_entry = ttk.Entry(penal_form)
+        penal_lambda_entry.insert(0, "0.01,0.1,0.5")
+        penal_lambda_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, padx=5)
+
+        ttk.Label(penal_form, text="Ratios α ElasticNet (0-1, coma):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        penal_ratio_entry = ttk.Entry(penal_form)
+        penal_ratio_entry.insert(0, "0.25,0.5,0.75")
+        penal_ratio_entry.grid(row=2, column=1, sticky=tk.EW, pady=2, padx=5)
+
+        ttk.Label(penal_form, text="Nombre base para escenarios:").grid(row=3, column=0, sticky=tk.W, pady=(8, 2))
+        penal_base_name_entry = ttk.Entry(penal_form)
+        penal_base_name_entry.insert(0, f"Escenario penalización {self.model_grid_counter + 1}")
+        penal_base_name_entry.grid(row=3, column=1, sticky=tk.EW, pady=(8, 2), padx=5)
+
+        ttk.Label(penal_form, text="Notas (opcional):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        penal_notes_entry = ttk.Entry(penal_form)
+        penal_notes_entry.insert(0, base_snapshot.get("notes", ""))
+        penal_notes_entry.grid(row=4, column=1, sticky=tk.EW, pady=2, padx=5)
+
+        penal_form.columnconfigure(1, weight=1)
+
+        # --- Control de estado de widgets ---
+        penal_entry_widgets = [
+            penal_lambda_entry,
+            penal_ratio_entry,
+            penal_base_name_entry,
+            penal_notes_entry
+        ]
+
+        def update_spline_state(*_):
+            state = "readonly" if spline_enabled_var.get() else "disabled"
+            entry_state = tk.NORMAL if spline_enabled_var.get() else tk.DISABLED
+            spline_var_combo.configure(state=state)
+            spline_type_combo.configure(state=state)
+            for widget in [spline_df_entry, spline_knots_entry, spline_degree_entry, spline_base_name_entry, spline_notes_entry]:
+                widget.configure(state=entry_state)
+
+        def update_penal_state(*_):
+            state = tk.NORMAL if penal_enabled_var.get() else tk.DISABLED
+            for widget in penal_entry_widgets:
+                widget.configure(state=state)
+            for chk in penal_method_checkbuttons:
+                if penal_enabled_var.get():
+                    chk.state(["!disabled"])
+                else:
+                    chk.state(["disabled"])
+
+        spline_enabled_var.trace_add("write", update_spline_state)
+        penal_enabled_var.trace_add("write", update_penal_state)
+
+        update_spline_state()
+        update_penal_state()
+
+        if not numeric_cols:
+            spline_toggle_btn.state(["disabled"])
+
+        # --- Botones ---
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=(0, 10))
+
+        def parse_float_list(raw_text, *, allow_zero=False):
+            clean_values = []
+            if not raw_text:
+                return clean_values
+            for token in raw_text.split(','):
+                stripped = token.strip()
+                if not stripped:
+                    continue
+                try:
+                    value = float(stripped)
+                except ValueError as err:
+                    raise ValueError(f"'{stripped}' no es un número válido") from err
+                if allow_zero:
+                    if value < 0:
+                        raise ValueError(f"'{stripped}' debe ser mayor o igual a 0")
+                else:
+                    if value <= 0:
+                        raise ValueError(f"'{stripped}' debe ser mayor que 0")
+                clean_values.append(value)
+            return clean_values
+
+        def on_accept():
+            if not spline_enabled_var.get() and not penal_enabled_var.get():
+                messagebox.showinfo("Sin selección", "Activa al menos una sección (Splines o Penalización) para generar variaciones.", parent=dialog)
+                return
+
+            def merge_notes(*notes_parts):
+                merged = []
+                for part in notes_parts:
+                    if part:
+                        clean = part.strip()
+                        if clean and clean not in merged:
+                            merged.append(clean)
+                return " | ".join(merged)
+
+            def apply_spline_variant_to_config(config_obj, variant_data):
+                target_var = variant_data["target_var"]
+                spline_details = copy.deepcopy(variant_data["spline_details"])
+                selected_covs = config_obj.setdefault("selected_covariables", [])
+                if target_var not in selected_covs:
+                    selected_covs.append(target_var)
+                config_obj["selected_covariables"] = list(dict.fromkeys(selected_covs))
+                spline_configs = config_obj.setdefault("spline_configs", {})
+                spline_configs[target_var] = spline_details
+
+            def apply_penal_variant_to_config(config_obj, variant_data):
+                config_obj["penalization"] = {
+                    "method": variant_data["method"],
+                    "value": variant_data["lambda_value"],
+                    "l1_ratio": variant_data["l1_ratio"]
+                }
+
+            spline_variants = []
+            penal_variants = []
+
+            if spline_enabled_var.get():
+                if not numeric_cols:
+                    messagebox.showwarning("Sin covariables", "No hay covariables numéricas disponibles para generar variaciones de spline.", parent=dialog)
+                    return
+
+                target_var = spline_var_combo.get().strip()
+                if not target_var:
+                    messagebox.showwarning("Covariable requerida", "Selecciona una covariable numérica.", parent=dialog)
+                    return
+
+                type_display = spline_type_combo.get().strip()
+                if not type_display:
+                    messagebox.showwarning("Tipo de spline", "Selecciona el tipo de spline.", parent=dialog)
+                    return
+
+                try:
+                    df_values = self._parse_optional_int_list(spline_df_entry.get().strip()) or [None]
+                except ValueError as err_int:
+                    messagebox.showerror("DF inválidos", str(err_int), parent=dialog)
+                    return
+
+                try:
+                    knot_values = self._parse_optional_int_list(spline_knots_entry.get().strip())
+                except ValueError as err_knots:
+                    messagebox.showerror("Nodos inválidos", str(err_knots), parent=dialog)
+                    return
+
+                knot_values = knot_values if knot_values else [None]
+
+                try:
+                    degree_values = self._parse_optional_int_list(spline_degree_entry.get().strip())
+                except ValueError as err_deg:
+                    messagebox.showerror("Grado inválido", str(err_deg), parent=dialog)
+                    return
+
+                if not degree_values:
+                    degree_values = [3]
+
+                base_label_spline = spline_base_name_entry.get().strip() or f"Escenario spline {self.model_grid_counter + 1}"
+                notes_spline = spline_notes_entry.get().strip()
+                internal_type = self.spline_type_reverse_map.get(type_display, "Natural")
+
+                for df_val in df_values:
+                    for knot_val in knot_values:
+                        degrees_iter = degree_values if internal_type == "B-spline" else [3]
+                        for degree_val in degrees_iter:
+                            spline_details = {
+                                "type": internal_type,
+                                "df": df_val,
+                                "num_knots": knot_val,
+                                "restricted": internal_type == "Natural",
+                                "degree": degree_val if internal_type == "B-spline" else 3
+                            }
+
+                            detail_fragments = []
+                            if df_val is not None:
+                                detail_fragments.append(f"df={df_val}")
+                            if knot_val is not None:
+                                detail_fragments.append(f"nudos={knot_val}")
+                            if internal_type == "B-spline" and degree_val is not None:
+                                detail_fragments.append(f"grado={degree_val}")
+
+                            label = base_label_spline
+                            if detail_fragments:
+                                label += " | " + ", ".join(detail_fragments)
+
+                            spline_variants.append({
+                                "target_var": target_var,
+                                "spline_details": spline_details,
+                                "label": label,
+                                "notes": notes_spline
+                            })
+
+                if not spline_variants:
+                    messagebox.showinfo("Sin combinaciones", "No se generó ninguna variación válida de spline.", parent=dialog)
+                    return
+
+            if penal_enabled_var.get():
+                selected_methods = [method for method, var in penal_method_vars.items() if var.get()]
+                if not selected_methods:
+                    messagebox.showwarning("Selección requerida", "Selecciona al menos un método de penalización.", parent=dialog)
+                    return
+
+                try:
+                    lambda_values = parse_float_list(penal_lambda_entry.get().strip(), allow_zero=True)
+                except ValueError as err_lambda:
+                    messagebox.showerror("Valores λ inválidos", str(err_lambda), parent=dialog)
+                    return
+
+                try:
+                    ratio_values = parse_float_list(penal_ratio_entry.get().strip(), allow_zero=True)
+                except ValueError as err_ratio:
+                    messagebox.showerror("Ratios α inválidos", str(err_ratio), parent=dialog)
+                    return
+
+                if not lambda_values:
+                    fallback_lambda = base_snapshot.get("penalization", {}).get("value", 0.1)
+                    lambda_values = [val for val in [fallback_lambda, 0.1] if val > 0]
+                    if not lambda_values:
+                        lambda_values = [0.1]
+
+                ratio_values = [min(max(val, 0.0), 1.0) for val in ratio_values if 0.0 <= val <= 1.0]
+                if not ratio_values:
+                    ratio_values = [base_snapshot.get("penalization", {}).get("l1_ratio", 0.5) or 0.5]
+
+                base_label_penal = penal_base_name_entry.get().strip() or f"Escenario penalización {self.model_grid_counter + 1}"
+                notes_penal = penal_notes_entry.get().strip()
+
+                for method in selected_methods:
+                    if method == "Ninguna":
+                        penal_variants.append({
+                            "method": "Ninguna",
+                            "lambda_value": 0.0,
+                            "l1_ratio": 0.0,
+                            "label": f"{base_label_penal} | {method}",
+                            "notes": notes_penal
+                        })
+                        continue
+
+                    usable_lambdas = [val for val in lambda_values if val > 0]
+                    if not usable_lambdas:
+                        continue
+
+                    if method == "ElasticNet":
+                        ratios_to_apply = ratio_values or [0.5]
+                        for lambda_val in usable_lambdas:
+                            for ratio_val in ratios_to_apply:
+                                ratio_clipped = min(max(ratio_val, 0.0), 1.0)
+                                penal_variants.append({
+                                    "method": method,
+                                    "lambda_value": lambda_val,
+                                    "l1_ratio": ratio_clipped,
+                                    "label": f"{base_label_penal} | {method} λ={lambda_val:.4g}, α={ratio_clipped:.3g}",
+                                    "notes": notes_penal
+                                })
+                    else:
+                        for lambda_val in usable_lambdas:
+                            l1_ratio = 1.0 if method == "L1 (Lasso)" else 0.0
+                            penal_variants.append({
+                                "method": method,
+                                "lambda_value": lambda_val,
+                                "l1_ratio": l1_ratio,
+                                "label": f"{base_label_penal} | {method} λ={lambda_val:.4g}",
+                                "notes": notes_penal
+                            })
+
+                if penal_enabled_var.get() and not penal_variants:
+                    messagebox.showinfo("Sin combinaciones", "No se generó ninguna variación válida de penalización.", parent=dialog)
+                    return
+
+            entries_to_add = []
+            count_spline_only = 0
+            count_penal_only = 0
+            count_combined = 0
+
+            if spline_variants and penal_variants:
+                for spline_variant in spline_variants:
+                    for penal_variant in penal_variants:
+                        config_variant = copy.deepcopy(base_snapshot)
+                        apply_spline_variant_to_config(config_variant, spline_variant)
+                        apply_penal_variant_to_config(config_variant, penal_variant)
+                        config_variant["notes"] = merge_notes(spline_variant.get("notes"), penal_variant.get("notes"))
+                        entry_label = " | ".join([part for part in [spline_variant.get("label"), penal_variant.get("label")] if part])
+                        entries_to_add.append({
+                            "config": config_variant,
+                            "label": entry_label,
+                            "notes": config_variant.get("notes", ""),
+                            "origin": "spline_penal_combination"
+                        })
+                        count_combined += 1
+            elif spline_variants:
+                for spline_variant in spline_variants:
+                    config_variant = copy.deepcopy(base_snapshot)
+                    apply_spline_variant_to_config(config_variant, spline_variant)
+                    config_variant["notes"] = merge_notes(spline_variant.get("notes"))
+                    entries_to_add.append({
+                        "config": config_variant,
+                        "label": spline_variant.get("label"),
+                        "notes": config_variant.get("notes", ""),
+                        "origin": "spline_variation"
+                    })
+                    count_spline_only += 1
+            elif penal_variants:
+                for penal_variant in penal_variants:
+                    config_variant = copy.deepcopy(base_snapshot)
+                    apply_penal_variant_to_config(config_variant, penal_variant)
+                    config_variant["notes"] = merge_notes(penal_variant.get("notes"))
+                    entries_to_add.append({
+                        "config": config_variant,
+                        "label": penal_variant.get("label"),
+                        "notes": config_variant.get("notes", ""),
+                        "origin": "penalization_variation"
+                    })
+                    count_penal_only += 1
+
+            total_added = len(entries_to_add)
+            if total_added == 0:
+                messagebox.showinfo("Sin combinaciones", "No se generó ninguna variación válida.", parent=dialog)
+                return
+
+            for entry_data in entries_to_add:
+                entry = {
+                    "id": self.model_grid_counter,
+                    "name": entry_data["label"] or f"Escenario {self.model_grid_counter}",
+                    "config": entry_data["config"],
+                    "status": "pendiente",
+                    "notes": entry_data["notes"],
+                    "origin": entry_data["origin"]
+                }
+                self.model_grid_entries.append(entry)
+                self.model_grid_counter += 1
+
+            dialog.destroy()
+            self._refresh_model_grid_tree()
+
+            log_parts = []
+            if count_combined:
+                log_parts.append(f"{count_combined} combinaciones spline+penalización")
+            if count_spline_only:
+                log_parts.append(f"{count_spline_only} variaciones solo spline")
+            if count_penal_only:
+                log_parts.append(f"{count_penal_only} variaciones solo penalización")
+            self.log("Se agregaron " + " y ".join(log_parts) + " al grid.", "SUCCESS")
+
+            summary_lines = ["Variaciones generadas:"]
+            summary_lines.append(f"Combinadas spline+penalización: {count_combined}")
+            summary_lines.append(f"Solo spline: {count_spline_only}")
+            summary_lines.append(f"Solo penalización: {count_penal_only}")
+            messagebox.showinfo("Variaciones agregadas", "\n".join(summary_lines), parent=self.parent_for_dialogs)
+
+        def on_cancel():
+            dialog.destroy()
+
+        ttk.Button(button_frame, text="Generar", command=on_accept).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
+
+        if default_tab == "spline":
+            notebook.select(spline_tab)
+        elif default_tab == "penal":
+            notebook.select(penal_tab)
+
+        self.parent_for_dialogs.wait_window(dialog)
+
+    def _remove_selected_grid_entries(self):
+        if not self.model_grid_tree:
+            return
+
+        selected = self.model_grid_tree.selection()
+        if not selected:
+            messagebox.showinfo("Grid", "Selecciona uno o más escenarios para eliminarlos.", parent=self.parent_for_dialogs)
+            return
+
+        ids_to_remove = set()
+        for iid in selected:
+            try:
+                ids_to_remove.add(int(iid))
+            except ValueError:
+                continue
+
+        before = len(self.model_grid_entries)
+        self.model_grid_entries = [entry for entry in self.model_grid_entries if entry.get("id") not in ids_to_remove]
+        removed = before - len(self.model_grid_entries)
+        self._refresh_model_grid_tree()
+        self.log(f"Se eliminaron {removed} escenario(s) del grid.", "INFO")
+
+    def _remove_grid_entry_by_id(self, entry_id):
+        if entry_id is None:
+            return
+
+        entry = self._find_grid_entry_by_id(entry_id)
+        if not entry:
+            return
+
+        self.model_grid_entries = [item for item in self.model_grid_entries if item.get("id") != entry_id]
+        self._refresh_model_grid_tree()
+        entry_name = entry.get("name") or entry_id
+        self.log(f"Escenario '{entry_name}' se eliminó del grid tras cargarse en el panel.", "INFO")
+
+    def _get_grid_entry_display_values(self, entry, display_index):
+        config = entry.get("config", {})
+        covariables = config.get("selected_covariables", [])
+        selection_method = config.get("var_selection_method", "")
+
+        if not covariables:
+            cov_text = "(auto/selección)"
+        elif len(covariables) <= 6:
+            cov_text = ", ".join(covariables)
+        else:
+            cov_text = f"{len(covariables)} covariables"
+
+        if selection_method and selection_method != "Ninguno (usar todas)":
+            cov_text += f" | Sel.: {selection_method.split()[0]}"
+
+        pen_conf = config.get("penalization", {}) or {}
+        pen_method = pen_conf.get("method", "Ninguna") or "Ninguna"
+        if pen_method == "Ninguna":
+            pen_text = "Ninguna"
+        else:
+            pen_text = pen_method
+            pen_value = pen_conf.get("value")
+            if pen_value is not None:
+                pen_text += f" (λ={pen_value:.3g})"
+            if pen_method == "ElasticNet":
+                pen_text += f", α={pen_conf.get('l1_ratio', 0.5):.2f}"
+
+        spline_configs = config.get("spline_configs", {}) or {}
+        spline_text = "—"
+        if spline_configs:
+            details = []
+            for var_name, detail in spline_configs.items():
+                if not isinstance(detail, dict):
+                    details.append(f"{var_name}: (sin detalles)")
+                    continue
+
+                type_internal = detail.get('type', '')
+                display_label = self._get_spline_display_value(type_internal) if isinstance(type_internal, str) else 'Spline'
+                if not display_label:
+                    display_label = 'Spline'
+
+                parts = [display_label]
+                if detail.get('df') is not None:
+                    parts.append(f"df={detail['df']}")
+                if detail.get('num_knots') is not None:
+                    parts.append(f"nudos={detail['num_knots']}")
+
+                is_b_spline = isinstance(type_internal, str) and type_internal.lower() == 'b-spline'
+                if is_b_spline and detail.get('degree') is not None:
+                    parts.append(f"grado={detail['degree']}")
+
+                details.append(f"{var_name}: {' '.join(parts)}")
+            if details:
+                spline_text = "; ".join(details)
+
+        notes_text = entry.get("notes") or config.get("notes") or ""
+
+        values = (
+            display_index,
+            entry.get("name", f"Escenario {display_index}"),
+            config.get("model_type", ""),
+            cov_text,
+            pen_text,
+            config.get("scaling_method", "Ninguna"),
+            config.get("tie_method", "efron"),
+            spline_text,
+            notes_text
+        )
+        return values
+
+    def _refresh_model_grid_tree(self):
+        if not self.model_grid_tree:
+            return
+
+        selected_ids = set(self.model_grid_tree.selection())
+        for iid in self.model_grid_tree.get_children():
+            self.model_grid_tree.delete(iid)
+
+        for display_index, entry in enumerate(self.model_grid_entries, start=1):
+            iid = str(entry.get("id"))
+            values = self._get_grid_entry_display_values(entry, display_index)
+            self.model_grid_tree.insert("", tk.END, iid=iid, values=values)
+            if iid in selected_ids:
+                self.model_grid_tree.selection_add(iid)
+
+    def _find_grid_entry_by_id(self, entry_id):
+        for entry in self.model_grid_entries:
+            if entry.get("id") == entry_id:
+                return entry
+        return None
+
+    def _execute_grid_entries(self, entries):
+        executed_count = 0
+        for entry in entries:
+            if not entry:
+                continue
+            try:
+                applied_ok = self._apply_grid_entry_to_ui(entry)
+                if not applied_ok:
+                    continue
+                self._execute_cox_modeling_orchestrator()
+                executed_count += 1
+            except Exception as exc:
+                entry_name = entry.get("name", "Escenario")
+                self.log(f"Error al ejecutar automáticamente el escenario '{entry_name}': {exc}", "ERROR")
+
+        if executed_count > 0:
+            self.log(f"Se ejecutaron {executed_count} escenario(s) desde el grid.", "INFO")
+
+    def _on_grid_entry_double_click(self, event):
+        if not self.model_grid_tree:
+            return
+        item_id = self.model_grid_tree.identify_row(event.y)
+        if not item_id:
+            return
+        try:
+            entry_id = int(item_id)
+        except ValueError:
+            return
+        entry = self._find_grid_entry_by_id(entry_id)
+        if entry:
+            self._execute_grid_entries([entry])
+
+    def _execute_selected_grid_entries(self):
+        if not self.model_grid_tree:
+            return
+        selected = self.model_grid_tree.selection()
+        if not selected:
+            messagebox.showinfo("Grid", "Selecciona un escenario y vuelve a intentar.", parent=self.parent_for_dialogs)
+            return
+        entries_to_run = []
+        for iid in selected:
+            try:
+                entry_id = int(iid)
+            except ValueError:
+                self.log(f"Identificador de escenario no válido en la selección: {iid}", "WARN")
+                continue
+            entry = self._find_grid_entry_by_id(entry_id)
+            if entry:
+                entries_to_run.append(entry)
+            else:
+                self.log(f"No se encontró el escenario con id {entry_id} al intentar ejecutarlo.", "WARN")
+
+        if not entries_to_run:
+            messagebox.showwarning("Grid", "No se encontraron escenarios válidos para ejecutar.", parent=self.parent_for_dialogs)
+            return
+
+        self._execute_grid_entries(entries_to_run)
+
+    def _apply_grid_entry_to_ui(self, entry):
+        config = entry.get("config", {})
+        entry_id = entry.get("id")
+        apply_success = False
+
+        self.cox_model_type_var.set(config.get("model_type", "Multivariado"))
+        self._toggle_univariate_forest_plot_cb()
+
+        selection_method = config.get("var_selection_method", "Ninguno (usar todas)")
+        self.var_selection_method_var.set(selection_method)
+        if hasattr(self, 'combo_metodo_seleccion_vars'):
+            available_methods = set(self.combo_metodo_seleccion_vars.cget("values"))
+            if selection_method in available_methods:
+                self.combo_metodo_seleccion_vars.set(selection_method)
+            else:
+                fallback = "Ninguno (usar todas)"
+                self.combo_metodo_seleccion_vars.set(fallback)
+                self.var_selection_method_var.set(fallback)
+
+        self.p_enter_var.set(config.get("p_enter", 0.05))
+        self.p_remove_var.set(config.get("p_remove", 0.10))
+
+        pen_conf = config.get("penalization", {}) or {}
+        pen_method = pen_conf.get("method", "Ninguna") or "Ninguna"
+        self.penalization_method_var.set(pen_method)
+        if hasattr(self, 'combo_tipo_penalizacion'):
+            available_pen = set(self.combo_tipo_penalizacion.cget("values"))
+            if pen_method in available_pen:
+                self.combo_tipo_penalizacion.set(pen_method)
+            else:
+                self.combo_tipo_penalizacion.set("Ninguna")
+                self.penalization_method_var.set("Ninguna")
+
+        self.penalizer_strength_var.set(pen_conf.get("value", 0.0))
+        self.l1_ratio_for_elasticnet_var.set(pen_conf.get("l1_ratio", 0.5))
+        self._toggle_penalization_params_ui_state()
+
+        scaling_method = config.get("scaling_method", "Ninguna")
+        self.covariate_scaling_method_var.set(scaling_method)
+        if hasattr(self, 'combo_scaling_method'):
+            available_scaling = set(self.combo_scaling_method.cget("values"))
+            if scaling_method in available_scaling:
+                self.combo_scaling_method.set(scaling_method)
+            else:
+                self.combo_scaling_method.set("Ninguna")
+                self.covariate_scaling_method_var.set("Ninguna")
+
+        tie_method = config.get("tie_method", "efron")
+        self.tie_handling_method_var.set(tie_method)
+        if hasattr(self, 'combo_metodo_empates'):
+            available_ties = set(self.combo_metodo_empates.cget("values"))
+            if tie_method in available_ties:
+                self.combo_metodo_empates.set(tie_method)
+            else:
+                self.combo_metodo_empates.set("efron")
+                self.tie_handling_method_var.set("efron")
+
+        self.calculate_cv_cindex_var.set(config.get("calculate_cv", bool(self.calculate_cv_cindex_var.get())))
+        self.cv_num_kfolds_var.set(config.get("cv_kfolds", self.cv_num_kfolds_var.get()))
+        self.cv_random_seed_var.set(config.get("cv_seed", self.cv_random_seed_var.get()))
+        self.calculate_test_cindex_var.set(config.get("calculate_test_holdout", bool(self.calculate_test_cindex_var.get())))
+        self.test_size_var.set(config.get("test_size", self.test_size_var.get()))
+        self.test_random_seed_var.set(config.get("test_seed", self.test_random_seed_var.get()))
+
+        self.generate_univariate_forest_plot_var.set(config.get("generate_univariate_forest_plot", True))
+        self._toggle_univariate_forest_plot_cb()
+        self._clear_holdout_config_dirty()
+
+        selected_covs = config.get("selected_covariables", [])
+        if hasattr(self, 'listbox_covariables_disponibles'):
+            self.listbox_covariables_disponibles.selection_clear(0, tk.END)
+            available_items = [self.listbox_covariables_disponibles.get(i) for i in range(self.listbox_covariables_disponibles.size())]
+            for cov_name in selected_covs:
+                if cov_name in available_items:
+                    idx = available_items.index(cov_name)
+                    self.listbox_covariables_disponibles.selection_set(idx)
+                else:
+                    self.log(f"Covariable '{cov_name}' no está disponible en la lista actual al aplicar escenario.", "WARN")
+
+        self.categorical_compare_config = copy.deepcopy(config.get("categorical_configs", {}))
+        self.spline_config_details = copy.deepcopy(config.get("spline_configs", {}))
+        self.on_covariate_select_for_config()
+
+        notes_text = entry.get("notes") or config.get("notes") or ""
+        if notes_text:
+            self.log(f"Escenario '{entry.get('name', 'Escenario')}' cargado. Nota: {notes_text}", "INFO")
+
+        self.log(f"Escenario '{entry.get('name', 'Escenario')}' cargado en el panel de modelado.", "INFO")
+
+        try:
+            applied_ok = self.apply_covariate_config_to_selected()
+            if applied_ok:
+                self.log("Configuración aplicada automáticamente al cargar el escenario desde el grid.", "INFO")
+                if entry_id is not None:
+                    self._remove_grid_entry_by_id(entry_id)
+                apply_success = True
+            else:
+                self.log("No se pudo aplicar automáticamente la configuración del escenario; revisa los detalles en la pestaña.", "WARN")
+        except Exception as exc:
+            self.log(f"Error al aplicar automáticamente la configuración del escenario: {exc}", "ERROR")
+            apply_success = False
+
+        return apply_success
+
     # --- MÉTODOS PARA PESTAÑA 2: MODELADO COX --- (Continuación Lógica)
 
     def _preparar_datos_para_modelado(self):
@@ -2247,6 +4452,7 @@ class CoxModelingApp(ttk.Frame):
 
         sel_cov_indices = self.listbox_covariables_disponibles.curselection()
         selected_covs_orig_names = [self.listbox_covariables_disponibles.get(i) for i in sel_cov_indices if self.listbox_covariables_disponibles.get(i) not in [time_col_ui, event_col_ui]]
+        self.selected_covariables_from_ui = list(selected_covs_orig_names)
 
         if self.cox_model_type_var.get() == "Multivariado" and not selected_covs_orig_names:
              self.log("Multivariado sin covariables -> modelo nulo.", "INFO")
@@ -2372,6 +4578,83 @@ class CoxModelingApp(ttk.Frame):
         if re.match(r'^\d', safe_name): safe_name = '_' + safe_name
         return safe_name
 
+    def _calculate_internal_knots_for_series(self, series, desired_internal_knots, var_name):
+        """Compute internal knot positions for a numeric series using quantile spacing."""
+        metadata = {
+            "requested_internal_knots": int(desired_internal_knots),
+            "used_internal_knots": 0,
+            "internal_knots": [],
+            "boundary_knots": [],
+            "series_min": None,
+            "series_max": None,
+            "knot_strategy": "quantile"
+        }
+
+        if desired_internal_knots <= 0:
+            numeric_series = pd.to_numeric(series, errors='coerce').dropna()
+            if numeric_series.empty:
+                self.log(f"No se calcularon nodos para '{var_name}' (serie vacía tras limpiar).", "DEBUG")
+                return metadata
+            unique_vals = np.unique(numeric_series)
+            if unique_vals.size < 2:
+                self.log(f"No se calcularon nodos para '{var_name}' (menos de dos valores únicos).", "WARN")
+                return metadata
+            metadata["boundary_knots"] = [float(unique_vals[0]), float(unique_vals[-1])]
+            metadata["series_min"] = float(np.min(numeric_series))
+            metadata["series_max"] = float(np.max(numeric_series))
+            return metadata
+
+        numeric_series = pd.to_numeric(series, errors='coerce').dropna()
+        if numeric_series.empty:
+            self.log(f"No se calcularon nodos para '{var_name}': serie vacía tras convertir a numérica.", "WARN")
+            return metadata
+
+        unique_vals = np.unique(numeric_series)
+        if unique_vals.size < 2:
+            self.log(f"No se calcularon nodos para '{var_name}': se requieren al menos dos valores únicos.", "WARN")
+            metadata["boundary_knots"] = [float(unique_vals[0])] * 2
+            metadata["series_min"] = float(unique_vals[0])
+            metadata["series_max"] = float(unique_vals[0])
+            return metadata
+
+        metadata["boundary_knots"] = [float(unique_vals[0]), float(unique_vals[-1])]
+        metadata["series_min"] = float(np.min(numeric_series))
+        metadata["series_max"] = float(np.max(numeric_series))
+
+        max_possible_internal = max(0, unique_vals.size - 2)
+        if max_possible_internal <= 0:
+            self.log(f"'{var_name}' no admite nodos internos adicionales (solo valores mínimo y máximo disponibles).", "WARN")
+            return metadata
+
+        used_internal_knots = int(min(desired_internal_knots, max_possible_internal))
+        if used_internal_knots < desired_internal_knots:
+            self.log(f"'{var_name}': nodos internos solicitados={desired_internal_knots}, máximos posibles={max_possible_internal}. Se ajusta a {used_internal_knots}.", "WARN")
+
+        if used_internal_knots <= 0:
+            return metadata
+
+        quantile_positions = np.linspace(0, 1, used_internal_knots + 2)[1:-1]
+        try:
+            knots = np.quantile(numeric_series, quantile_positions)
+        except Exception as err_quantile:
+            self.log(f"Fallo al calcular quantiles para nodos de '{var_name}': {err_quantile}", "ERROR")
+            return metadata
+
+        deduped_knots = []
+        for knot_val in np.atleast_1d(knots):
+            knot_float = float(knot_val)
+            if not deduped_knots or abs(knot_float - deduped_knots[-1]) > 1e-8:
+                deduped_knots.append(knot_float)
+
+        if len(deduped_knots) < used_internal_knots:
+            self.log(f"'{var_name}': nodos internos únicos={len(deduped_knots)} menores al solicitado. Se usarán los disponibles.", "WARN")
+            used_internal_knots = len(deduped_knots)
+
+        metadata["internal_knots"] = deduped_knots
+        metadata["used_internal_knots"] = used_internal_knots
+        return metadata
+
+
     def build_design_matrix(self, df_input_bd, selected_covs_orig_names_bd, time_col_name_bd, event_col_name_bd):
         if not PATSY_AVAILABLE or dmatrix is None:
             self.log("'patsy' no disponible.", "ERROR"); messagebox.showerror("Error Patsy", "'patsy' no instalada.", parent=self.parent_for_dialogs); return None, None, None, None
@@ -2392,6 +4675,7 @@ class CoxModelingApp(ttk.Frame):
                 self.log(f"Error Patsy (modelo nulo): {e_patsy_null}", "ERROR"); traceback.print_exc(limit=3); return None, None, None, None
         
         formula_parts_bd = []
+        self._last_spline_basis_metadata = {}
         for orig_cov_name_bd in selected_covs_orig_names_bd:
             if orig_cov_name_bd not in df_for_patsy_bd.columns:
                 self.log(f"Advertencia: Cov. original '{orig_cov_name_bd}' no en DF para Patsy. Saltando.", "WARN"); continue
@@ -2403,41 +4687,316 @@ class CoxModelingApp(ttk.Frame):
                 if orig_cov_name_bd in self.spline_config_details:
                     spl_cfg_bd = self.spline_config_details[orig_cov_name_bd]
                     spline_type = spl_cfg_bd.get('type', 'Natural')
-                    spline_df = spl_cfg_bd.get('df', 4)
+                    spline_df_requested_raw = spl_cfg_bd.get('df', 4)
+                    spline_df = spline_df_requested_raw
+                    spline_num_knots = max(0, spl_cfg_bd.get('num_knots', 0))
+                    spline_degree_cfg = spl_cfg_bd.get('degree', 3)
+                    spline_restricted = spl_cfg_bd.get('restricted', spline_type == 'Natural')
+                    custom_knots_cfg = spl_cfg_bd.get('custom_knots') or []
+
+                    if spline_df in (None, "", "auto"):
+                        spline_df = self._derive_spline_df(
+                            spline_type,
+                            spline_degree_cfg,
+                            spline_num_knots,
+                            custom_knots_cfg
+                        )
+
+                    try:
+                        numeric_values_for_df = pd.to_numeric(df_for_patsy_bd[orig_cov_name_bd], errors='coerce').dropna()
+                    except Exception as err_numeric:
+                        numeric_values_for_df = df_for_patsy_bd[orig_cov_name_bd].dropna()
+                        self.log(f"'{orig_cov_name_bd}': no se pudo convertir a numérico para validar DF ({err_numeric}). Se usa la serie original.", "WARN")
+
+                    unique_count_for_df = numeric_values_for_df.nunique()
+
+                    try:
+                        spline_df_adjusted = int(spline_df)
+                    except (TypeError, ValueError):
+                        derived_df_fallback = self._derive_spline_df(
+                            spline_type,
+                            spline_degree_cfg,
+                            spline_num_knots,
+                            custom_knots_cfg
+                        )
+                        self.log(
+                            f"'{orig_cov_name_bd}': DF inválido '{spline_df}'. Se utiliza derivado={derived_df_fallback}.",
+                            "WARN"
+                        )
+                        spline_df_adjusted = int(derived_df_fallback)
+                        spline_df = spline_df_adjusted
+
+                    if unique_count_for_df > 0 and spline_df_adjusted > unique_count_for_df:
+                        self.log(f"'{orig_cov_name_bd}': df solicitado ({spline_df_adjusted}) excede valores únicos ({unique_count_for_df}). Ajustado a {unique_count_for_df}.", "WARN")
+                        spline_df_adjusted = int(unique_count_for_df)
+
+                    if spline_type == 'Natural':
+                        if unique_count_for_df >= 3 and spline_df_adjusted < 3:
+                            self.log(f"'{orig_cov_name_bd}': df {spline_df_adjusted} incrementado a 3 para spline restringido estable.", "WARN")
+                            spline_df_adjusted = 3
+                        elif unique_count_for_df < 3:
+                            fallback_df = int(unique_count_for_df) if unique_count_for_df > 0 else 1
+                            if spline_df_adjusted != fallback_df:
+                                self.log(f"'{orig_cov_name_bd}': df ajustado a {fallback_df} por valores únicos limitados en spline restringido.", "WARN")
+                            spline_df_adjusted = fallback_df
+                    elif spline_type == 'B-spline':
+                        effective_degree = max(1, int(spline_degree_cfg))
+                        if unique_count_for_df > 0 and unique_count_for_df <= effective_degree:
+                            adjusted_degree = max(1, unique_count_for_df - 1)
+                            if adjusted_degree < effective_degree:
+                                self.log(
+                                    f"'{orig_cov_name_bd}': grado {effective_degree} excede valores únicos ({unique_count_for_df}). Ajustado a {adjusted_degree}.",
+                                    "WARN"
+                                )
+                                effective_degree = adjusted_degree
+                                spline_degree_cfg = effective_degree
+
+                        explicit_zero_knots_bs_local = (spline_num_knots == 0 and not custom_knots_cfg)
+                        if custom_knots_cfg:
+                            min_df_bs = len(custom_knots_cfg) + effective_degree
+                        elif explicit_zero_knots_bs_local:
+                            min_df_bs = effective_degree
+                        elif spline_num_knots > 0:
+                            min_df_bs = spline_num_knots + effective_degree
+                        else:
+                            min_df_bs = effective_degree + 1
+
+                        if unique_count_for_df > 0:
+                            min_df_bs = min(max(min_df_bs, effective_degree), unique_count_for_df)
+
+                        if spline_df_adjusted < min_df_bs:
+                            self.log(
+                                f"'{orig_cov_name_bd}': df {spline_df_adjusted} incrementado a {min_df_bs} para compatibilidad con B-spline grado {effective_degree}.",
+                                "WARN"
+                            )
+                            spline_df_adjusted = int(min_df_bs)
+                            spline_df = spline_df_adjusted
+
+                    if spline_df_adjusted < 1:
+                        spline_df_adjusted = 1
+
+                    if spline_df_adjusted != spline_df:
+                        self.log(f"'{orig_cov_name_bd}': df efectivo utilizado = {spline_df_adjusted}.", "INFO")
+                        spline_df = spline_df_adjusted
+
+                    internal_knots_to_calculate = spline_num_knots
+                    knots_source_descriptor = "solicitados"
+                    explicit_zero_knots = (spline_num_knots == 0 and not custom_knots_cfg)
+
+                    if spline_type == 'Natural':
+                        if internal_knots_to_calculate <= 0 and spline_df > 1:
+                            internal_knots_to_calculate = max(0, int(spline_df) - 1)
+                            knots_source_descriptor = "derivados_por_df"
+                    elif spline_type == 'B-spline':
+                        degree_for_bs = max(1, int(spline_degree_cfg))
+                        if explicit_zero_knots:
+                            internal_knots_to_calculate = 0
+                            knots_source_descriptor = "cero_explicito"
+                        elif internal_knots_to_calculate <= 0 and spline_df > degree_for_bs:
+                            internal_knots_to_calculate = max(0, int(spline_df) - degree_for_bs)
+                            knots_source_descriptor = "derivados_por_df"
+
+                    manual_knots_clean = []
+                    if custom_knots_cfg:
+                        for knot_val in custom_knots_cfg:
+                            try:
+                                manual_knots_clean.append(float(knot_val))
+                            except (TypeError, ValueError):
+                                self.log(f"'{orig_cov_name_bd}': nodo manual '{knot_val}' inválido. Se ignora.", "WARN")
+                        manual_knots_clean = sorted(set(manual_knots_clean))
+
+                    if manual_knots_clean and spline_type not in {'B-spline', 'Natural'}:
+                        self.log(f"'{orig_cov_name_bd}': nodos manuales proporcionados, pero el tipo de spline '{spline_type}' no los admite. Se ignorarán.", "WARN")
+                        manual_knots_clean = []
+
+                    if manual_knots_clean:
+                        manual_min = float(numeric_values_for_df.min()) if not numeric_values_for_df.empty else None
+                        manual_max = float(numeric_values_for_df.max()) if not numeric_values_for_df.empty else None
+                        out_of_bounds = []
+                        if manual_min is not None and manual_max is not None:
+                            for knot_val in manual_knots_clean:
+                                if knot_val < manual_min or knot_val > manual_max:
+                                    out_of_bounds.append(knot_val)
+                        if out_of_bounds:
+                            self.log(f"'{orig_cov_name_bd}': nodos manuales fuera de rango ({out_of_bounds}). Revise que los knots correspondan al rango real de los datos.", "WARN")
+
+                        knot_metadata = {
+                            "requested_internal_knots": len(manual_knots_clean),
+                            "used_internal_knots": len(manual_knots_clean),
+                            "internal_knots": manual_knots_clean,
+                            "boundary_knots": [manual_min, manual_max] if manual_min is not None and manual_max is not None else [],
+                            "series_min": manual_min,
+                            "series_max": manual_max,
+                            "knot_strategy": "manual",
+                            "internal_knots_source": "manual",
+                            "spline_type": spline_type,
+                            "df_requested": spline_df_requested_raw,
+                            "df_applied": spline_df,
+                            "restricted": spline_restricted,
+                            "num_knots_requested": len(manual_knots_clean),
+                            "num_knots_derived_from_df": None,
+                            "custom_knots": manual_knots_clean
+                        }
+                    else:
+                        knot_metadata = self._calculate_internal_knots_for_series(
+                            df_for_patsy_bd[orig_cov_name_bd],
+                            internal_knots_to_calculate,
+                            orig_cov_name_bd
+                        )
+                        knot_metadata['internal_knots_source'] = knots_source_descriptor
+                        if knots_source_descriptor == "derivados_por_df":
+                            knot_metadata['num_knots_derived_from_df'] = internal_knots_to_calculate
+                        else:
+                            knot_metadata['num_knots_derived_from_df'] = None
+                        knot_metadata['spline_type'] = spline_type
+                        knot_metadata['df_requested'] = spline_df_requested_raw
+                        knot_metadata['df_applied'] = spline_df
+                        knot_metadata['restricted'] = spline_restricted
+                        knot_metadata['num_knots_requested'] = spline_num_knots
+                        knot_metadata['custom_knots'] = manual_knots_clean
 
                     if spline_type == 'Natural':
                         patsy_func_bd = 'cr'
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df})"
+                        knot_metadata['degree'] = 3
+                        knot_metadata['num_knots_requested'] = spline_num_knots
+                        if knot_metadata.get('internal_knots'):
+                            knots_tuple = tuple(knot_metadata['internal_knots'])
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), knots={knots_tuple})"
+                            self.log(f"'{orig_cov_name_bd}' (Natural Spline): nodos internos usados={len(knot_metadata['internal_knots'])}, límites={knot_metadata.get('boundary_knots', [])}", "DEBUG")
+                            knot_metadata['df_effective'] = len(knot_metadata['internal_knots']) + 1
+                            knot_metadata['df_applied'] = knot_metadata['df_effective']
+                        else:
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df})"
+                            knot_metadata['df_effective'] = spline_df
+                            knot_metadata['df_applied'] = spline_df
                     elif spline_type == 'B-spline':
                         patsy_func_bd = 'bs'
-                        spline_degree = spl_cfg_bd.get('degree', 3)
-                        term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree})"
+                        spline_degree = max(1, int(spline_degree_cfg))
+                        knot_metadata['degree'] = spline_degree
+                        if manual_knots_clean:
+                            knot_metadata['num_knots_requested'] = len(manual_knots_clean)
+                        else:
+                            knot_metadata['num_knots_requested'] = spline_num_knots
+
+                        if explicit_zero_knots and not manual_knots_clean:
+                            term_syntax_bd = self._build_degree_only_polynomial_formula(orig_cov_name_bd, spline_degree)
+                            knot_metadata['df_effective'] = spline_degree
+                            knot_metadata['df_applied'] = spline_degree
+                            knot_metadata['basis_mode'] = 'polynomial_zero_knots'
+                            knot_metadata['internal_knots'] = []
+                            knot_metadata['used_internal_knots'] = 0
+                            self.log(
+                                f"'{orig_cov_name_bd}': B-spline con 0 nodos => polinomio grado {spline_degree} sin knots internos.",
+                                "INFO"
+                            )
+                        elif knot_metadata.get('internal_knots'):
+                            knots_tuple = tuple(knot_metadata['internal_knots'])
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), knots={knots_tuple}, degree={spline_degree}, include_intercept=False)"
+                            self.log(f"'{orig_cov_name_bd}' (B-spline grado {spline_degree}): nodos internos usados={len(knot_metadata['internal_knots'])}, límites={knot_metadata.get('boundary_knots', [])}", "DEBUG")
+                            knot_metadata['df_effective'] = len(knot_metadata['internal_knots']) + spline_degree
+                            knot_metadata['df_applied'] = knot_metadata['df_effective']
+                            spline_df = knot_metadata['df_effective']
+                        else:
+                            term_syntax_bd = f"{patsy_func_bd}(Q('{orig_cov_name_bd}'), df={spline_df}, degree={spline_degree}, include_intercept=False)"
+                            knot_metadata['df_effective'] = spline_df
+                            knot_metadata['df_applied'] = spline_df
                     else: # Fallback for unknown spline type
                         term_syntax_bd = f"Q('{orig_cov_name_bd}')"
+                        knot_metadata['spline_type'] = 'Ninguna'
                         self.log(f"WARN: Tipo de spline desconocido '{spline_type}' para '{orig_cov_name_bd}'. Tratada como cuantitativa normal.", "WARN")
+
+                    knot_metadata['num_knots_used'] = knot_metadata.get('used_internal_knots', 0)
+                    self._last_spline_basis_metadata[orig_cov_name_bd] = knot_metadata
+                    cfg_entry_existing = self.spline_config_details.get(orig_cov_name_bd)
+                    if cfg_entry_existing:
+                        try:
+                            if knot_metadata.get('df_applied') is not None:
+                                cfg_entry_existing['df'] = int(knot_metadata['df_applied'])
+                            if knot_metadata.get('num_knots_used') is not None:
+                                cfg_entry_existing['num_knots'] = int(knot_metadata['num_knots_used'])
+                            if spline_type == 'B-spline':
+                                cfg_entry_existing['degree'] = spline_degree
+                                cfg_entry_existing['custom_knots'] = manual_knots_clean if manual_knots_clean else []
+                        except Exception as err_update_cfg:
+                            self.log(f"No se pudo actualizar config de spline para '{orig_cov_name_bd}': {err_update_cfg}", "WARN")
                 else: # No spline config for this quantitative var
                     term_syntax_bd = f"Q('{orig_cov_name_bd}')"
             else:
-                if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
-                   not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
-                   not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype):
-                     df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
+                source_series_cat = df_for_patsy_bd[orig_cov_name_bd]
+                try:
+                    df_for_patsy_bd[orig_cov_name_bd] = source_series_cat.where(
+                        source_series_cat.isna(),
+                        source_series_cat.astype(str)
+                    ).astype(object)
+                except Exception:
+                    if not pd.api.types.is_categorical_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
+                       not pd.api.types.is_string_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype) and \
+                       not pd.api.types.is_object_dtype(df_for_patsy_bd[orig_cov_name_bd].dtype):
+                        df_for_patsy_bd[orig_cov_name_bd] = df_for_patsy_bd[orig_cov_name_bd].astype(str)
 
                 ref_cat_bd = self.ref_categories_config.get(orig_cov_name_bd)
-                if ref_cat_bd and str(ref_cat_bd).strip():
-                    ref_cat_str_bd = str(ref_cat_bd)
-                    if ref_cat_str_bd in df_for_patsy_bd[orig_cov_name_bd].astype(str).unique():
-                        # For string literals like 'F', Patsy expects Treatment('F')
-                        # If ref_cat_str_bd could be numeric, further type checking might be needed,
-                        # but for now, assuming string reference categories are common.
-                        # Enclosing ref_cat_str_bd in single quotes within the f-string if it's not purely numeric.
-                        # Usar comillas dobles para el valor de Treatment si es una cadena
-                        if isinstance(ref_cat_bd, str):
-                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
-                        else: # Para valores numéricos o de otro tipo
-                            term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment({ref_cat_str_bd}))"
+                available_ref_values = self._get_reference_category_values(orig_cov_name_bd)
+                ref_cat_str_bd = str(ref_cat_bd).strip() if ref_cat_bd not in (None, "") else ""
+                if not ref_cat_str_bd and available_ref_values:
+                    ref_cat_str_bd = str(available_ref_values[0]).strip()
+
+                compare_cfg_bd = self._get_categorical_compare_config(orig_cov_name_bd, ref_cat_str_bd)
+                compare_mode_bd = compare_cfg_bd.get("mode", "all")
+                selected_compare_groups_bd = compare_cfg_bd.get("selected_groups", [])
+
+                if compare_mode_bd == "selected":
+                    if not ref_cat_str_bd:
+                        self.log(
+                            f"'{orig_cov_name_bd}': el modo categórico seleccionado requiere una categoría de referencia válida. Se usará la codificación estándar.",
+                            "WARN"
+                        )
+                    elif not selected_compare_groups_bd:
+                        self.log(
+                            f"'{orig_cov_name_bd}': modo 'comparar solo contra grupos elegidos' sin grupos válidos. Se usa comparación contra todos.",
+                            "WARN"
+                        )
                     else:
-                        self.log(f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no está en los datos. Usando el default de Patsy.", "WARN")
+                        allowed_groups_bd = {ref_cat_str_bd, *selected_compare_groups_bd}
+                        series_as_str = df_for_patsy_bd[orig_cov_name_bd].apply(
+                            lambda val: str(val).strip() if pd.notna(val) else np.nan
+                        )
+                        outside_mask = series_as_str.notna() & ~series_as_str.isin(list(allowed_groups_bd))
+                        excluded_count = int(outside_mask.sum())
+                        if excluded_count > 0:
+                            df_for_patsy_bd.loc[outside_mask, orig_cov_name_bd] = np.nan
+                        self.log(
+                            f"'{orig_cov_name_bd}': comparación categórica limitada a {sorted(allowed_groups_bd)}; se excluirán {excluded_count} fila(s) con otras categorías.",
+                            "INFO"
+                        )
+                elif compare_mode_bd == "one_vs_rest":
+                    if not ref_cat_str_bd:
+                        self.log(
+                            f"'{orig_cov_name_bd}': no se pudo aplicar la dicotomización porque falta la categoría elegida de referencia.",
+                            "WARN"
+                        )
+                    else:
+                        series_as_str = df_for_patsy_bd[orig_cov_name_bd].apply(
+                            lambda val: str(val).strip() if pd.notna(val) else np.nan
+                        )
+                        non_null_mask = series_as_str.notna()
+                        df_for_patsy_bd.loc[non_null_mask, orig_cov_name_bd] = series_as_str.where(
+                            series_as_str == ref_cat_str_bd,
+                            other="RESTO"
+                        )
+                        self.log(
+                            f"'{orig_cov_name_bd}': comparación dicotómica aplicada ({ref_cat_str_bd} vs RESTO).",
+                            "INFO"
+                        )
+
+                if ref_cat_str_bd:
+                    current_unique_vals = df_for_patsy_bd[orig_cov_name_bd].dropna().astype(str).unique()
+                    if ref_cat_str_bd in current_unique_vals:
+                        term_syntax_bd = f"C(Q('{orig_cov_name_bd}'), Treatment('{ref_cat_str_bd}'))"
+                    else:
+                        self.log(
+                            f"Advertencia: Ref.Cat. '{ref_cat_str_bd}' para '{orig_cov_name_bd}' no está en los datos efectivos. Usando el default de Patsy.",
+                            "WARN"
+                        )
                         term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
                 else:
                     term_syntax_bd = f"C(Q('{orig_cov_name_bd}'))"
@@ -2451,7 +5010,9 @@ class CoxModelingApp(ttk.Frame):
                  self.log("DF entrada Patsy vacío con fórmula no nula.", "ERROR"); return None,None,None,None
             
             X_design_bd = dmatrix(formula_patsy_bd, df_for_patsy_bd, return_type="dataframe")
-            df_filtered_by_patsy_idx_bd = df_input_bd.loc[X_design_bd.index].copy()
+            # IMPORTANTE: devolver el DataFrame transformado usado por Patsy para que el ajuste Cox
+            # respete recodificaciones categóricas como 'elegida vs RESTO' o 'grupos elegidos'.
+            df_filtered_by_patsy_idx_bd = df_for_patsy_bd.loc[X_design_bd.index].copy()
             
             final_terms_display_bd = list(X_design_bd.columns)
             self.log(f"Patsy: X_design ({X_design_bd.shape}), DF filtrado ({df_filtered_by_patsy_idx_bd.shape})", "INFO")
@@ -2466,49 +5027,205 @@ class CoxModelingApp(ttk.Frame):
     def _perform_variable_selection(self, df_aligned_orig_vs, X_design_initial_vs, time_col_vs, event_col_vs, formula_initial_vs, terms_initial_vs):
         method_vs = self.var_selection_method_var.get()
 
-        selected_covs_orig_names = []
-        # Regex to extract original variable names from Q('var_name') in Patsy terms
-        regex_q_var = re.compile(r"Q\('([^']+)'\)")
-
-        if terms_initial_vs is None: # Ensure terms_initial_vs is iterable
+        if terms_initial_vs is None:
             terms_initial_vs = []
 
-        # Extract all potential original covariate names from the initial full model
+        def infer_original_var_from_term(term_text):
+            if not term_text:
+                return None
+            if ':' in term_text:
+                inferred = [infer_original_var_from_term(part.strip()) for part in term_text.split(':')]
+                inferred = [value for value in inferred if value]
+                if not inferred:
+                    return None
+                if len(set(inferred)) == 1:
+                    return inferred[0]
+                return ':'.join(sorted(set(inferred)))
+            match_q = re.search(r"Q\('([^']+)'\)", term_text)
+            if match_q:
+                return match_q.group(1)
+            match_c = re.search(r"C\('([^']+)'\)", term_text)
+            if match_c:
+                return match_c.group(1)
+            return None
+
         all_initial_orig_covs = []
         for term in terms_initial_vs:
-            matches = regex_q_var.findall(term)
-            for original_var_name in matches:
-                if original_var_name not in all_initial_orig_covs:
-                    all_initial_orig_covs.append(original_var_name)
+            original_name = infer_original_var_from_term(str(term))
+            if original_name and original_name not in all_initial_orig_covs:
+                all_initial_orig_covs.append(original_name)
+
+        if not all_initial_orig_covs:
+            self.log("Selección Variables: no se detectaron covariables en la matriz inicial.", "WARN")
+            return []
 
         if method_vs == "Ninguno (usar todas)":
             self.log("Selección Variables: 'Ninguno (usar todas)'. Usando todas las covariables iniciales.", "INFO")
-            selected_covs_orig_names = all_initial_orig_covs
-        
-        elif method_vs in ["Backward", "Forward", "Stepwise (Fwd luego Bwd)"]:
-            self.log(f"Selección Variables: '{method_vs}' no está soportado directamente en esta versión de Lifelines. "
-                       f"Se procederá usando todas las covariables iniciales, similar a 'Ninguno (usar todas)'.", "WARN")
-            messagebox.showwarning("Método No Soportado",
-                                   f"El método de selección de variables '{method_vs}' no está directamente disponible "
-                                   f"en la versión actual de la librería 'lifelines'.\n\n"
-                                   f"El modelo se ajustará utilizando todas las covariables seleccionadas inicialmente.",
-                                   parent=self.parent_for_dialogs)
-            selected_covs_orig_names = all_initial_orig_covs # Default to using all variables
+            return all_initial_orig_covs
 
-        else: # Should not happen given UI choices
-            self.log(f"Método de selección desconocido: {method_vs}. Usando todas las covariables.", "ERROR")
-            selected_covs_orig_names = all_initial_orig_covs
+        p_enter_value = self._coerce_float_value(self.p_enter_var, 0.05, "P-valor de entrada", min_value=0.0)
+        p_remove_value = self._coerce_float_value(self.p_remove_var, 0.10, "P-valor de salida", min_value=0.0)
 
-        if not selected_covs_orig_names and all_initial_orig_covs:
-             # This case might occur if logic changes, but generally if all_initial_orig_covs is not empty,
-             # selected_covs_orig_names should also not be empty for the above paths.
-             self.log("Advertencia: No se seleccionaron covariables finales, pero había covariables iniciales. Esto podría ser un error.", "WARN")
+        fit_successful = False
 
-        # This function must return a list of original covariate names.
-        # The calling function _execute_cox_modeling_orchestrator will then use these names
-        # to call build_design_matrix again.
-        self.log(f"Covariables originales seleccionadas/pasadas para reconstrucción: {selected_covs_orig_names}", "DEBUG")
-        return selected_covs_orig_names
+        def attempt_selection_fit(candidate_covariates):
+            nonlocal fit_successful
+            unique_covs = [cov for cov in dict.fromkeys(candidate_covariates) if cov]
+            if not unique_covs:
+                return None
+
+            design_res = self.build_design_matrix(df_aligned_orig_vs, unique_covs, time_col_vs, event_col_vs)
+            if not design_res or design_res[0] is None or design_res[0].empty:
+                return None
+
+            df_candidate, _, formula_candidate, _ = design_res
+            try:
+                selector_cph = CoxPHFitter(penalizer=0.0)
+                selector_cph.fit(df_candidate, duration_col=time_col_vs, event_col=event_col_vs, formula=formula_candidate)
+            except Exception as exc_sel:
+                self.log(f"Selección '{method_vs}': fallo al ajustar con covariables {unique_covs}: {exc_sel}", "WARN")
+                return None
+
+            fit_successful = True
+            return selector_cph.summary.copy()
+
+        def aggregate_p_values(summary_df):
+            if summary_df is None or summary_df.empty:
+                return {}
+            aggregated = {}
+            for term_name, row in summary_df.iterrows():
+                cov_key = infer_original_var_from_term(str(term_name))
+                if not cov_key:
+                    continue
+                try:
+                    p_val = float(row.get('p'))
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(p_val):
+                    continue
+                aggregated.setdefault(cov_key, []).append(p_val)
+            return {cov: max(values) for cov, values in aggregated.items() if values}
+
+        selected_covariables = []
+
+        if method_vs == "Backward":
+            current_covs = list(all_initial_orig_covs)
+            max_iterations = max(10, len(current_covs) * 5)
+            iterations = 0
+            while current_covs and iterations < max_iterations:
+                iterations += 1
+                summary_df = attempt_selection_fit(current_covs)
+                if summary_df is None:
+                    self.log("Backward: no se pudo ajustar el modelo con el conjunto actual; se detiene la selección.", "WARN")
+                    break
+                p_values_map = aggregate_p_values(summary_df)
+                if not p_values_map:
+                    break
+                worst_var, worst_p = max(p_values_map.items(), key=lambda item: item[1])
+                if worst_p > p_remove_value and worst_var in current_covs:
+                    current_covs.remove(worst_var)
+                    self.log(f"Backward: se remueve '{worst_var}' (p={worst_p:.4g} > {p_remove_value:.4g}).", "INFO")
+                    continue
+                break
+            if iterations >= max_iterations:
+                self.log("Backward: se alcanzó el límite de iteraciones durante la selección.", "WARN")
+            selected_covariables = current_covs
+
+        elif method_vs == "Forward":
+            remaining_covs = list(all_initial_orig_covs)
+            selected_covs = []
+            max_iterations = max(10, len(remaining_covs) * 5)
+            iterations = 0
+            while remaining_covs and iterations < max_iterations:
+                iterations += 1
+                best_candidate = None
+                best_candidate_p = None
+                for candidate in list(remaining_covs):
+                    summary_df = attempt_selection_fit(selected_covs + [candidate])
+                    if summary_df is None:
+                        continue
+                    p_values_map = aggregate_p_values(summary_df)
+                    candidate_p = p_values_map.get(candidate)
+                    if candidate_p is None:
+                        continue
+                    if candidate_p <= p_enter_value and (best_candidate is None or candidate_p < best_candidate_p):
+                        best_candidate = candidate
+                        best_candidate_p = candidate_p
+                if best_candidate is None:
+                    break
+                selected_covs.append(best_candidate)
+                remaining_covs.remove(best_candidate)
+                self.log(f"Forward: se añade '{best_candidate}' (p={best_candidate_p:.4g} ≤ {p_enter_value:.4g}).", "INFO")
+            if iterations >= max_iterations:
+                self.log("Forward: se alcanzó el límite de iteraciones durante la selección.", "WARN")
+            selected_covariables = selected_covs
+
+        elif method_vs == "Stepwise (Fwd luego Bwd)":
+            remaining_covs = list(all_initial_orig_covs)
+            selected_covs = []
+            max_iterations = max(10, len(remaining_covs) * 6)
+            iterations = 0
+            while remaining_covs and iterations < max_iterations:
+                iterations += 1
+                best_candidate = None
+                best_candidate_p = None
+                cached_summary = None
+                for candidate in list(remaining_covs):
+                    summary_df = attempt_selection_fit(selected_covs + [candidate])
+                    if summary_df is None:
+                        continue
+                    p_values_map = aggregate_p_values(summary_df)
+                    candidate_p = p_values_map.get(candidate)
+                    if candidate_p is None:
+                        continue
+                    if candidate_p <= p_enter_value and (best_candidate is None or candidate_p < best_candidate_p):
+                        best_candidate = candidate
+                        best_candidate_p = candidate_p
+                        cached_summary = summary_df
+                if best_candidate is None:
+                    break
+                selected_covs.append(best_candidate)
+                remaining_covs.remove(best_candidate)
+                self.log(f"Stepwise: se añade '{best_candidate}' (p={best_candidate_p:.4g} ≤ {p_enter_value:.4g}).", "INFO")
+
+                changes = True
+                while changes and selected_covs:
+                    changes = False
+                    summary_for_removal = cached_summary
+                    if summary_for_removal is None or aggregate_p_values(summary_for_removal).keys() != set(selected_covs):
+                        summary_for_removal = attempt_selection_fit(selected_covs)
+                    if summary_for_removal is None:
+                        break
+                    p_values_map = aggregate_p_values(summary_for_removal)
+                    if not p_values_map:
+                        break
+                    worst_var, worst_p = max(p_values_map.items(), key=lambda item: item[1])
+                    if worst_p > p_remove_value and worst_var in selected_covs:
+                        selected_covs.remove(worst_var)
+                        if worst_var not in remaining_covs:
+                            remaining_covs.append(worst_var)
+                        self.log(f"Stepwise: se remueve '{worst_var}' (p={worst_p:.4g} > {p_remove_value:.4g}).", "INFO")
+                        cached_summary = None
+                        changes = True
+            if iterations >= max_iterations:
+                self.log("Stepwise: se alcanzó el límite de iteraciones durante la selección.", "WARN")
+            selected_covariables = selected_covs
+
+        else:
+            self.log(f"Método de selección desconocido: {method_vs}. Usando todas las covariables iniciales.", "ERROR")
+            return all_initial_orig_covs
+
+        selected_covariables = list(dict.fromkeys(selected_covariables))
+
+        if not selected_covariables:
+            if not fit_successful and all_initial_orig_covs:
+                self.log(f"Selección ({method_vs}): no se pudo ajustar ningún modelo. Se usarán todas las covariables originales.", "WARN")
+                return all_initial_orig_covs
+            self.log(f"Selección ({method_vs}): sin covariables que cumplan los umbrales; el modelo será nulo.", "WARN")
+        else:
+            self.log(f"Selección ({method_vs}): covariables finales {selected_covariables}", "INFO")
+
+        return selected_covariables
 
     def _run_model_and_get_metrics(self, df_lifelines_rm, X_design_rm, y_survival_rm,
                                    time_col_rm, event_col_rm,
@@ -2519,23 +5236,36 @@ class CoxModelingApp(ttk.Frame):
                                    model_type_for_fit_logic="Multivariado",
                                    scaling_method_applied="Ninguna",
                                    fitted_scaler_obj=None,
-                                   scaled_columns_info=None):
+                                   scaled_columns_info=None,
+                                   selected_covariates_original=None):
         self.log(f"Ajustando modelo Cox: '{model_name_rm}'...", "INFO")
         
         ui_selected_tie_method = self.tie_handling_method_var.get() # Para registro
+        selected_covariates_original = list(dict.fromkeys(selected_covariates_original or []))
+        ui_config_snapshot = {
+            "model_type": model_type_for_fit_logic,
+            "test_size": float(self.test_size_var.get()) if hasattr(self, 'test_size_var') else None,
+            "stratify_holdout": bool(self.stratify_holdout_var.get()) if hasattr(self, 'stratify_holdout_var') else None,
+            "tau_mode": self.tau_mode_var.get() if hasattr(self, 'tau_mode_var') else None,
+            "tau_manual": self.tau_manual_var.get() if hasattr(self, 'tau_manual_var') else None,
+        }
         
         model_data_rm = {
             "model_name": model_name_rm, "time_col_for_model": time_col_rm, "event_col_for_model": event_col_rm,
             "formula_patsy": formula_patsy_rm, 
             "full_patsy_formula_for_new_data_transform": full_patsy_formula_for_new_data_transform_arg, 
             "covariates_processed": covariates_display_terms_rm,
+            "selected_covariables_original": selected_covariates_original,
+            "ui_config_snapshot": ui_config_snapshot,
             "df_used_for_fit": self.data.copy(),
             "X_design_used_for_fit": X_design_rm.copy(),
             "y_survival_used_for_fit": y_survival_rm.copy(),
             "penalizer_value": penalizer_val_rm, "l1_ratio_value": l1_ratio_val_rm,
             "tie_method_used": ui_selected_tie_method,
             "metrics": {}, "schoenfeld_results": pd.DataFrame(), "model": None, "loglik_null": None,
-            "c_index_cv_mean": None, "c_index_cv_std": None,
+            "c_index_cv_mean": None, "c_index_cv_std": None, "c_index_cv_ci": None,
+            "c_index_test": None, "c_index_test_ci": None, "c_index_train_ci": None,
+            "test_proportion": None, "c_index_gap": None,
             "schoenfeld_status_message": "Test de Schoenfeld no ejecutado o no aplicable inicialmente.",
             "proportional_hazard_test_summary": None,
             "oos_predictions": None,
@@ -2544,8 +5274,25 @@ class CoxModelingApp(ttk.Frame):
             "scaled_columns_info": scaled_columns_info if scaled_columns_info is not None else [],
             "custom_model_name": model_name_rm, # Inicializar con el nombre generado
             "custom_model_notes": "", # Inicializar notas vacías
-            "design_info": None # Placeholder for design_info
+            "design_info": None, # Placeholder for design_info
+            "spline_basis_metadata": {}
         }
+
+        if hasattr(X_design_rm, "design_info"):
+            model_data_rm["design_info"] = X_design_rm.design_info
+
+        if hasattr(self, "_last_spline_basis_metadata"):
+            try:
+                model_data_rm["spline_basis_metadata"] = copy.deepcopy(self._last_spline_basis_metadata)
+            except Exception as err_copy_spline:
+                self.log(f"No se pudo copiar metadata de splines: {err_copy_spline}", "WARN")
+
+        try:
+            model_data_rm["spline_config_details"] = copy.deepcopy(self.spline_config_details)
+            model_data_rm["categorical_compare_config"] = copy.deepcopy(self.categorical_compare_config)
+            model_data_rm["ref_categories_config"] = copy.deepcopy(self.ref_categories_config)
+        except Exception as err_copy_cfg:
+            self.log(f"No se pudo copiar configuración de splines/categóricas: {err_copy_cfg}", "WARN")
 
         # 1. Fit Null Model
         try:
@@ -2646,13 +5393,212 @@ class CoxModelingApp(ttk.Frame):
         # 4. Post-Fit Operations
         fitted_cph_model = model_data_rm.get("model")
 
+        # ── Determine diagnostics scope ──────────────────────────────────
+        # When holdout is active, ALL reported metrics (AIC, LogLik, Wald,
+        # Schoenfeld, C-Index Train, CV) come from a model trained *only*
+        # on the training subset.  The full-data model stored in
+        # model_data_rm["model"] is kept for predictions / plots.
+        _holdout_active = False
+        model_for_diagnostics = fitted_cph_model
+        df_for_diagnostics = df_for_fit_main
+        y_for_diagnostics = y_survival_rm
+
+        if (fitted_cph_model
+                and not X_design_rm.empty
+                and getattr(self, 'calculate_test_cindex_var', None) is not None
+                and self.calculate_test_cindex_var.get()):
+            try:
+                requested_test_size_holdout = float(self.test_size_var.get())
+                test_seed_holdout = int(self.test_random_seed_var.get())
+                min_train_rows_holdout = max(8, int(X_design_rm.shape[1]) + 2)
+                prefer_strat_holdout = getattr(self, 'stratify_holdout_var', None)
+                prefer_strat_holdout = prefer_strat_holdout.get() if prefer_strat_holdout is not None else True
+                test_size_holdout, stratify_holdout, holdout_warnings = self._resolve_holdout_split_settings(
+                    df_lifelines_rm, event_col_rm, requested_test_size_holdout,
+                    min_train_rows=min_train_rows_holdout, min_test_rows=2,
+                    prefer_stratify=prefer_strat_holdout, context_label=model_name_rm,
+                )
+                for hw in holdout_warnings:
+                    self.log(f"{model_name_rm}: {hw}", "WARN")
+
+                idx_train_holdout, idx_test_holdout = train_test_split(
+                    df_lifelines_rm.index,
+                    test_size=test_size_holdout,
+                    random_state=test_seed_holdout,
+                    stratify=stratify_holdout,
+                )
+                df_train_holdout = df_lifelines_rm.loc[idx_train_holdout].copy()
+                df_test_holdout = df_lifelines_rm.loc[idx_test_holdout].copy()
+                y_train_holdout = y_survival_rm.loc[idx_train_holdout]
+                y_test_holdout = y_survival_rm.loc[idx_test_holdout]
+
+                if not df_train_holdout.empty and not df_test_holdout.empty:
+                    cph_holdout = CoxPHFitter(penalizer=penalizer_val_rm, l1_ratio=l1_ratio_val_rm)
+                    cph_holdout.fit(df_train_holdout, duration_col=time_col_rm,
+                                   event_col=event_col_rm, formula=actual_formula_for_fit)
+                    preds_test_ho = cph_holdout.predict_partial_hazard(df_test_holdout)
+                    preds_train_ho = cph_holdout.predict_partial_hazard(df_train_holdout)
+
+                    c_test_ho = concordance_index(y_test_holdout[time_col_rm], -preds_test_ho, y_test_holdout[event_col_rm])
+                    c_train_ho = concordance_index(y_train_holdout[time_col_rm], -preds_train_ho, y_train_holdout[event_col_rm])
+
+                    # Only store holdout results after full success
+                    model_data_rm["test_proportion"] = float(test_size_holdout)
+                    model_data_rm["c_index_test"] = float(c_test_ho)
+                    model_data_rm["c_index_gap"] = float(c_test_ho - c_train_ho)
+                    model_data_rm["c_index_train_ci"] = bootstrap_concordance_ci_from_scores(
+                        y_train_holdout,
+                        time_col_rm,
+                        event_col_rm,
+                        -np.asarray(preds_train_ho, dtype=float).reshape(-1),
+                    )
+                    model_data_rm["c_index_test_ci"] = bootstrap_concordance_ci_from_scores(
+                        y_test_holdout,
+                        time_col_rm,
+                        event_col_rm,
+                        -np.asarray(preds_test_ho, dtype=float).reshape(-1),
+                    )
+                    # --- Uno's C-index (IPCW) + Antolini Ctd ---
+                    c_index_uno_ho = None
+                    c_index_antolini_ho = None
+                    resolved_tau_ho = None
+                    if callable(_concordance_index_ipcw):
+                        try:
+                            y_train_struct = np.array(
+                                [(bool(e), float(t)) for e, t in zip(y_train_holdout[event_col_rm], y_train_holdout[time_col_rm])],
+                                dtype=[('event', bool), ('time', float)],
+                            )
+                            y_test_struct = np.array(
+                                [(bool(e), float(t)) for e, t in zip(y_test_holdout[event_col_rm], y_test_holdout[time_col_rm])],
+                                dtype=[('event', bool), ('time', float)],
+                            )
+                            resolved_tau_ho = self._resolve_tau(y_train_holdout[time_col_rm], y_train_holdout[event_col_rm])
+                            risk_scores_ho = np.asarray(preds_test_ho, dtype=float).reshape(-1)
+                            ipcw_result = _concordance_index_ipcw(y_train_struct, y_test_struct,
+                                                                  risk_scores_ho, tau=resolved_tau_ho)
+                            c_index_uno_ho = float(np.asarray(ipcw_result).reshape(-1)[0])
+                        except Exception:
+                            c_index_uno_ho = None
+
+                        # Antolini's Ctd
+                        if callable(_cumulative_dynamic_auc) and y_train_struct is not None:
+                            try:
+                                eval_grid_ho = self._build_evaluation_time_grid_cox(
+                                    y_train_holdout[time_col_rm], y_test_holdout[time_col_rm], tau=resolved_tau_ho)
+                                if eval_grid_ho is not None:
+                                    _, mean_auc = _cumulative_dynamic_auc(
+                                        y_train_struct, y_test_struct, risk_scores_ho, eval_grid_ho)
+                                    c_index_antolini_ho = float(mean_auc)
+                            except Exception:
+                                c_index_antolini_ho = None
+
+                    model_data_rm["c_index_uno"] = c_index_uno_ho
+                    model_data_rm["c_index_antolini"] = c_index_antolini_ho
+                    model_data_rm["tau"] = resolved_tau_ho
+
+                    # ── IBS + Brier/AUROC/C at quartiles ───────────────────
+                    ibs_ho = None; brier_q25_ho = None; brier_q50_ho = None; brier_q75_ho = None
+                    auroc_q25_ho = None; auroc_q50_ho = None; auroc_q75_ho = None
+                    c_q25_ho = None; c_q50_ho = None; c_q75_ho = None
+                    time_q25_ho = None; time_q50_ho = None; time_q75_ho = None
+                    brier_curve_df_ho = None; brier_eval_time_ho = None
+                    if y_train_struct is not None and y_test_struct is not None and eval_grid_ho is not None:
+                        # Survival function matrix from lifelines
+                        try:
+                            surv_df_ho = cph_holdout.predict_survival_function(df_test_holdout, times=eval_grid_ho)
+                            surv_matrix_ho = surv_df_ho.values.T  # (n_test, n_times)
+
+                            if callable(_brier_score_cox) and callable(_integrated_brier_score_cox):
+                                _, brier_vals_ho = _brier_score_cox(y_train_struct, y_test_struct, surv_matrix_ho, eval_grid_ho)
+                                brier_vals_ho = np.asarray(brier_vals_ho, dtype=float)
+                                brier_curve_df_ho = pd.DataFrame({"time": np.asarray(eval_grid_ho, dtype=float), "brier_score": brier_vals_ho})
+                                if len(eval_grid_ho) > 0:
+                                    brier_eval_time_ho = float(np.asarray(eval_grid_ho, dtype=float)[min(len(eval_grid_ho) - 1, len(eval_grid_ho) // 2)])
+                                ibs_ho = float(_integrated_brier_score_cox(y_train_struct, y_test_struct, surv_matrix_ho, eval_grid_ho))
+
+                            # Event time quartiles
+                            ev_mask_ho = y_test_struct["event"].astype(bool)
+                            ev_times_ho = y_test_struct["time"][ev_mask_ho]
+                            if ev_times_ho.size >= 4:
+                                time_q25_ho = float(np.percentile(ev_times_ho, 25))
+                                time_q50_ho = float(np.percentile(ev_times_ho, 50))
+                                time_q75_ho = float(np.percentile(ev_times_ho, 75))
+                                q_times_ho = np.array([time_q25_ho, time_q50_ho, time_q75_ho])
+
+                                # Brier at quartiles
+                                try:
+                                    surv_q_ho = cph_holdout.predict_survival_function(df_test_holdout, times=q_times_ho).values.T
+                                    _, brier_qv = _brier_score_cox(y_train_struct, y_test_struct, surv_q_ho, q_times_ho)
+                                    brier_qv = np.asarray(brier_qv, dtype=float)
+                                    brier_q25_ho = float(brier_qv[0]); brier_q50_ho = float(brier_qv[1]); brier_q75_ho = float(brier_qv[2])
+                                except Exception:
+                                    pass
+
+                                # AUROC at quartiles
+                                if callable(_cumulative_dynamic_auc):
+                                    try:
+                                        auc_vals_ho, _ = _cumulative_dynamic_auc(y_train_struct, y_test_struct, risk_scores_ho, q_times_ho)
+                                        auc_vals_ho = np.asarray(auc_vals_ho, dtype=float)
+                                        auroc_q25_ho = float(auc_vals_ho[0]); auroc_q50_ho = float(auc_vals_ho[1]); auroc_q75_ho = float(auc_vals_ho[2])
+                                    except Exception:
+                                        pass
+
+                                # C at quartiles (IPCW with tau=quartile)
+                                for tau_q, target in [(time_q25_ho, 'q25'), (time_q50_ho, 'q50'), (time_q75_ho, 'q75')]:
+                                    try:
+                                        r = _concordance_index_ipcw(y_train_struct, y_test_struct, risk_scores_ho, tau=tau_q)
+                                        v = float(np.asarray(r).reshape(-1)[0])
+                                        if target == 'q25': c_q25_ho = v
+                                        elif target == 'q50': c_q50_ho = v
+                                        else: c_q75_ho = v
+                                    except Exception:
+                                        pass
+                        except Exception as e_qm:
+                            self.log(f"Métricas cuantiles holdout: {e_qm}", "WARN")
+
+                    model_data_rm["ibs"] = ibs_ho
+                    model_data_rm["brier_curve_df"] = brier_curve_df_ho
+                    model_data_rm["brier_eval_time"] = brier_eval_time_ho
+                    model_data_rm["brier_q25"] = brier_q25_ho; model_data_rm["brier_q50"] = brier_q50_ho; model_data_rm["brier_q75"] = brier_q75_ho
+                    model_data_rm["auroc_q25"] = auroc_q25_ho; model_data_rm["auroc_q50"] = auroc_q50_ho; model_data_rm["auroc_q75"] = auroc_q75_ho
+                    model_data_rm["c_harrell_q25"] = c_q25_ho; model_data_rm["c_harrell_q50"] = c_q50_ho; model_data_rm["c_harrell_q75"] = c_q75_ho
+                    model_data_rm["time_q25"] = time_q25_ho; model_data_rm["time_q50"] = time_q50_ho; model_data_rm["time_q75"] = time_q75_ho
+
+                    self.log(
+                        f"C-Index holdout '{model_name_rm}': Train={c_train_ho:.3f}, "
+                        f"Test={c_test_ho:.3f}, Δ={c_test_ho - c_train_ho:.3f}"
+                        f"{f', Uno={c_index_uno_ho:.3f}' if c_index_uno_ho is not None else ''}"
+                        f"{f', IBS={ibs_ho:.4f}' if ibs_ho is not None else ''}", "INFO")
+
+                    # All diagnostics now use the holdout model
+                    model_for_diagnostics = cph_holdout
+                    df_for_diagnostics = df_train_holdout
+                    y_for_diagnostics = y_train_holdout
+                    _holdout_active = True
+
+                    # Recompute null-model LogLik on training data
+                    try:
+                        cph_null_ho = CoxPHFitter(penalizer=0.0)
+                        cph_null_ho.fit(
+                            df_train_holdout[[time_col_rm, event_col_rm]].copy(),
+                            duration_col=time_col_rm, event_col=event_col_rm, formula="0")
+                        model_data_rm["loglik_null"] = cph_null_ho.log_likelihood_
+                    except Exception as e_null_ho:
+                        self.log(f"Error modelo nulo holdout: {e_null_ho}", "WARN")
+
+                    self.log(
+                        f"Holdout activo: métricas (AIC, Wald, Schoenfeld, CV) provienen "
+                        f"del modelo entrenado en {len(df_train_holdout)} obs.", "INFO")
+            except Exception as e_holdout_setup:
+                self.log(f"Error configurando holdout: {e_holdout_setup}\n{traceback.format_exc(limit=3)}", "ERROR")
+
         if fitted_cph_model:
             # Test de Schoenfeld
             if not X_design_rm.empty:
-                if hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+                if hasattr(model_for_diagnostics, 'params_') and model_for_diagnostics.params_ is not None and not model_for_diagnostics.params_.empty:
                     self.log(f"--- Iniciando Test de Schoenfeld para Modelo: '{model_name_rm}' ---", "INFO")
                     try:
-                        results_check_assumptions = fitted_cph_model.check_assumptions(df_for_fit_main)
+                        results_check_assumptions = model_for_diagnostics.check_assumptions(df_for_diagnostics)
                         model_data_rm["check_assumptions_results_raw"] = results_check_assumptions
                         schoenfeld_df_candidate = None
                         found_schoenfeld_results = False
@@ -2671,7 +5617,7 @@ class CoxModelingApp(ttk.Frame):
                                  found_schoenfeld_results = True
 
                         if found_schoenfeld_results and schoenfeld_df_candidate is not None:
-                            model_data_rm["schoenfeld_results"] = schoenfeld_df_candidate.copy()
+                            model_data_rm["schoenfeld_results"] = normalize_schoenfeld_dataframe(schoenfeld_df_candidate)
                             model_data_rm["schoenfeld_status_message"] = "Schoenfeld (check_assumptions) calculado exitosamente."
                             self.log(f"Schoenfeld data for '{model_name_rm}' obtained from check_assumptions.", "DEBUG")
                         else:
@@ -2699,7 +5645,7 @@ class CoxModelingApp(ttk.Frame):
             #    OR it doesn't seem to contain individual p-values (e.g. only global test or wrong format)
             # For simplicity, we'll try it if check_assumptions didn't yield a non-empty DataFrame with a 'p' column.
             should_try_ph_test = False
-            if hasattr(fitted_cph_model, 'params_') and fitted_cph_model.params_ is not None and not fitted_cph_model.params_.empty:
+            if hasattr(model_for_diagnostics, 'params_') and model_for_diagnostics.params_ is not None and not model_for_diagnostics.params_.empty:
                 if schoenfeld_df_from_check_assumptions is None or schoenfeld_df_from_check_assumptions.empty or 'p' not in schoenfeld_df_from_check_assumptions.columns:
                     should_try_ph_test = True
 
@@ -2707,19 +5653,21 @@ class CoxModelingApp(ttk.Frame):
                 self.log(f"INFO: `schoenfeld_results` de `check_assumptions` para '{model_name_rm}' está vacío o no tiene columna 'p'. Intentando `proportional_hazard_test` como fuente alternativa/suplementaria.", "INFO")
                 try:
                     from lifelines.statistics import proportional_hazard_test
-                    ph_test_results_obj = proportional_hazard_test(fitted_cph_model, df_for_fit_main, time_transform='log')
-
+                    ph_test_results_obj = proportional_hazard_test(model_for_diagnostics, df_for_diagnostics, time_transform='log')
                     if ph_test_results_obj is not None and hasattr(ph_test_results_obj, 'summary') and \
-                       isinstance(ph_test_results_obj.summary, pd.DataFrame) and not ph_test_results_obj.summary.empty and \
-                       'p' in ph_test_results_obj.summary.columns:
+                       isinstance(ph_test_results_obj.summary, pd.DataFrame) and not ph_test_results_obj.summary.empty:
 
+                        ph_summary_normalized = normalize_schoenfeld_dataframe(ph_test_results_obj.summary)
                         # Store the summary from proportional_hazard_test
-                        model_data_rm["proportional_hazard_test_summary"] = ph_test_results_obj.summary.copy()
-                        self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' proporcionó un resumen con p-valores.", "INFO")
+                        model_data_rm["proportional_hazard_test_summary"] = ph_summary_normalized
+                        if 'p' in ph_summary_normalized.columns:
+                            self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' proporcionó un resumen con p-valores.", "INFO")
+                        else:
+                            self.log(f"INFO: `proportional_hazard_test` para '{model_name_rm}' no incluye columna 'p' explícita tras normalización.", "INFO")
 
                         # If original schoenfeld_results was empty/missing 'p', replace it with this summary
                         if schoenfeld_df_from_check_assumptions is None or schoenfeld_df_from_check_assumptions.empty or 'p' not in schoenfeld_df_from_check_assumptions.columns:
-                            model_data_rm["schoenfeld_results"] = ph_test_results_obj.summary.copy()
+                            model_data_rm["schoenfeld_results"] = ph_summary_normalized
                             model_data_rm["schoenfeld_status_message"] = "Resultados de Schoenfeld obtenidos de proportional_hazard_test (summary)."
                             self.log(f"INFO: `schoenfeld_results` para '{model_name_rm}' ahora utiliza el resumen de `proportional_hazard_test`.", "INFO")
                         else:
@@ -2761,8 +5709,8 @@ class CoxModelingApp(ttk.Frame):
 
                         self.log(f"CV C-Index: Found B-spline term for '{var_name}': {original_term}", "DEBUG")
 
-                        if var_name in df_lifelines_rm.columns:
-                            data_series = df_lifelines_rm[var_name].dropna()
+                        if var_name in df_for_diagnostics.columns:
+                            data_series = df_for_diagnostics[var_name].dropna()
                             if len(data_series) < (degree + 1) or data_series.nunique() < 2 : # Not enough data or unique values for knots
                                 self.log(f"CV C-Index: Insufficient data or unique values for '{var_name}' to define B-spline knots. Skipping knot modification for this term.", "WARN")
                                 continue
@@ -2792,7 +5740,7 @@ class CoxModelingApp(ttk.Frame):
                             else: # df <= degree
                                 self.log(f"CV C-Index: Configuration for bs(Q('{var_name}'), df={df}, degree={degree}) has df <= degree. Skipping explicit knot generation. Patsy will handle it.", "WARN")
                         else:
-                            self.log(f"CV C-Index: Variable '{var_name}' for B-spline not found in df_lifelines_rm. Cannot calculate knots.", "WARN")
+                            self.log(f"CV C-Index: Variable '{var_name}' for B-spline not found in df_for_diagnostics. Cannot calculate knots.", "WARN")
 
                     # Replace terms in the CV formula
                     if modified_bs_terms:
@@ -2808,11 +5756,11 @@ class CoxModelingApp(ttk.Frame):
 
                     self.log(f"CV C-Index for '{model_name_rm}': Starting KFold loop. Formula for folds: {cv_patsy_formula}", "DEBUG")
 
-                    for i_fold, (train_idx, test_idx) in enumerate(kf_cv.split(df_lifelines_rm)):
+                    for i_fold, (train_idx, test_idx) in enumerate(kf_cv.split(df_for_diagnostics)):
                         self.log(f"CV C-Index Fold {i_fold+1}/{kf_cv.get_n_splits()}: Processing...", "DEBUG")
-                        df_fold_for_fit_cv = df_lifelines_rm.iloc[train_idx].copy()
-                        df_fold_for_pred_cv = df_lifelines_rm.iloc[test_idx].copy() # Data for prediction
-                        y_te_cv = y_survival_rm.iloc[test_idx] # True outcomes for test set
+                        df_fold_for_fit_cv = df_for_diagnostics.iloc[train_idx].copy()
+                        df_fold_for_pred_cv = df_for_diagnostics.iloc[test_idx].copy() # Data for prediction
+                        y_te_cv = y_for_diagnostics.iloc[test_idx] # True outcomes for test set
 
                         if df_fold_for_fit_cv.empty or y_te_cv.empty or df_fold_for_pred_cv.empty:
                             self.log(f"CV C-Index Fold {i_fold+1}: Data empty for train or test. Skipping fold.", "WARN")
@@ -2856,11 +5804,17 @@ class CoxModelingApp(ttk.Frame):
                     if c_indices_cv_list:
                         model_data_rm["c_index_cv_mean"] = np.mean(c_indices_cv_list)
                         model_data_rm["c_index_cv_std"] = np.std(c_indices_cv_list)
+                        model_data_rm["c_index_cv_ci"] = compute_mean_confidence_interval_from_samples(
+                            c_indices_cv_list,
+                            clip_min=0.0,
+                            clip_max=1.0,
+                        )
                         self.log(f"C-Index CV for '{model_name_rm}' ({len(c_indices_cv_list)}/{kf_cv.get_n_splits()} folds successful): Mean={model_data_rm['c_index_cv_mean']:.3f} (DE={model_data_rm['c_index_cv_std']:.3f})", "INFO")
                     else:
                         self.log(f"C-Index CV for '{model_name_rm}': No C-Indices calculated from any fold.", "WARN")
                         model_data_rm["c_index_cv_mean"] = None # Ensure it's None if list is empty
                         model_data_rm["c_index_cv_std"] = None
+                        model_data_rm["c_index_cv_ci"] = None
 
                     if all_oos_predictions_data_cv: # Check if list is populated
                         model_data_rm["oos_predictions"] = all_oos_predictions_data_cv # Assign to the correct key
@@ -2873,12 +5827,31 @@ class CoxModelingApp(ttk.Frame):
                     traceback.print_exc(limit=3)
             elif self.calculate_cv_cindex_var.get(): # This means X_design_rm was empty (null model)
                  self.log(f"C-Index CV no calculado para '{model_name_rm}' (modelo nulo o X_design vacío).", "INFO")
+
         else: # model_data_rm["model"] is None (fit failed)
             self.log(f"Ajuste del modelo '{model_name_rm}' falló. Omitiendo tests de Schoenfeld y C-Index CV.", "WARN")
             model_data_rm["schoenfeld_status_message"] = "No aplicable (fallo en ajuste de modelo)."
             model_data_rm["c_index_cv_mean"] = None
             model_data_rm["c_index_cv_std"] = None
+            model_data_rm["c_index_cv_ci"] = None
+            model_data_rm["c_index_test"] = None
+            model_data_rm["c_index_test_ci"] = None
+            model_data_rm["c_index_train_ci"] = None
+            model_data_rm["test_proportion"] = None
+            model_data_rm["c_index_gap"] = None
             model_data_rm["oos_predictions"] = None
+
+        if model_for_diagnostics is not None and model_data_rm.get("c_index_train_ci") is None:
+            try:
+                preds_train_diag = model_for_diagnostics.predict_partial_hazard(df_for_diagnostics)
+                model_data_rm["c_index_train_ci"] = bootstrap_concordance_ci_from_scores(
+                    y_for_diagnostics,
+                    time_col_rm,
+                    event_col_rm,
+                    -np.asarray(preds_train_diag, dtype=float).reshape(-1),
+                )
+            except Exception as err_cindex_ci:
+                self.log(f"No se pudo calcular IC del C-Index train para '{model_name_rm}': {err_cindex_ci}", "WARN")
 
         # 5. Store internal data copies
         model_data_rm["_df_for_fit_main_INTERNAL_USE"] = df_lifelines_rm.copy()
@@ -2887,13 +5860,27 @@ class CoxModelingApp(ttk.Frame):
 
         # 6. Calculate and Store Final Metrics
         model_data_rm["metrics"] = compute_model_metrics(
-            fitted_cph_model,
-            X_design_rm, y_survival_rm, time_col_rm, event_col_rm,
+            model_for_diagnostics,
+            X_design_rm, y_for_diagnostics, time_col_rm, event_col_rm,
             model_data_rm.get("c_index_cv_mean"),
             model_data_rm.get("c_index_cv_std"),
             model_data_rm.get("schoenfeld_results"),
             model_data_rm.get("loglik_null"),
-            self.log
+            self.log,
+            model_data_rm.get("c_index_test"),
+            model_data_rm.get("test_proportion"),
+            model_data_rm.get("c_index_gap"),
+            model_data_rm.get("c_index_train_ci"),
+            model_data_rm.get("c_index_test_ci"),
+            model_data_rm.get("c_index_cv_ci"),
+            model_data_rm.get("c_index_uno"),
+            model_data_rm.get("c_index_antolini"),
+            model_data_rm.get("tau"),
+            ibs=model_data_rm.get("ibs"),
+            brier_q25=model_data_rm.get("brier_q25"), brier_q50=model_data_rm.get("brier_q50"), brier_q75=model_data_rm.get("brier_q75"),
+            auroc_q25=model_data_rm.get("auroc_q25"), auroc_q50=model_data_rm.get("auroc_q50"), auroc_q75=model_data_rm.get("auroc_q75"),
+            c_harrell_q25=model_data_rm.get("c_harrell_q25"), c_harrell_q50=model_data_rm.get("c_harrell_q50"), c_harrell_q75=model_data_rm.get("c_harrell_q75"),
+            time_q25=model_data_rm.get("time_q25"), time_q50=model_data_rm.get("time_q50"), time_q75=model_data_rm.get("time_q75"),
         )
 
         return model_data_rm
@@ -2922,54 +5909,106 @@ class CoxModelingApp(ttk.Frame):
             original_covs_in_model = sorted(list(set(original_covs_in_model))) # Únicos y ordenados
 
             vars_splines_display_list = []
-            model_spline_configs = md_tv.get('spline_config_details', {}) # Spline configs usadas por este modelo
+            spline_metadata_snapshot = md_tv.get('spline_basis_metadata', {}) or {}
+            patsy_formula_for_splines = md_tv.get('formula_patsy', '')
 
-            # Recuperar la configuración de splines que estaba vigente AL MOMENTO del ajuste del modelo.
-            # Esta información debería estar almacenada en el diccionario del modelo `md_tv`.
-            # Asumimos que `md_tv` contiene una clave como `spline_config_details_at_fit_time`
-            # o que `md_tv.get('formula_patsy')` ya refleja la configuración de splines.
-            # Para simplificar, vamos a iterar sobre `original_covs_in_model` y buscar su config
-            # en `self.spline_config_details` (config global actual) O en una clave específica del modelo si existiera.
-            # El plan indica usar `spline_config_details` de `md_tv`.
-            # El `formula_patsy` en `md_tv` ya tiene la info de splines incorporada en su sintaxis.
+            handled_covariates = set()
 
-            # Vamos a intentar reconstruir la info de splines a partir de la fórmula patsy del modelo
-            # y/o de `covariates_processed` que son los términos finales.
+            if spline_metadata_snapshot:
+                for cov_name_meta in sorted(spline_metadata_snapshot.keys()):
+                    meta_details = spline_metadata_snapshot.get(cov_name_meta) or {}
+                    detail_parts = [cov_name_meta]
 
-            # Si `covariates_processed` tiene términos como "cr(Q('var'), df=4)" o "bs(Q('var'), df=3, degree=2)"
-            # podemos parsearlos.
+                    method_label = meta_details.get('spline_type')
+                    if method_label:
+                        detail_parts.append(f"método={method_label}")
 
-            # Alternativa: Usar `full_patsy_formula_for_new_data_transform` que se guarda en el modelo,
-            # ya que esta fórmula se construye con la configuración de splines.
+                    degree_val = meta_details.get('degree')
+                    if degree_val is not None:
+                        detail_parts.append("cúbico" if degree_val == 3 else f"grado={degree_val}")
 
-            patsy_formula_for_splines = md_tv.get('formula_patsy', '') # Usar la fórmula del modelo
+                    df_requested_val = meta_details.get('df_requested')
+                    df_applied_val = meta_details.get('df_applied')
+                    df_effective_val = meta_details.get('df_effective')
 
+                    if df_requested_val is not None and df_applied_val is not None and df_requested_val != df_applied_val:
+                        detail_parts.append(f"df pedido={df_requested_val}")
+                        detail_parts.append(f"df usado={df_applied_val}")
+                    elif df_applied_val is not None:
+                        detail_parts.append(f"df={df_applied_val}")
+                    elif df_requested_val is not None:
+                        detail_parts.append(f"df={df_requested_val}")
+
+                    if df_effective_val is not None and df_effective_val != df_applied_val:
+                        detail_parts.append(f"df efectivo={df_effective_val}")
+
+                    num_knots_req = meta_details.get('num_knots_requested')
+                    num_knots_auto = meta_details.get('num_knots_derived_from_df')
+                    num_knots_used = meta_details.get('num_knots_used')
+
+                    if num_knots_req is not None:
+                        detail_parts.append(f"nodos pedidos={num_knots_req}")
+                    if num_knots_auto is not None and (num_knots_req is None or num_knots_auto != num_knots_req):
+                        detail_parts.append(f"nodos df={num_knots_auto}")
+                    if num_knots_used is not None:
+                        detail_parts.append(f"nodos usados={num_knots_used}")
+
+                    knots_source = meta_details.get('internal_knots_source')
+                    if knots_source:
+                        detail_parts.append(f"origen_nodos={knots_source}")
+
+                    boundary_vals = meta_details.get('boundary_knots') or []
+                    if boundary_vals:
+                        boundary_preview = ", ".join(f"{val:.2g}" for val in boundary_vals[:4])
+                        detail_parts.append(f"límites=[{boundary_preview}]")
+
+                    knot_values = meta_details.get('internal_knots') or []
+                    if knot_values:
+                        preview_vals = ", ".join(f"{val:.2g}" for val in knot_values[:4])
+                        if len(knot_values) > 4:
+                            preview_vals += ", ..."
+                        detail_parts.append(f"nodos=[{preview_vals}]")
+
+                    vars_splines_display_list.append(" | ".join(detail_parts))
+                    handled_covariates.add(cov_name_meta)
+
+            # Añadir covariables restantes (sin spline o sin metadata) usando la fórmula como fallback
             for orig_var_name in original_covs_in_model:
-                display_str = orig_var_name
-                # Buscar configuración de spline para esta variable original en la fórmula del modelo
-                # Ejemplo: cr(Q('AGE'), df=4) -> AGE (Natural, df=4)
-                # Ejemplo: bs(Q('BMI'), df=3, degree=2) -> BMI (B-spline, df=3, deg=2)
+                if orig_var_name in handled_covariates:
+                    continue
 
-                # Regex para splines naturales (cr)
+                display_str = orig_var_name
+
                 cr_match = re.search(rf"cr\(Q\('{re.escape(orig_var_name)}'\),\s*df=(\d+)\)", patsy_formula_for_splines)
                 if cr_match:
                     df = cr_match.group(1)
                     display_str += f" (Natural, df={df})"
                 else:
-                    # Regex para B-splines (bs)
                     bs_match = re.search(rf"bs\(Q\('{re.escape(orig_var_name)}'\),\s*df=(\d+)(?:,\s*degree=(\d+))?\)", patsy_formula_for_splines)
                     if bs_match:
                         df = bs_match.group(1)
-                        degree = bs_match.group(2) if bs_match.group(2) else '3' # Default degree 3 si no se especifica
+                        degree = bs_match.group(2) if bs_match.group(2) else '3'
                         display_str += f" (B-spline, df={df}, deg={degree})"
 
                 vars_splines_display_list.append(display_str)
 
-            vars_splines_str = ", ".join(vars_splines_display_list) if vars_splines_display_list else "(Nulo)"
-            if not vars_splines_display_list and covs_processed: # Si no pudimos parsear splines pero hay términos
-                 vars_splines_str = ", ".join(covs_processed) # Fallback a los términos procesados
+            penalizer_value = md_tv.get('penalizer_value', 0.0)
+            l1_ratio_value = md_tv.get('l1_ratio_value', 0.0)
+            penalization_info = f"penalización={penalizer_value:.4g} (l1={l1_ratio_value:.2f})"
+
+            if vars_splines_display_list:
+                vars_splines_display_list.insert(0, penalization_info)
+            elif covs_processed:
+                vars_splines_display_list = [penalization_info] + covs_processed
+            else:
+                vars_splines_display_list = [penalization_info]
+
+            vars_splines_str = ", ".join(vars_splines_display_list)
 
             metrics_tv = md_tv.get('metrics', {})
+
+            # Test %
+            test_prop_tv = metrics_tv.get('Test Proportion')
 
             # AIC
             aic_tv = metrics_tv.get('AIC')
@@ -2982,8 +6021,14 @@ class CoxModelingApp(ttk.Frame):
             # C-Index (Train)
             c_idx_tr_tv = metrics_tv.get('C-Index (Training)')
 
-            # C-Index (CV)
+            # C-Index (Test)
+            c_idx_test_tv = metrics_tv.get('C-Index (Test)')
+
+            # C-Index (CV/Test)
             c_idx_cv_tv = md_tv.get('c_index_cv_mean') # Directamente del diccionario del modelo
+
+            # Gap Test-Train
+            c_idx_gap_tv = metrics_tv.get('C-Index Gap (Test-Train)')
 
             # Schoenfeld (p min)
             schoenfeld_df_results = md_tv.get("schoenfeld_results") # This might now come from proportional_hazard_test summary
@@ -3044,19 +6089,182 @@ class CoxModelingApp(ttk.Frame):
                  self.log(f"DEBUG Treeview: Model '{name_tv}', Wald summary_df not DataFrame, empty, or no 'p' column.", "DEBUG")
 
 
+            # BIC
+            bic_tv = metrics_tv.get('BIC')
+            _f4 = lambda v: f"{v:.4f}" if pd.notna(v) else "N/A"
+
             vals_tv = (
                 i + 1,                                      # #
                 name_tv,                                    # Nombre Modelo
                 vars_splines_str,                           # Variables y Splines
+                f"{test_prop_tv:.2f}" if pd.notna(test_prop_tv) else "N/A", # Test %
                 f"{aic_tv:.2f}" if pd.notna(aic_tv) else "N/A", # AIC
+                f"{bic_tv:.2f}" if pd.notna(bic_tv) else "N/A", # BIC
                 f"{minus_2_loglik_tv:.2f}" if pd.notna(minus_2_loglik_tv) else "N/A", # -2 LogLik
-                f"{c_idx_tr_tv:.3f}" if pd.notna(c_idx_tr_tv) else "N/A", # C-Index (Train)
-                f"{c_idx_cv_tv:.3f}" if pd.notna(c_idx_cv_tv) else "N/A",   # C-Index (CV)
+                self._format_c_index_display(c_idx_tr_tv, metrics_tv.get('C-Index (Training) CI'), decimals=3), # C-Index (Train)
+                self._format_c_index_display(c_idx_test_tv, metrics_tv.get('C-Index (Test) CI'), decimals=3), # C-Index (Test)
+                self._format_c_index_display(c_idx_cv_tv, metrics_tv.get('C-Index (CV Mean) CI'), decimals=3),   # C-Index (CV/Test)
+                f"{c_idx_gap_tv:.3f}" if pd.notna(c_idx_gap_tv) else "N/A", # ΔTest-Train
+                _f4(metrics_tv.get('C-Index Uno (IPCW)')),  # C-Uno
+                _f4(metrics_tv.get('C-Index Antolini (Ctd)')),  # C-Antolini
+                f"{metrics_tv.get('τ (tau)'):.1f}" if pd.notna(metrics_tv.get('τ (tau)')) else "N/A",  # τ
+                _f4(metrics_tv.get('IBS')),  # IBS
+                _f4(metrics_tv.get('C@Q25')), _f4(metrics_tv.get('C@Q50')), _f4(metrics_tv.get('C@Q75')),
+                _f4(metrics_tv.get('Brier@Q25')), _f4(metrics_tv.get('Brier@Q50')), _f4(metrics_tv.get('Brier@Q75')),
+                _f4(metrics_tv.get('AUC@Q25')), _f4(metrics_tv.get('AUC@Q50')), _f4(metrics_tv.get('AUC@Q75')),
+                format_p_value(metrics_tv.get('Global LR Test p-value')) if pd.notna(metrics_tv.get('Global LR Test p-value')) else "N/A",  # LR p global
+                format_p_value(metrics_tv.get('Wald p-value (global approx)')) if pd.notna(metrics_tv.get('Wald p-value (global approx)')) else "N/A",  # Wald p global
                 format_p_value(schoenfeld_p_min_tv) if pd.notna(schoenfeld_p_min_tv) else "N/A", # Schoenfeld (p min)
                 format_p_value(wald_p_max_tv) if pd.notna(wald_p_max_tv) else "N/A" # Wald (p max)
             )
             self.treeview_lista_modelos.insert("", tk.END, iid=str(i), values=vals_tv)
         self.log(f"Treeview actualizada con {len(self.generated_models_data)} modelos.", "INFO")
+
+    def _get_layout_host(self):
+        host_app = self.__dict__.get("master")
+        if self.__dict__.get("tk") is not None:
+            try:
+                top_level = self.winfo_toplevel()
+                if top_level is not None:
+                    host_app = top_level
+            except Exception:
+                pass
+        return host_app
+
+    def _restore_saved_layout(self, layout_key, col_config):
+        host_app = self._get_layout_host()
+        apply_layout = getattr(host_app, "apply_saved_table_layout", None) if host_app is not None else None
+        if callable(apply_layout):
+            apply_layout(layout_key, col_config)
+
+    def _register_saved_layout(self, layout_key, col_config, treeview):
+        host_app = self._get_layout_host()
+        register_layout = getattr(host_app, "register_table_layout_source", None) if host_app is not None else None
+        if callable(register_layout):
+            register_layout(layout_key, col_config, treeview)
+
+    def _persist_saved_layout(self, layout_key, col_config, treeview):
+        host_app = self._get_layout_host()
+        persist_layout = getattr(host_app, "persist_table_layout", None) if host_app is not None else None
+        if callable(persist_layout):
+            persist_layout(layout_key, col_config, treeview)
+
+    # ── Column toggle for treeview_lista_modelos ──────────────────────────
+    def _persist_models_tv_layout(self):
+        self._persist_saved_layout("cox_generated_models", self._models_tv_col_config, getattr(self, "treeview_lista_modelos", None))
+
+    def _persist_grid_tv_layout(self):
+        self._persist_saved_layout("cox_model_grid", self._grid_tv_col_config, getattr(self, "model_grid_tree", None))
+
+    def save_table_layouts(self):
+        self._persist_models_tv_layout()
+        self._persist_grid_tv_layout()
+
+    def _show_models_tv_column_menu(self, event):
+        if not hasattr(self, 'treeview_lista_modelos') or self.treeview_lista_modelos is None:
+            return
+        menu = tk.Menu(self.treeview_lista_modelos, tearoff=0)
+        menu.add_command(label="── Columnas visibles ──", state="disabled")
+        menu.add_separator()
+        for col_id, cfg in self._models_tv_col_config.items():
+            label = ("✓ " if cfg["visible"] else "   ") + cfg["heading"]
+            menu.add_command(label=label, command=lambda c=col_id: self._toggle_models_tv_column(c))
+        menu.add_separator()
+        menu.add_command(label="Mostrar todas", command=self._show_all_models_tv_columns)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _toggle_models_tv_column(self, col_id):
+        cfg = self._models_tv_col_config[col_id]
+        try:
+            current_width = int(self.treeview_lista_modelos.column(col_id, option="width"))
+            if current_width > 0:
+                cfg["width"] = current_width
+        except Exception:
+            pass
+        cfg["visible"] = not cfg["visible"]
+        self._apply_treeview_column_layout(self.treeview_lista_modelos, self._models_tv_col_config)
+        self._persist_models_tv_layout()
+        self._persist_saved_layout("cox_generated_models", self._models_tv_col_config, self.treeview_lista_modelos)
+
+    def _show_all_models_tv_columns(self):
+        for col_id, cfg in self._models_tv_col_config.items():
+            cfg["visible"] = True
+        self._apply_treeview_column_layout(self.treeview_lista_modelos, self._models_tv_col_config)
+        self._persist_models_tv_layout()
+        self._persist_saved_layout("cox_generated_models", self._models_tv_col_config, self.treeview_lista_modelos)
+
+    def _apply_treeview_column_layout(self, treeview, col_config):
+        visible_cols = [col_id for col_id, cfg in col_config.items() if cfg.get("visible", True)]
+        try:
+            treeview.configure(displaycolumns=visible_cols if visible_cols else ())
+        except Exception:
+            pass
+        for col_id, cfg in col_config.items():
+            if cfg.get("visible", True):
+                treeview.column(col_id, width=cfg["width"], minwidth=24, stretch=False)
+            else:
+                treeview.column(col_id, width=0, minwidth=0, stretch=False)
+
+    # ── Column toggle for model_grid_tree ─────────────────────────────────
+    def _show_grid_tv_column_menu(self, event):
+        if not hasattr(self, 'model_grid_tree') or self.model_grid_tree is None:
+            return
+        menu = tk.Menu(self.model_grid_tree, tearoff=0)
+        menu.add_command(label="── Columnas visibles ──", state="disabled")
+        menu.add_separator()
+        for col_id, cfg in self._grid_tv_col_config.items():
+            label = ("✓ " if cfg["visible"] else "   ") + cfg["heading"]
+            menu.add_command(label=label, command=lambda c=col_id: self._toggle_grid_tv_column(c))
+        menu.add_separator()
+        menu.add_command(label="Mostrar todas", command=self._show_all_grid_tv_columns)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _toggle_grid_tv_column(self, col_id):
+        cfg = self._grid_tv_col_config[col_id]
+        try:
+            current_width = int(self.model_grid_tree.column(col_id, option="width"))
+            if current_width > 0:
+                cfg["width"] = current_width
+        except Exception:
+            pass
+        cfg["visible"] = not cfg["visible"]
+        self._apply_treeview_column_layout(self.model_grid_tree, self._grid_tv_col_config)
+        self._persist_grid_tv_layout()
+        self._persist_saved_layout("cox_model_grid", self._grid_tv_col_config, self.model_grid_tree)
+
+    def _show_all_grid_tv_columns(self):
+        for col_id, cfg in self._grid_tv_col_config.items():
+            cfg["visible"] = True
+        self._apply_treeview_column_layout(self.model_grid_tree, self._grid_tv_col_config)
+        self._persist_grid_tv_layout()
+        self._persist_saved_layout("cox_model_grid", self._grid_tv_col_config, self.model_grid_tree)
+
+    def _sort_grid_tv_column(self, col_name):
+        """Ordena el model_grid_tree por la columna especificada."""
+        if not self.model_grid_tree:
+            return
+        try:
+            col_idx = self.model_grid_tree["columns"].index(col_name)
+        except ValueError:
+            return
+        items = [(self.model_grid_tree.item(iid, "values"), iid) for iid in self.model_grid_tree.get_children()]
+        reverse = self._grid_sort_reversed.get(col_name, False)
+        def sort_key(pair):
+            val = pair[0][col_idx] if col_idx < len(pair[0]) else ""
+            try:
+                return (0, float(val))
+            except (ValueError, TypeError):
+                return (1, str(val).lower())
+        items.sort(key=sort_key, reverse=reverse)
+        for idx, (vals, iid) in enumerate(items):
+            self.model_grid_tree.move(iid, "", idx)
+        self._grid_sort_reversed[col_name] = not reverse
 
     def _sort_treeview_column(self, col_name):
         """Ordena los datos del Treeview por la columna especificada."""
@@ -3113,6 +6321,9 @@ class CoxModelingApp(ttk.Frame):
                         if bs_match: display_str += f" (B-spline, df={bs_match.group(1)}, deg={bs_match.group(2) or '3'})"
                     vars_splines_display_list.append(display_str)
                 return ", ".join(vars_splines_display_list) if vars_splines_display_list else "(Nulo)"
+            elif col_name == "Test %":
+                val = metrics.get('Test Proportion')
+                return float(val) if pd.notna(val) else float('-inf')
             elif col_name == "AIC":
                 val = metrics.get('AIC')
                 return float(val) if pd.notna(val) else float('-inf') # Tratar N/A como muy pequeño
@@ -3124,9 +6335,40 @@ class CoxModelingApp(ttk.Frame):
             elif col_name == "C-Index (Train)":
                 val = metrics.get('C-Index (Training)')
                 return float(val) if pd.notna(val) else float('-inf')
-            elif col_name == "C-Index (CV)":
+            elif col_name == "C-Index (Test)":
+                val = metrics.get('C-Index (Test)')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name in ("C-Index (CV)", "C-Index (CV/Test)"):
                 val = model_dict_item.get('c_index_cv_mean')
                 return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "ΔTest-Train":
+                val = metrics.get('C-Index Gap (Test-Train)')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "BIC":
+                val = metrics.get('BIC')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "C-Uno (IPCW)":
+                val = metrics.get('C-Index Uno (IPCW)')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "C-Antolini (Ctd)":
+                val = metrics.get('C-Index Antolini (Ctd)')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "τ (tau)":
+                val = metrics.get('τ (tau)')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "IBS":
+                val = metrics.get('IBS')
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name in ("C@Q25", "C@Q50", "C@Q75", "Brier@Q25", "Brier@Q50", "Brier@Q75",
+                              "AUC@Q25", "AUC@Q50", "AUC@Q75"):
+                val = metrics.get(col_name)
+                return float(val) if pd.notna(val) else float('-inf')
+            elif col_name == "LR p (global)":
+                val = metrics.get('Global LR Test p-value')
+                return float(val) if pd.notna(val) else float('inf')
+            elif col_name == "Wald p (global)":
+                val = metrics.get('Wald p-value (global approx)')
+                return float(val) if pd.notna(val) else float('inf')
             elif col_name == "Schoenfeld (p min)":
                 schoenfeld_df = model_dict_item.get("schoenfeld_results")
                 if schoenfeld_df is not None and isinstance(schoenfeld_df, pd.DataFrame) and not schoenfeld_df.empty and 'p' in schoenfeld_df.columns:
@@ -3157,10 +6399,123 @@ class CoxModelingApp(ttk.Frame):
 
         # Actualizar el Treeview
         self._update_models_treeview()
+        self._show_best_sorted_models_popup(col_name, current_reverse_order)
         self.log(f"Treeview ordenado por '{col_name}', descendente={current_reverse_order}.", "INFO")
+
+    def _parse_table_sort_value(self, raw_value):
+        text = str(raw_value).strip()
+        if text in {"", "-", "N/A", "nan", "None"}:
+            return ("str", "")
+        match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
+        if match:
+            try:
+                return ("num", float(match.group(0)))
+            except Exception:
+                pass
+        return ("str", text.lower())
+
+    def _sort_keys_equal(self, left_key, right_key, tol=1e-10):
+        if left_key[0] != right_key[0]:
+            return False
+        if left_key[0] == "num":
+            return abs(left_key[1] - right_key[1]) <= tol
+        return left_key[1] == right_key[1]
+
+    def _show_best_sorted_models_popup(self, col_name, reverse):
+        if not hasattr(self, "treeview_lista_modelos"):
+            return
+        children = self.treeview_lista_modelos.get_children("")
+        if not children:
+            return
+        columns = list(self.treeview_lista_modelos["columns"])
+        if col_name not in columns:
+            return
+
+        col_idx = columns.index(col_name)
+        model_idx = columns.index("Nombre Modelo") if "Nombre Modelo" in columns else None
+        params_idx = columns.index("Variables y Splines") if "Variables y Splines" in columns else None
+
+        first_values = self.treeview_lista_modelos.item(children[0], "values")
+        best_key = self._parse_table_sort_value(first_values[col_idx] if col_idx < len(first_values) else "")
+
+        all_top_rows = []
+        numeric_values = []
+        for item_id in children:
+            values = self.treeview_lista_modelos.item(item_id, "values")
+            current_key = self._parse_table_sort_value(values[col_idx] if col_idx < len(values) else "")
+            if not self._sort_keys_equal(current_key, best_key):
+                break
+
+            model_name = values[model_idx] if model_idx is not None and model_idx < len(values) else "-"
+            params_text = values[params_idx] if params_idx is not None and params_idx < len(values) else "-"
+            metric_text = values[col_idx] if col_idx < len(values) else "-"
+            all_top_rows.append((model_name, params_text, metric_text))
+            if current_key[0] == "num":
+                numeric_values.append(float(current_key[1]))
+
+        if not all_top_rows:
+            return
+
+        # Detectar si todos los empatados comparten las mismas covariables
+        unique_params = set(r[1] for r in all_top_rows)
+        diversity_warning = None
+        if len(all_top_rows) >= 5 and len(unique_params) == 1:
+            diversity_warning = (
+                "⚠  Todos los modelos empatados tienen exactamente las mismas covariables y splines. "
+                "Esto significa que comparten la misma estructura y el empate es estructural, no casual. "
+                "Prueba diferentes especificaciones de variables o splines para obtener modelos distintos."
+            )
+
+        MAX_DISPLAY = 10
+        top_rows = all_top_rows[:MAX_DISPLAY]
+        hidden_count = len(all_top_rows) - MAX_DISPLAY
+
+        popup = tk.Toplevel(self)
+        popup.title("Mejor valor en modelos Cox")
+        popup.geometry("1040x480")
+        popup.transient(self.winfo_toplevel())
+        popup.grab_set()
+
+        sort_order_text = "descendente" if reverse else "ascendente"
+        total_tied = len(all_top_rows)
+        title_text = (
+            f"Columna: {col_name} | Orden: {sort_order_text} | "
+            f"Modelos empatados en el mejor valor: {total_tied}"
+            + (f" (mostrando los primeros {MAX_DISPLAY})" if hidden_count > 0 else "")
+        )
+        ttk.Label(popup, text=title_text, foreground="navy").pack(anchor="w", padx=12, pady=(10, 4))
+
+        if numeric_values and len(numeric_values) > 1:
+            avg_text = f"Promedio entre empatados: {float(np.mean(numeric_values)):.6f}"
+            ttk.Label(popup, text=avg_text, foreground="#555555").pack(anchor="w", padx=12, pady=(0, 4))
+
+        if diversity_warning:
+            warn_frame = ttk.Frame(popup, relief="solid", padding=6)
+            warn_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
+            ttk.Label(warn_frame, text=diversity_warning, foreground="#8B4513",
+                      wraplength=1000, justify="left").pack(anchor="w")
+
+        tree = ttk.Treeview(popup, columns=("modelo", "parametros", "valor"), show="headings", height=10)
+        tree.heading("modelo", text="Modelo")
+        tree.heading("parametros", text="Variables y Splines")
+        tree.heading("valor", text=col_name)
+        tree.column("modelo", width=180, anchor="w", stretch=False)
+        tree.column("parametros", width=680, anchor="w", stretch=True)
+        tree.column("valor", width=150, anchor="center", stretch=False)
+        tree.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 4))
+
+        for row in top_rows:
+            tree.insert("", "end", values=row)
+
+        if hidden_count > 0:
+            ttk.Label(popup, text=f"+ {hidden_count} modelos más con el mismo valor (no mostrados).",
+                      foreground="#777777").pack(anchor="w", padx=12, pady=(0, 4))
+
+        ttk.Button(popup, text="Cerrar", command=popup.destroy).pack(pady=(0, 10))
 
 
     def _execute_cox_modeling_orchestrator(self):
+        self._persist_single_selected_categorical_config_from_panel(quiet=True)
         self.log("*"*35 + " INICIO MODELADO COX " + "*"*35, "HEADER")
         successful_fits = 0
         failed_fits = 0
@@ -3216,7 +6571,8 @@ class CoxModelingApp(ttk.Frame):
                                                              pen_val, l1_r, model_type_for_fit_logic="Univariado",
                                                              scaling_method_applied=scaling_method_used,
                                                              fitted_scaler_obj=scaler_object,
-                                                             scaled_columns_info=scaled_cols_list)
+                                                             scaled_columns_info=scaled_cols_list,
+                                                             selected_covariates_original=[orig_cov_uni])
                     if md_uni:
                         temp_models_list_orch.append(md_uni)
                         if md_uni.get("model") is not None:
@@ -3282,13 +6638,20 @@ class CoxModelingApp(ttk.Frame):
             if X_multi_current.empty and not terms_multi_current: suffix_multi += " (Nulo)"
             name_multi = f"Multivariado{suffix_multi}"
             
+            selected_covs_for_snapshot = (
+                list(selected_orig_covs_after_selection)
+                if sel_meth_ui != "Ninguno (usar todas)"
+                else list(getattr(self, 'selected_covariables_from_ui', []))
+            )
+
             md_multi = self._run_model_and_get_metrics(df_multi_current, X_multi_current, y_multi,
                                                        t_col_final, e_col_final, formula_multi_current,
                                                        name_multi, terms_multi_current, formula_init_patsy_full, # formula_init_patsy_full is for new data transform
                                                        pen_val, l1_r, model_type_for_fit_logic="Multivariado",
                                                        scaling_method_applied=scaling_method_used,
                                                        fitted_scaler_obj=scaler_object,
-                                                       scaled_columns_info=scaled_cols_list)
+                                                       scaled_columns_info=scaled_cols_list,
+                                                       selected_covariates_original=selected_covs_for_snapshot)
             if md_multi:
                 temp_models_list_orch.append(md_multi)
                 if md_multi.get("model") is not None:
@@ -3299,9 +6662,22 @@ class CoxModelingApp(ttk.Frame):
         # Añadir los modelos generados a la lista existente, no sobrescribir
         self.generated_models_data.extend(temp_models_list_orch)
         self._update_models_treeview()
+
+        if temp_models_list_orch and hasattr(self, 'treeview_lista_modelos'):
+            try:
+                last_idx = len(self.generated_models_data) - 1
+                last_iid = str(last_idx)
+                self.treeview_lista_modelos.selection_set(last_iid)
+                self.treeview_lista_modelos.focus(last_iid)
+                self.treeview_lista_modelos.see(last_iid)
+                self._on_model_select_from_treeview()
+                self._clear_holdout_config_dirty()
+                self.log(f"Selección automática activada para el último modelo generado (índice {last_idx + 1}).", "INFO")
+            except Exception as err_select_last:
+                self.log(f"No se pudo auto-seleccionar el último modelo generado: {err_select_last}", "WARN")
+
         msg_fin = f"Modelado completado. {len(temp_models_list_orch)} modelo(s) generado(s) y añadido(s)." if temp_models_list_orch else "No se generó ningún modelo nuevo."
         self.log(msg_fin, "SUCCESS" if temp_models_list_orch else "WARN")
-        messagebox.showinfo("Modelado Terminado", msg_fin, parent=self.parent_for_dialogs)
 
         total_models_attempted = successful_fits + failed_fits
         self.log(f"Resumen de Convergencia de Modelos:", "SUBHEADER")
@@ -3312,50 +6688,152 @@ class CoxModelingApp(ttk.Frame):
         self.log("*"*35 + " FIN PROCESO DE MODELADO COX " + "*"*35, "HEADER")
 
 
-    def _on_model_select_from_treeview(self, event=None):
-        sel_item = self.treeview_lista_modelos.focus()
-        if sel_item:
-            try:
-                idx = int(sel_item)
-                if 0 <= idx < len(self.generated_models_data):
-                    self.selected_model_in_treeview = self.generated_models_data[idx]
-                    self.log(f"Modelo '{self.selected_model_in_treeview.get('model_name')}' seleccionado.", "INFO")
-                else: self.selected_model_in_treeview = None; self.log("Índice modelo fuera de rango.", "WARN")
-            except ValueError: self.selected_model_in_treeview = None; self.log("Error obteniendo índice modelo.", "WARN")
-        else: self.selected_model_in_treeview = None; self.log("Ningún modelo seleccionado.", "INFO")
+    def _restore_selected_model_ui_state(self, model_dict, restore_holdout_settings=None):
+        if not isinstance(model_dict, dict):
+            return
 
-        # Actualizar UI de nombre/notas personalizados
+        columns = []
+        for df_source in (
+            getattr(self, 'data', None),
+            model_dict.get('df_used_for_fit'),
+            model_dict.get('_df_for_fit_main_INTERNAL_USE'),
+        ):
+            if isinstance(df_source, pd.DataFrame):
+                for col_name in df_source.columns.tolist():
+                    if col_name not in columns:
+                        columns.append(col_name)
+
+        time_col = model_dict.get('time_col_for_model') or ""
+        event_col = model_dict.get('event_col_for_model') or ""
+        selected_covs = list(model_dict.get('selected_covariables_original') or [])
+        if not selected_covs:
+            for cov_name in model_dict.get('covariates_processed', []) or []:
+                if cov_name in columns and cov_name not in selected_covs and cov_name not in [time_col, event_col]:
+                    selected_covs.append(cov_name)
+
+        for col_name in [time_col, event_col] + selected_covs:
+            if col_name and col_name not in columns:
+                columns.append(col_name)
+
+        if hasattr(self, 'combo_col_tiempo'):
+            self.combo_col_tiempo['values'] = columns
+            self.combo_col_tiempo.set(time_col if (not columns or time_col in columns) else "")
+        if hasattr(self, 'combo_col_evento'):
+            self.combo_col_evento['values'] = columns
+            self.combo_col_evento.set(event_col if (not columns or event_col in columns) else "")
+        if hasattr(self, 'listbox_covariables_disponibles'):
+            self.listbox_covariables_disponibles.delete(0, tk.END)
+            cov_columns = [c for c in columns if c not in [time_col, event_col]]
+            for idx, col_name in enumerate(cov_columns):
+                self.listbox_covariables_disponibles.insert(tk.END, col_name)
+                if col_name in selected_covs:
+                    try:
+                        self.listbox_covariables_disponibles.selection_set(idx)
+                    except Exception:
+                        pass
+
+        config_snapshot = model_dict.get('ui_config_snapshot') or {}
+        if hasattr(self, 'cox_model_type_var') and config_snapshot.get('model_type'):
+            self.cox_model_type_var.set(str(config_snapshot.get('model_type')))
+
+        should_restore_holdout = restore_holdout_settings
+        if should_restore_holdout is None:
+            should_restore_holdout = not bool(getattr(self, '_manual_holdout_config_dirty', False))
+
+        if should_restore_holdout:
+            if hasattr(self, 'test_size_var') and 'test_size' in config_snapshot and config_snapshot.get('test_size') is not None:
+                self.test_size_var.set(config_snapshot.get('test_size'))
+            if hasattr(self, 'stratify_holdout_var') and 'stratify_holdout' in config_snapshot and config_snapshot.get('stratify_holdout') is not None:
+                self.stratify_holdout_var.set(bool(config_snapshot.get('stratify_holdout')))
+            if hasattr(self, 'tau_mode_var') and config_snapshot.get('tau_mode'):
+                self.tau_mode_var.set(str(config_snapshot.get('tau_mode')))
+            if hasattr(self, 'tau_manual_var') and 'tau_manual' in config_snapshot:
+                tau_manual_value = config_snapshot.get('tau_manual')
+                self.tau_manual_var.set("" if tau_manual_value in (None, "None") else str(tau_manual_value))
+            self._clear_holdout_config_dirty()
+
+
+    def _on_model_select_from_treeview(self, event=None):
+        selected_iids = self.treeview_lista_modelos.selection()
+        selected_models = []
+
+        if selected_iids:
+            for iid in selected_iids:
+                try:
+                    idx = int(iid)
+                except ValueError:
+                    self.log(f"Ítem seleccionado '{iid}' no es un índice válido.", "WARN")
+                    continue
+
+                if 0 <= idx < len(self.generated_models_data):
+                    selected_models.append(self.generated_models_data[idx])
+                else:
+                    self.log(f"Índice de modelo fuera de rango: {idx}.", "WARN")
+
+        self.selected_models_in_treeview = selected_models
+        self.selected_model_in_treeview = selected_models[0] if selected_models else None
+
+        if self.selected_model_in_treeview:
+            self.log(
+                f"Modelos seleccionados: {', '.join([md.get('model_name', 'N/A') for md in selected_models])}",
+                "INFO"
+            )
+            try:
+                self._restore_selected_model_ui_state(self.selected_model_in_treeview)
+            except Exception as err_restore_ui:
+                self.log(f"No se pudo restaurar la UI del modelo seleccionado: {err_restore_ui}", "WARN")
+        else:
+            self.log("Ningún modelo seleccionado.", "INFO")
+
+        # Actualizar UI de nombre/notas personalizados usando el primer modelo seleccionado
         if self.selected_model_in_treeview:
             custom_name = self.selected_model_in_treeview.get('custom_model_name', self.selected_model_in_treeview.get('model_name', ''))
             custom_notes = self.selected_model_in_treeview.get('custom_model_notes', '')
-            if self.entry_custom_model_name: # Verificar que el widget exista
+            if self.entry_custom_model_name:
                 self.entry_custom_model_name_var.set(custom_name)
-            if self.text_custom_model_notes: # Verificar que el widget exista
+            if self.text_custom_model_notes:
                 self.text_custom_model_notes.config(state=tk.NORMAL)
                 self.text_custom_model_notes.delete("1.0", tk.END)
                 self.text_custom_model_notes.insert("1.0", custom_notes)
-                self.text_custom_model_notes.config(state=tk.DISABLED if not self.selected_model_in_treeview else tk.NORMAL) # Permitir edición si hay modelo
-        else: # No model selected
-            if self.entry_custom_model_name: self.entry_custom_model_name_var.set("")
+                self.text_custom_model_notes.config(state=tk.NORMAL)
+        else:
+            if self.entry_custom_model_name:
+                self.entry_custom_model_name_var.set("")
             if self.text_custom_model_notes:
                 self.text_custom_model_notes.config(state=tk.NORMAL)
                 self.text_custom_model_notes.delete("1.0", tk.END)
                 self.text_custom_model_notes.config(state=tk.DISABLED)
 
+        if self.btn_oos_calibration:
+            enabled = any(md.get("oos_predictions") for md in selected_models)
+            self.btn_oos_calibration.config(state=tk.NORMAL if enabled else tk.DISABLED)
 
-        if self.btn_oos_calibration: # Check if button exists
-            if self.selected_model_in_treeview and self.selected_model_in_treeview.get("oos_predictions"):
-                self.btn_oos_calibration.config(state=tk.NORMAL)
-            else:
-                self.btn_oos_calibration.config(state=tk.DISABLED)
-
-        if self.btn_collinearity_diag: # <-- NUEVO
+        if self.btn_collinearity_diag:
             can_run_vif = False
             if self.selected_model_in_treeview:
                 x_design = self.selected_model_in_treeview.get("X_design_used_for_fit")
                 if x_design is not None and isinstance(x_design, pd.DataFrame) and x_design.shape[1] > 1:
                     can_run_vif = True
             self.btn_collinearity_diag.config(state=tk.NORMAL if can_run_vif else tk.DISABLED)
+
+        if self.btn_nomogram:
+            can_generate_nomogram = False
+            if self.selected_model_in_treeview:
+                model_obj = self.selected_model_in_treeview.get("model")
+                x_design_sel = self.selected_model_in_treeview.get("X_design_used_for_fit")
+                if (
+                    model_obj
+                    and hasattr(model_obj, 'params_')
+                    and model_obj.params_ is not None
+                    and not model_obj.params_.empty
+                    and isinstance(x_design_sel, pd.DataFrame)
+                    and not x_design_sel.empty
+                ):
+                    can_generate_nomogram = True
+            self.btn_nomogram.config(state=tk.NORMAL if can_generate_nomogram else tk.DISABLED)
+
+        if self.btn_delete_model:
+            self.btn_delete_model.config(state=tk.NORMAL if self.selected_model_in_treeview else tk.DISABLED)
 
         self._update_results_buttons_state()
 
@@ -3398,6 +6876,729 @@ class CoxModelingApp(ttk.Frame):
         text_sum = self._generate_text_summary_for_model(model_dict_sum) # Usar helper
         ModelSummaryWindow(self.parent_for_dialogs, f"Resumen: {model_dict_sum.get('model_name', 'N/A')}", text_sum)
         self.log(f"Mostrando resumen para '{model_dict_sum.get('model_name', 'N/A')}'.", "INFO")
+
+    def _format_term_for_display(self, term_raw):
+        """Convierte un término de Patsy a una etiqueta más legible para resúmenes y gráficos."""
+        if not term_raw:
+            return ""
+
+        term = str(term_raw)
+
+        # Interacciones separadas por ':'
+        if ':' in term:
+            parts = [self._format_term_for_display(part.strip()) for part in term.split(':')]
+            return " × ".join(parts)
+
+        # Potencias explícitas: I(Q('x') ** 2)
+        match_power = re.match(r"I\(Q\('([^']+)'\) \*\* (\d+)\)", term)
+        if match_power:
+            base_name, power = match_power.groups()
+            power_int = int(power)
+            superscript_map = {2: '²', 3: '³', 4: '⁴', 5: '⁵'}
+            if power_int in superscript_map:
+                return f"{base_name}{superscript_map[power_int]}"
+            return f"{base_name}^{power_int}"
+
+        # B-splines bs(Q('var'), ...)[i]
+        match_bs = re.match(r"bs\(Q\('([^']+)'\),[^)]*\)\[(\d+)\]", term)
+        if match_bs:
+            base_name = match_bs.group(1)
+            basis_idx = int(match_bs.group(2)) + 1
+            return f"{base_name} (spline {basis_idx})"
+
+        # Natural splines cr(Q('var'), ...)[i]
+        match_cr = re.match(r"cr\(Q\('([^']+)'\),[^)]*\)\[(\d+)\]", term)
+        if match_cr:
+            base_name = match_cr.group(1)
+            basis_idx = int(match_cr.group(2)) + 1
+            return f"{base_name} (natural spline {basis_idx})"
+
+        # C(Q('var'), Treatment('ref'))[T.level]
+        match_cat_treatment = re.match(r"C\(Q\('([^']+)'\),\s*Treatment\('([^']+)'\)\)\[T\.([^\]]+)\]", term)
+        if match_cat_treatment:
+            base, ref_level, level = match_cat_treatment.groups()
+            if str(level).strip().upper() == "RESTO":
+                return f"{base}: RESTO vs {ref_level}"
+            return f"{base}: {level} vs {ref_level}"
+
+        # Q('var') wrapper
+        match_q = re.match(r"Q\('([^']+)'\)$", term)
+        if match_q:
+            return match_q.group(1)
+
+        # C('var')[T.level] para dummies
+        match_cat = re.match(r"C\('([^']+)'\)\[T\.([^\]]+)\]", term)
+        if match_cat:
+            base, level = match_cat.groups()
+            return f"{base} = {level}"
+
+        # Transformaciones comunes
+        if term.startswith("np.log(") and term.endswith(")"):
+            inner = term[len("np.log("):-1]
+            return f"log({inner})"
+
+        if term.startswith("np.log1p(") and term.endswith(")"):
+            inner = term[len("np.log1p("):-1]
+            return f"log1p({inner})"
+
+        return term
+
+    def _format_term_for_nomogram(self, term_raw):
+        """Convierte un término de Patsy a una etiqueta legible para el nomograma."""
+        return self._format_term_for_display(term_raw)
+
+    def generate_nomogram_for_selected_model(self):
+        if not self._check_model_selected_and_valid(check_params=True):
+            return
+
+        model_data = self.selected_model_in_treeview
+        model_obj = model_data.get('model')
+        x_design = model_data.get('X_design_used_for_fit')
+        model_name = model_data.get('custom_model_name', model_data.get('model_name', 'Modelo Cox'))
+
+        if not isinstance(x_design, pd.DataFrame) or x_design.empty:
+            messagebox.showinfo("Nomograma No Disponible", "La matriz de diseño del modelo está vacía; no se puede construir el nomograma.", parent=self.parent_for_dialogs)
+            self.log("Nomograma: matriz de diseño vacía o no disponible.", "WARN")
+            return
+
+        params = getattr(model_obj, 'params_', None)
+        if params is None or params.empty:
+            messagebox.showinfo("Nomograma No Disponible", "El modelo no tiene coeficientes estimados.", parent=self.parent_for_dialogs)
+            self.log("Nomograma: modelo sin coeficientes estimados.", "WARN")
+            return
+
+        def _parse_float_list(input_str):
+            if input_str is None:
+                return None
+            values = []
+            for raw_part in input_str.split(','):
+                part = raw_part.strip()
+                if not part:
+                    continue
+                try:
+                    values.append(float(part))
+                except ValueError:
+                    self.log(f"Valor no numérico ignorado en lista: '{part}'", "WARN")
+            return values
+
+        default_percentiles = [2.5, 50, 75, 97]
+        custom_tick_values_global = []
+        percentiles_for_ticks = default_percentiles.copy()
+
+        custom_values_input = simpledialog.askstring(
+            "Valores para Nomograma",
+            "Ingrese valores específicos (ej. 1.0, 2.5, 5) para marcadores en cada línea.\nDeje vacío para omitir.",
+            parent=self.parent_for_dialogs
+        )
+        if custom_values_input is not None:
+            parsed_custom = _parse_float_list(custom_values_input)
+            if parsed_custom:
+                custom_tick_values_global = parsed_custom
+                self.log(f"Nomograma: valores personalizados para ticks: {custom_tick_values_global}", "INFO")
+
+        percentiles_input = simpledialog.askstring(
+            "Percentiles para Nomograma",
+            "Ingrese percentiles (0-100) separados por coma (ej. 2.5, 50, 75, 97).\nDeje en blanco para usar el valor predeterminado.",
+            initialvalue=", ".join(str(p) for p in default_percentiles),
+            parent=self.parent_for_dialogs
+        )
+        if percentiles_input is not None:
+            parsed_percentiles = _parse_float_list(percentiles_input)
+            if parsed_percentiles:
+                percentiles_filtered = [p for p in parsed_percentiles if 0 <= p <= 100]
+                if percentiles_filtered:
+                    percentiles_for_ticks = percentiles_filtered
+                    self.log(f"Nomograma: percentiles personalizados: {percentiles_for_ticks}", "INFO")
+                else:
+                    self.log("Nomograma: percentiles ingresados fuera de rango. Se usan predeterminados.", "WARN")
+
+        default_time_list = getattr(self, "nomogram_default_time_points", [5.0, 10.0, 15.0])
+        survival_time_points = default_time_list.copy()
+        time_points_input = simpledialog.askstring(
+            "Tiempos para Supervivencia",
+            "Ingrese tiempos (misma unidad que el tiempo del modelo) separados por coma.\n"
+            "Ejemplo: 5, 10, 15",
+            initialvalue=", ".join(f"{t:g}" for t in default_time_list) if default_time_list else "",
+            parent=self.parent_for_dialogs
+        )
+
+        if time_points_input is not None:
+            parsed_times = _parse_float_list(time_points_input)
+            if parsed_times:
+                filtered_times = sorted({t for t in parsed_times if t > 0})
+                if filtered_times:
+                    survival_time_points = filtered_times
+                    self.nomogram_default_time_points = survival_time_points.copy()
+                    self.log(f"Nomograma: tiempos personalizados para supervivencia: {survival_time_points}", "INFO")
+                else:
+                    self.log("Nomograma: tiempos de supervivencia ingresados inválidos. Se usan predeterminados.", "WARN")
+            elif time_points_input.strip():
+                self.log("Nomograma: entrada de tiempos sin valores numéricos válidos. Se usan predeterminados.", "WARN")
+
+        survival_time_points = sorted({t for t in survival_time_points if t > 0})
+
+        def _add_tick_entry(ticks_list, value, label=None):
+            if value is None:
+                return
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return
+            if math.isnan(value_f) or math.isinf(value_f):
+                return
+            for entry in ticks_list:
+                if math.isclose(entry["value"], value_f, rel_tol=1e-9, abs_tol=1e-9):
+                    if label and label not in entry["labels"]:
+                        entry["labels"].append(label)
+                    return
+            ticks_list.append({"value": value_f, "labels": [label] if label else []})
+
+        original_training_df = model_data.get('_df_for_fit_main_INTERNAL_USE')
+        if isinstance(original_training_df, pd.DataFrame):
+            try:
+                original_training_df = original_training_df.loc[x_design.index]
+            except Exception:
+                original_training_df = original_training_df.copy()
+        else:
+            original_training_df = None
+
+        term_details = []
+        spline_groups = {}
+
+        def _add_standard_term_detail(term_name, coef_value, series_full):
+            series_numeric = pd.to_numeric(series_full, errors='coerce').dropna()
+            if series_numeric.empty:
+                self.log(f"Nomograma: término '{term_name}' sin datos numéricos válidos. Se omite.", "DEBUG")
+                return False
+
+            col_min = float(series_numeric.min())
+            col_max = float(series_numeric.max())
+            if math.isclose(col_min, col_max, rel_tol=1e-9, abs_tol=1e-9):
+                self.log(f"Nomograma: término '{term_name}' tiene rango nulo y se omite.", "INFO")
+                return False
+
+            effect_range = abs(float(coef_value)) * (col_max - col_min)
+            ticks_info = []
+            _add_tick_entry(ticks_info, col_min)
+            _add_tick_entry(ticks_info, col_max)
+
+            if custom_tick_values_global:
+                for custom_val in custom_tick_values_global:
+                    if col_min - 1e-12 <= custom_val <= col_max + 1e-12:
+                        _add_tick_entry(ticks_info, custom_val)
+
+            if percentiles_for_ticks:
+                for pct in percentiles_for_ticks:
+                    try:
+                        q_val = float(series_numeric.quantile(pct / 100.0))
+                    except Exception:
+                        continue
+                    if math.isnan(q_val):
+                        continue
+                    if col_min - 1e-12 <= q_val <= col_max + 1e-12:
+                        _add_tick_entry(ticks_info, q_val, f"P{pct:g}")
+
+            if len(ticks_info) < 3:
+                auto_ticks = np.linspace(col_min, col_max, num=5)
+                for auto_val in auto_ticks:
+                    _add_tick_entry(ticks_info, auto_val)
+
+            ticks_info.sort(key=lambda entry: entry["value"])
+
+            term_details.append({
+                "term": term_name,
+                "coef": float(coef_value),
+                "min": col_min,
+                "max": col_max,
+                "series": series_numeric,
+                "effect_range": effect_range,
+                "is_spline_group": False,
+                "ticks_info": ticks_info
+            })
+            return True
+
+        def _build_spline_group_detail(base_name, group_info):
+            entries = group_info.get("entries", [])
+            if not entries:
+                return None
+
+            spline_func = group_info.get("spline_func", "bs")
+            spline_label = "B-spline" if spline_func == "bs" else "Natural spline"
+            basis_columns = {}
+            coefs = []
+            for idx_entry, entry in enumerate(entries):
+                series_full = entry.get("series_full")
+                if series_full is None:
+                    continue
+                series_clean = pd.to_numeric(series_full, errors='coerce')
+                basis_columns[f"basis_{idx_entry}"] = series_clean.fillna(0.0)
+                coefs.append(float(entry.get("coef", 0.0)))
+
+            if not basis_columns or not coefs:
+                return None
+
+            basis_df = pd.DataFrame(basis_columns)
+            if basis_df.empty:
+                return None
+
+            effect_series = basis_df.values @ np.array(coefs, dtype=float)
+            effect_series = pd.Series(effect_series, index=basis_df.index)
+
+            raw_series = None
+            if isinstance(original_training_df, pd.DataFrame) and base_name in original_training_df.columns:
+                try:
+                    raw_series = pd.to_numeric(original_training_df[base_name], errors='coerce')
+                except Exception:
+                    raw_series = None
+
+            if raw_series is not None:
+                if len(raw_series) != len(effect_series):
+                    try:
+                        raw_series = raw_series.reindex(effect_series.index)
+                    except Exception:
+                        raw_series = pd.Series(raw_series.values, index=effect_series.index[:len(raw_series)])
+                else:
+                    raw_series = pd.Series(raw_series.values, index=effect_series.index)
+
+            if raw_series is None or raw_series.dropna().empty:
+                self.log(f"Nomograma: no se pudo reconstruir valores originales para spline '{base_name}'.", "WARN")
+                return None
+
+            raw_series_clean = raw_series.dropna()
+            combined_df = pd.DataFrame({"value": raw_series_clean, "effect": effect_series.loc[raw_series_clean.index]}).dropna()
+            if combined_df.empty:
+                self.log(f"Nomograma: datos combinados vacíos para spline '{base_name}'.", "WARN")
+                return None
+
+            aggregated = combined_df.groupby("value", as_index=False)["effect"].mean().sort_values("value")
+            if aggregated.shape[0] > 200:
+                sample_idx = np.linspace(0, aggregated.shape[0] - 1, 200, dtype=int)
+                aggregated = aggregated.iloc[sample_idx]
+
+            value_min = float(aggregated["value"].min())
+            value_max = float(aggregated["value"].max())
+            if math.isclose(value_min, value_max, rel_tol=1e-9, abs_tol=1e-9):
+                self.log(f"Nomograma: spline '{base_name}' tiene rango mínimo en los datos originales.", "INFO")
+                return None
+
+            effect_min = float(aggregated["effect"].min())
+            effect_max = float(aggregated["effect"].max())
+            effect_range = abs(effect_max - effect_min)
+            if math.isclose(effect_range, 0.0, rel_tol=1e-12, abs_tol=1e-12):
+                self.log(f"Nomograma: efecto combinado de spline '{base_name}' es cercano a cero.", "INFO")
+                return None
+
+            ticks_info = []
+            _add_tick_entry(ticks_info, value_min)
+            _add_tick_entry(ticks_info, value_max)
+
+            if custom_tick_values_global:
+                for custom_val in custom_tick_values_global:
+                    if value_min - 1e-12 <= custom_val <= value_max + 1e-12:
+                        _add_tick_entry(ticks_info, custom_val)
+
+            if percentiles_for_ticks and not raw_series_clean.empty:
+                for pct in percentiles_for_ticks:
+                    try:
+                        q_val = float(raw_series_clean.quantile(pct / 100.0))
+                    except Exception:
+                        continue
+                    if math.isnan(q_val):
+                        continue
+                    if value_min - 1e-12 <= q_val <= value_max + 1e-12:
+                        _add_tick_entry(ticks_info, q_val, f"P{pct:g}")
+
+            if len(ticks_info) < 3 and aggregated.shape[0] >= 2:
+                sample_values = np.linspace(value_min, value_max, num=min(5, aggregated.shape[0]))
+                for s_val in sample_values:
+                    _add_tick_entry(ticks_info, s_val)
+
+            ticks_info.sort(key=lambda entry: entry["value"])
+
+            spline_detail = {
+                "term": base_name,
+                "coef": float(np.mean(coefs)),
+                "min": value_min,
+                "max": value_max,
+                "series": None,
+                "effect_range": effect_range,
+                "is_spline_group": True,
+                "effect_map_values": aggregated["value"].to_numpy(),
+                "effect_map_effects": aggregated["effect"].to_numpy(),
+                "effect_min": effect_min,
+                "effect_max": effect_max,
+                "num_basis": len(entries),
+                "basis_terms": [entry.get("term") for entry in entries],
+                "coefs": np.array(coefs, dtype=float),
+                "spline_label": spline_label,
+                "spline_func": spline_func,
+                "ticks_info": ticks_info
+            }
+            return spline_detail
+
+        for term, coef in params.items():
+            if term not in x_design.columns:
+                self.log(f"Nomograma: término '{term}' no encontrado en la matriz de diseño. Se omite.", "DEBUG")
+                continue
+
+            series_full = x_design[term]
+            match_spline_term = re.match(r"(bs|cr)\(Q\('([^']+)'\),[^)]*\)\[(\d+)\]", term)
+            if match_spline_term:
+                spline_func = match_spline_term.group(1)
+                base_name_spline = match_spline_term.group(2)
+                spline_group = spline_groups.setdefault((spline_func, base_name_spline), {
+                    "entries": [],
+                    "spline_func": spline_func,
+                    "base_name": base_name_spline
+                })
+                spline_group["entries"].append({
+                    "term": term,
+                    "coef": float(coef),
+                    "series_full": series_full
+                })
+                continue
+
+            _add_standard_term_detail(term, float(coef), series_full)
+
+        for group_key, group_info in spline_groups.items():
+            base_name_for_group = group_info.get("base_name")
+            if base_name_for_group is None:
+                if isinstance(group_key, tuple) and len(group_key) == 2:
+                    base_name_for_group = group_key[1]
+                else:
+                    base_name_for_group = group_key
+            spline_detail = _build_spline_group_detail(base_name_for_group, group_info)
+            if spline_detail is not None:
+                term_details.append(spline_detail)
+            else:
+                for entry in group_info.get("entries", []):
+                    _add_standard_term_detail(entry.get("term"), entry.get("coef"), entry.get("series_full"))
+
+        if not term_details:
+            messagebox.showinfo("Nomograma No Disponible", "No se encontraron covariables numéricas con rango para construir el nomograma.", parent=self.parent_for_dialogs)
+            self.log("Nomograma: sin términos válidos tras aplicar filtros.", "WARN")
+            return
+
+        global_max_effect = max(detail["effect_range"] for detail in term_details)
+        total_effect_range = sum(detail["effect_range"] for detail in term_details)
+
+        if math.isclose(global_max_effect, 0.0, rel_tol=1e-12, abs_tol=1e-12) or \
+           math.isclose(total_effect_range, 0.0, rel_tol=1e-12, abs_tol=1e-12):
+            messagebox.showinfo("Nomograma No Disponible", "Los coeficientes efectivos del modelo son cero; el nomograma no es informativo.", parent=self.parent_for_dialogs)
+            self.log("Nomograma: efecto máximo global cero.", "WARN")
+            return
+
+        max_points_scale = 100.0
+        points_factor = max_points_scale / global_max_effect
+
+        total_points_scaled = 0.0
+        lp_baseline = 0.0
+
+        for detail in term_details:
+            detail["points_max"] = detail["effect_range"] * points_factor
+            total_points_scaled += detail["points_max"]
+
+            if detail.get("is_spline_group"):
+                values = detail.get("effect_map_values")
+                effects = detail.get("effect_map_effects")
+                if values is not None and effects is not None and len(values) >= 2:
+                    effect_at_min_val = float(np.interp(detail["min"], values, effects))
+                    effect_at_max_val = float(np.interp(detail["max"], values, effects))
+                    diff_effect = effect_at_max_val - effect_at_min_val
+                    if math.isclose(diff_effect, 0.0, abs_tol=1e-9):
+                        detail["direction"] = 0
+                        detail["direction_label"] = "Riesgo sin tendencia global"
+                    elif diff_effect > 0:
+                        detail["direction"] = 1
+                        detail["direction_label"] = "Riesgo ↑ al subir (global)"
+                    else:
+                        detail["direction"] = -1
+                        detail["direction_label"] = "Riesgo ↓ al subir (global)"
+                else:
+                    detail["direction"] = 0
+                    detail["direction_label"] = "Riesgo no evaluado"
+
+                effect_min_val = float(detail.get("effect_min", 0.0))
+                effect_max_val = float(detail.get("effect_max", effect_min_val + detail["effect_range"]))
+                try:
+                    detail["hr_range"] = math.exp(effect_max_val - effect_min_val) if detail["effect_range"] > 0 else float('nan')
+                except Exception:
+                    detail["hr_range"] = float('nan')
+            else:
+                detail["direction"] = 1 if detail["coef"] >= 0 else -1
+                detail["hr_unit"] = math.exp(detail["coef"])
+                if detail["direction"] >= 0:
+                    baseline_val = detail["min"]
+                    extreme_val = detail["max"]
+                else:
+                    baseline_val = detail["max"]
+                    extreme_val = detail["min"]
+                effect_min_val = float(detail["coef"] * baseline_val)
+                effect_max_val = float(detail["coef"] * extreme_val)
+
+            detail["effect_baseline"] = float(effect_min_val)
+            detail["effect_extreme"] = float(effect_max_val)
+            lp_baseline += float(effect_min_val)
+
+        total_effect_range = float(total_effect_range)
+        x_limit = max(max_points_scale, total_points_scaled) * 1.05
+        num_terms = len(term_details)
+
+        try:
+            lp_values_array = np.dot(x_design.values, params.values)
+        except Exception:
+            lp_values_array = None
+
+        lp_axis_min = lp_baseline
+        lp_axis_max = lp_baseline + total_effect_range
+
+        if lp_values_array is not None and len(lp_values_array) > 0:
+            lp_axis_min = min(lp_axis_min, float(np.nanmin(lp_values_array)))
+            lp_axis_max = max(lp_axis_max, float(np.nanmax(lp_values_array)))
+
+        if lp_axis_min < lp_baseline - 1e-9:
+            self.log("Nomograma: se detectaron predictores menores a la referencia mínima; se recorta la escala inferior.", "WARN")
+            lp_axis_min = lp_baseline
+
+        if math.isclose(lp_axis_min, lp_axis_max, abs_tol=1e-9):
+            lp_axis_max = lp_axis_min + 1.0
+
+        def _lp_to_points(lp_value):
+            return (lp_value - lp_baseline) * points_factor
+
+        baseline_survival_df = getattr(model_obj, "baseline_survival_", None)
+        baseline_times = None
+        baseline_surv_values = None
+        if isinstance(baseline_survival_df, pd.DataFrame) and not baseline_survival_df.empty:
+            try:
+                idx_numeric = pd.to_numeric(baseline_survival_df.index, errors='coerce')
+                surv_values = baseline_survival_df.iloc[:, 0].astype(float)
+                valid_mask = idx_numeric.notna() & surv_values.notna()
+                idx_numeric = idx_numeric[valid_mask]
+                surv_values = surv_values[valid_mask]
+                if not idx_numeric.empty:
+                    order = np.argsort(idx_numeric.to_numpy(dtype=float))
+                    baseline_times = idx_numeric.to_numpy(dtype=float)[order]
+                    baseline_surv_values = surv_values.to_numpy(dtype=float)[order]
+            except Exception as surv_err:
+                baseline_times = None
+                baseline_surv_values = None
+                self.log(f"Nomograma: error procesando supervivencia base: {surv_err}", "WARN")
+
+        def _baseline_survival_at(time_value):
+            if baseline_times is None or baseline_surv_values is None or len(baseline_times) == 0:
+                return None
+            if time_value <= baseline_times[0]:
+                return float(baseline_surv_values[0])
+            if time_value >= baseline_times[-1]:
+                return float(baseline_surv_values[-1])
+            return float(np.interp(time_value, baseline_times, baseline_surv_values))
+
+        def _survival_from_lp(lp_value, s0_value):
+            try:
+                return float(np.clip(s0_value ** math.exp(lp_value), 0.0, 1.0))
+            except Exception:
+                return None
+
+        def _points_for_probability(prob_value, s0_value):
+            if prob_value <= 0.0 or prob_value >= 1.0:
+                return None
+            if s0_value is None or s0_value <= 0.0 or s0_value >= 1.0:
+                return None
+            ratio = math.log(prob_value) / math.log(s0_value)
+            if ratio <= 0.0:
+                return None
+            lp_val = math.log(ratio)
+            return _lp_to_points(lp_val)
+
+        def fmt_num(value):
+            if value is None or (isinstance(value, float) and math.isnan(value)):
+                return "NA"
+            abs_val = abs(value)
+            if abs_val >= 1000 or (abs_val > 0 and abs_val < 0.01):
+                return f"{value:.2e}"
+            if abs_val >= 100:
+                return f"{value:.0f}"
+            if abs_val >= 10:
+                return f"{value:.1f}"
+            return f"{value:.2f}"
+
+        def fmt_prob(prob):
+            if prob is None:
+                return "NA"
+            if prob >= 0.995:
+                return f"{prob:.3f}"
+            if prob >= 0.1:
+                return f"{prob:.2f}"
+            return f"{prob:.2f}"
+
+        survival_axes_data = []
+        survival_candidates = [0.99, 0.97, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.5, 0.25, 0.1, 0.05, 0.03, 0.01]
+        if survival_time_points and baseline_times is not None and baseline_surv_values is not None:
+            for time_val in survival_time_points:
+                s0_val = _baseline_survival_at(time_val)
+                if s0_val is None or s0_val <= 0.0 or s0_val >= 1.0:
+                    self.log(f"Nomograma: supervivencia base no válida para t={time_val:g}.", "WARN")
+                    continue
+                surv_high = _survival_from_lp(lp_baseline, s0_val)
+                surv_low = _survival_from_lp(lp_axis_max, s0_val)
+                if surv_high is None or surv_low is None:
+                    continue
+                p_max = max(surv_high, surv_low)
+                p_min = min(surv_high, surv_low)
+                if math.isclose(p_max, p_min, rel_tol=1e-6, abs_tol=1e-6):
+                    self.log(f"Nomograma: rango de supervivencia muy estrecho para t={time_val:g}.", "INFO")
+                    continue
+                tick_probs = [p for p in survival_candidates if p_min - 1e-6 <= p <= p_max + 1e-6]
+                tick_probs.extend([p_min, p_max])
+                tick_probs = sorted({round(p, 6) for p in tick_probs}, reverse=True)
+                tick_entries = []
+                for prob_value in tick_probs:
+                    points_val = _points_for_probability(prob_value, s0_val)
+                    if points_val is None:
+                        continue
+                    if points_val < -0.5 or points_val > x_limit + 0.5:
+                        continue
+                    tick_entries.append({"prob": prob_value, "points": points_val})
+                if len(tick_entries) >= 2:
+                    survival_axes_data.append({
+                        "time": time_val,
+                        "ticks": tick_entries
+                    })
+        else:
+            if survival_time_points:
+                self.log("Nomograma: no se pudo generar ejes de supervivencia por falta de supervivencia base.", "WARN")
+
+        row_count = 1 + num_terms + 1 + 1 + len(survival_axes_data)
+        row_spacing = 1.1
+        height_units = (row_count + 2) * row_spacing
+        fig_height = max(6.0, height_units * 0.85)
+        fig, ax = plt.subplots(figsize=(10, fig_height))
+        fig.subplots_adjust(left=0.32, right=0.94, top=0.9, bottom=0.08)
+        ax.set_xlim(0, x_limit)
+        ax.set_ylim(-2 * row_spacing, height_units)
+        ax.axis('off')
+
+        label_transform = mtransforms.blended_transform_factory(ax.transAxes, ax.transData)
+
+        current_y = height_units - row_spacing
+
+        # Eje superior de puntos
+        ax.hlines(current_y, 0, max_points_scale, color='black', linewidth=1.3)
+        for tick in np.linspace(0, max_points_scale, 6):
+            ax.vlines(tick, current_y, current_y + 0.2, color='black', linewidth=1)
+            ax.text(tick, current_y + 0.32, f"{tick:.0f}", ha='center', va='bottom', fontsize=9)
+        ax.text(max_points_scale / 2.0, current_y + 0.6, "Puntos", ha='center', va='bottom', fontsize=11, fontweight='bold')
+        current_y -= row_spacing
+
+        # Dibujar cada término
+        for detail in term_details:
+            y_pos = current_y
+            current_y -= row_spacing
+
+            points_max = detail["points_max"]
+            ax.hlines(y_pos, 0, x_limit, color='#d9d9d9', linewidth=0.8)
+            ax.hlines(y_pos, 0, points_max, color='#1f77b4', linewidth=2.0)
+
+            label_main = self._format_term_for_nomogram(detail["term"])
+            ax.text(-0.05, y_pos + 0.05, label_main, transform=label_transform, ha='right', va='center', fontweight='bold')
+
+            tick_entries = detail.get("ticks_info") or []
+            if not tick_entries:
+                if detail.get("is_spline_group"):
+                    fallback_values = np.linspace(detail["min"], detail["max"], num=5)
+                else:
+                    series_vals = detail.get("series")
+                    if series_vals is not None:
+                        unique_vals = np.unique(series_vals.values)
+                        if unique_vals.size <= 2:
+                            fallback_values = unique_vals
+                        else:
+                            fallback_values = np.linspace(detail["min"], detail["max"], num=5)
+                    else:
+                        fallback_values = np.linspace(detail["min"], detail["max"], num=5)
+                tick_entries = [{"value": float(val), "labels": []} for val in fallback_values]
+
+            value_range = detail["max"] - detail["min"]
+            for tick_entry in tick_entries:
+                tick_val = tick_entry.get("value")
+                if tick_val is None:
+                    continue
+
+                if detail.get("is_spline_group"):
+                    values = detail.get("effect_map_values")
+                    effects = detail.get("effect_map_effects")
+                    if values is None or effects is None or len(values) == 0:
+                        continue
+                    if math.isclose(detail["effect_range"], 0.0, abs_tol=1e-12):
+                        continue
+                    interpolated_effect = float(np.interp(tick_val, values, effects))
+                    tick_point = ((interpolated_effect - detail.get("effect_min", 0.0)) / detail["effect_range"]) * points_max
+                else:
+                    if math.isclose(value_range, 0.0, abs_tol=1e-12):
+                        continue
+                    direction = detail.get("direction", 1)
+                    if direction < 0:
+                        frac = (detail["max"] - tick_val) / value_range
+                    else:
+                        frac = (tick_val - detail["min"]) / value_range
+                    frac = np.clip(frac, 0.0, 1.0)
+                    tick_point = frac * points_max
+
+                tick_point = float(np.clip(tick_point, 0.0, points_max))
+                ax.vlines(tick_point, y_pos - 0.15, y_pos + 0.15, color='#1f77b4', linewidth=1)
+
+                label_lines = [fmt_num(tick_val)]
+                extra_labels = tick_entry.get("labels", [])
+                if extra_labels:
+                    label_lines.append("/".join(extra_labels))
+                label_text = "\n".join(label_lines)
+                ax.text(tick_point, y_pos - 0.38, label_text, ha='center', va='top', fontsize=8)
+
+        # Eje de puntos totales
+        total_y = current_y
+        current_y -= row_spacing
+        ax.hlines(total_y, 0, total_points_scaled, color='black', linewidth=1.3)
+        ax.text(-0.05, total_y + 0.05, "Total de puntos", transform=label_transform, ha='right', va='center', fontweight='bold')
+        if total_points_scaled > 0:
+            for tick in np.linspace(0, total_points_scaled, 6):
+                ax.vlines(tick, total_y, total_y - 0.2, color='black', linewidth=1)
+                ax.text(tick, total_y - 0.32, f"{tick:.0f}", ha='center', va='top', fontsize=8)
+
+        # Eje de predictor lineal
+        linear_y = current_y
+        current_y -= row_spacing
+        lp_line_start = max(0.0, _lp_to_points(lp_axis_min))
+        lp_line_end = _lp_to_points(lp_axis_max)
+        ax.hlines(linear_y, lp_line_start, min(lp_line_end, x_limit), color='black', linewidth=1.3)
+        ax.text(-0.05, linear_y + 0.05, "Predictor lineal", transform=label_transform, ha='right', va='center', fontweight='bold')
+        for lp_val in np.linspace(lp_axis_min, lp_axis_max, 6):
+            tick_point = _lp_to_points(lp_val)
+            if tick_point < -0.5 or tick_point > x_limit + 0.5:
+                continue
+            ax.vlines(tick_point, linear_y, linear_y - 0.2, color='black', linewidth=1)
+            ax.text(tick_point, linear_y - 0.32, f"{lp_val:.2f}", ha='center', va='top', fontsize=8)
+
+        # Ejes de probabilidades de supervivencia
+        for surviv_axis in survival_axes_data:
+            surv_y = current_y
+            current_y -= row_spacing
+            ax.hlines(surv_y, 0, total_points_scaled, color='black', linewidth=1.2)
+            ax.text(-0.05, surv_y + 0.05, f"Probabilidad de supervivencia a {fmt_num(surviv_axis['time'])}",
+                    transform=label_transform, ha='right', va='center', fontweight='bold')
+
+            for entry in surviv_axis['ticks']:
+                tick_point = entry['points']
+                if tick_point < -0.5 or tick_point > x_limit + 0.5:
+                    continue
+                ax.vlines(tick_point, surv_y, surv_y + 0.2, color='black', linewidth=1)
+                ax.text(tick_point, surv_y + 0.32, fmt_prob(entry['prob']), ha='center', va='bottom', fontsize=8)
+
+        fig.suptitle(f"Nomograma - {model_name}", fontsize=13, fontweight='bold')
+        fig.tight_layout(rect=[0, 0.02, 1, 0.94])
+
+        self._create_plot_window(fig, f"Nomograma: {model_name}")
+        self.log(f"Nomograma generado para '{model_name}' con {num_terms} término(s).", "SUCCESS")
 
     def _create_plot_window(self, fig, title="Gráfico", is_single_plot=True):
         plot_win = Toplevel(self.parent_for_dialogs); plot_win.title(title)
@@ -3499,6 +7700,8 @@ class CoxModelingApp(ttk.Frame):
                                              figsize=(12 if ncols_s > 1 else 7, 4 * nrows_s), 
                                              sharex=True, squeeze=False)
             axes_s_flat = axes_s_flat_tuple.flatten()
+            sch_results_df = md_sch.get("schoenfeld_results")
+            ph_test_summary_df = md_sch.get("proportional_hazard_test_summary")
 
             for idx, cov_name_s in enumerate(covariate_names):
                 if idx < len(axes_s_flat):
@@ -3507,22 +7710,11 @@ class CoxModelingApp(ttk.Frame):
                                    linestyle='none', marker='o', markersize=3, alpha=0.6)
                     ax_s_curr.axhline(0, color='grey', linestyle='--', lw=0.8)
 
-                    # Retrieve and format p-value for the current covariate
-                    p_val_str = "N/A"
-                    sch_results_df = md_sch.get("schoenfeld_results")
-                    ph_test_summary_df = md_sch.get("proportional_hazard_test_summary")
-
-                    # Try schoenfeld_results first
-                    if sch_results_df is not None and isinstance(sch_results_df, pd.DataFrame) and not sch_results_df.empty and 'p' in sch_results_df.columns:
-                        if cov_name_s in sch_results_df.index:
-                            p_val = sch_results_df.loc[cov_name_s, 'p']
-                            p_val_str = format_p_value(p_val)
-
-                    # If p-value still "N/A", try ph_test_summary_df
-                    if p_val_str == "N/A" and ph_test_summary_df is not None and isinstance(ph_test_summary_df, pd.DataFrame) and not ph_test_summary_df.empty and 'p' in ph_test_summary_df.columns:
-                        if cov_name_s in ph_test_summary_df.index:
-                            p_val = ph_test_summary_df.loc[cov_name_s, 'p']
-                            p_val_str = format_p_value(p_val)
+                    # Retrieve and format per-term p-value using normalized helpers
+                    p_val = extract_schoenfeld_p_value(sch_results_df, cov_name_s)
+                    if p_val is None:
+                        p_val = extract_schoenfeld_p_value(ph_test_summary_df, cov_name_s)
+                    p_val_str = format_p_value(p_val) if p_val is not None else "N/A"
 
                     ax_s_curr.set_title(f"Schoenfeld: {cov_name_s}\nPH Test p: {p_val_str}", fontsize=9)
                     ax_s_curr.set_ylabel("Scaled Residual", fontsize=8)
@@ -3640,7 +7832,8 @@ class CoxModelingApp(ttk.Frame):
             y_pos_fp = np.arange(len(plot_df_fp))
             hrs_fp, low_ci_fp, upp_ci_fp = plot_df_fp['exp(coef)'], plot_df_fp['exp(coef) lower 95%'], plot_df_fp['exp(coef) upper 95%']
             ax_fp.errorbar(hrs_fp, y_pos_fp, xerr=[hrs_fp-low_ci_fp, upp_ci_fp-hrs_fp], fmt='o', capsize=5, color='k', ms=5, elinewidth=1.2)
-            ax_fp.set_yticks(y_pos_fp); ax_fp.set_yticklabels(plot_df_fp.index); ax_fp.invert_yaxis()
+            formatted_labels_fp = [self._format_term_for_display(idx) for idx in plot_df_fp.index]
+            ax_fp.set_yticks(y_pos_fp); ax_fp.set_yticklabels(formatted_labels_fp); ax_fp.invert_yaxis()
             ax_fp.axvline(1.0, color='gray', ls='--', lw=0.8)
             
             opts_fp = self.current_plot_options.copy()
@@ -3892,7 +8085,14 @@ class CoxModelingApp(ttk.Frame):
             new_label = new_labels.get(original_label, original_label) # Fallback to original if something goes wrong
             final_curves_to_plot_labeled[new_label] = curve
 
-        colors = plt.cm.viridis(np.linspace(0, 1, len(final_curves_to_plot_labeled)))
+        opts_curve_pred = self.current_plot_options.copy()
+        cmap_name = opts_curve_pred.get('cmap', 'viridis')
+        try:
+            cmap_obj = plt.get_cmap(cmap_name)
+        except ValueError:
+            self.log(f"Paleta '{cmap_name}' no reconocida. Se usará 'viridis'.", "WARN")
+            cmap_obj = plt.get_cmap('viridis')
+        colors = cmap_obj(np.linspace(0, 1, len(final_curves_to_plot_labeled)))
         results_text_pred_list = []
 
         for i, (label, pred_df) in enumerate(final_curves_to_plot_labeled.items()):
@@ -3919,12 +8119,15 @@ class CoxModelingApp(ttk.Frame):
         ylabel_map = {"Supervivencia": "S(t|X)", "Riesgo": "H(t|X)", "ProbEventoAcum": "1 - S(t|X)"}
         ax_curve_pred.set_ylabel(ylabel_map.get(type_ui_pred))
 
-        opts_curve_pred = self.current_plot_options.copy()
         opts_curve_pred['title'] = opts_curve_pred.get('title') or title_curve_pred
         opts_curve_pred['xlabel'] = opts_curve_pred.get('xlabel') or f"Tiempo ({md_dict_for_pred.get('time_col_for_model','T')})"
+        grid_setting = opts_curve_pred.get('grid')
         apply_plot_options(ax_curve_pred, opts_curve_pred, self.log)
+        grid_active = coerce_bool_option(grid_setting, default=False)
+        ax_curve_pred.set_axisbelow(True)
+        ax_curve_pred.grid(grid_active, which='both', linestyle=':', alpha=0.6)
 
-        ax_curve_pred.legend(title="Escenarios/Grupos", fontsize='small')
+        ax_curve_pred.legend(fontsize='small')
 
         self._create_plot_window(fig_curve_pred, title_curve_pred)
 
@@ -4047,90 +8250,202 @@ class CoxModelingApp(ttk.Frame):
                                f"No se pudo generar el gráfico de calibración:\n{e}",
                                parent=self.parent_for_dialogs)
 
+    def generate_brier_plot(self):
+        if not self.selected_model_in_treeview:
+            messagebox.showwarning("Sin Modelo", "Seleccione un modelo para generar la gráfica de Brier / IBS.", parent=self.parent_for_dialogs)
+            return
+
+        md_brier = self.selected_model_in_treeview
+        model_name = md_brier.get('model_name', 'N/A')
+        metrics_brier = md_brier.get('metrics', {}) or {}
+        brier_curve_df = md_brier.get('brier_curve_df')
+        fig_brier = None
+
+        try:
+            fig_brier, ax_brier = plt.subplots(figsize=(8, 5))
+            plotted = False
+
+            if isinstance(brier_curve_df, pd.DataFrame) and not brier_curve_df.empty and {'time', 'brier_score'}.issubset(brier_curve_df.columns):
+                curve_df = brier_curve_df.dropna(subset=['time', 'brier_score']).copy().sort_values('time')
+                if not curve_df.empty:
+                    times = curve_df['time'].to_numpy(dtype=float)
+                    scores = curve_df['brier_score'].to_numpy(dtype=float)
+                    ax_brier.plot(times, scores, color="#8b5cf6", linewidth=2.2, label="Brier(t)")
+                    ax_brier.fill_between(times, scores, 0, color="#8b5cf6", alpha=0.16)
+                    eval_time = md_brier.get('brier_eval_time')
+                    if eval_time is not None and np.isfinite(eval_time):
+                        ax_brier.axvline(float(eval_time), color="#475569", linestyle="--", linewidth=1.2, label=f"t≈{float(eval_time):.2f}")
+                    plotted = True
+
+            if not plotted:
+                fallback_points = []
+                for lbl in ("Q25", "Q50", "Q75"):
+                    val = metrics_brier.get(f"Brier@{lbl}")
+                    if val is not None and pd.notna(val):
+                        fallback_points.append((lbl, float(val)))
+                if not fallback_points:
+                    raise ValueError("El modelo seleccionado no tiene datos Brier / IBS disponibles. Ejecuta holdout primero.")
+                labels = [item[0] for item in fallback_points]
+                values = [item[1] for item in fallback_points]
+                ax_brier.bar(labels, values, color="#8b5cf6", alpha=0.8, edgecolor="#4c1d95", label="Brier@Q")
+                ax_brier.set_xlabel("Horizonte temporal")
+                plotted = True
+
+            ibs_val = metrics_brier.get('IBS')
+            title_txt = f"Curva Brier / IBS - {model_name}"
+            if ibs_val is not None and pd.notna(ibs_val):
+                title_txt += f"\nIBS={float(ibs_val):.4f}"
+
+            plot_opts_brier = self.current_plot_options.copy()
+            plot_opts_brier['title'] = plot_opts_brier.get('title', title_txt)
+            plot_opts_brier['xlabel'] = plot_opts_brier.get('xlabel', ax_brier.get_xlabel() or 'Tiempo')
+            plot_opts_brier['ylabel'] = plot_opts_brier.get('ylabel', 'Brier score')
+            apply_plot_options(ax_brier, plot_opts_brier, self.log)
+            ax_brier.grid(True, alpha=0.2)
+            handles_brier, labels_brier = ax_brier.get_legend_handles_labels()
+            if handles_brier:
+                ax_brier.legend(loc='best', fontsize=8)
+
+            self._create_plot_window(fig_brier, f"Brier / IBS: {model_name}")
+            self.log(f"Gráfico Brier / IBS generado para '{model_name}'.", "SUCCESS")
+        except Exception as e_brier_plot:
+            if fig_brier is not None:
+                plt.close(fig_brier)
+            self.log(f"Error al generar gráfico Brier / IBS: {e_brier_plot}", "ERROR")
+            messagebox.showerror("Error de Gráfico", f"No se pudo generar la gráfica Brier / IBS:\n{e_brier_plot}", parent=self.parent_for_dialogs)
+
     def show_variable_impact_plot(self):
-        if not self._check_model_selected_and_valid(check_params=True):
+        selected_models = self.selected_models_in_treeview or ([] if self.selected_model_in_treeview is None else [self.selected_model_in_treeview])
+        if not selected_models:
+            messagebox.showinfo("Sin Modelo", "Seleccione uno o más modelos para generar el gráfico de efecto.", parent=self.parent_for_dialogs)
             return
 
-        md_vip = self.selected_model_in_treeview
-        cph_model_vip = md_vip.get('model')
-        model_name_vip = md_vip.get('model_name', 'N/A')
+        def _collect_candidate_vars(model_dict, training_df):
+            candidates = set()
+            model_obj_local = model_dict.get('model')
+            time_col_local = model_dict.get('time_col_for_model')
+            event_col_local = model_dict.get('event_col_for_model')
 
-        original_training_data = md_vip.get('_df_for_fit_main_INTERNAL_USE')
-        if original_training_data is None or original_training_data.empty:
-            messagebox.showerror("Error de Datos",
-                               "Los datos de ajuste originales ('_df_for_fit_main_INTERNAL_USE') no se encontraron en el modelo. "
-                               "No se puede generar el gráfico de efecto de variable.",
-                               parent=self.parent_for_dialogs)
-            self.log(f"Datos de entrenamiento originales no encontrados para el modelo '{model_name_vip}'.", "ERROR")
-            return
+            if hasattr(model_obj_local, 'formula') and model_obj_local.formula:
+                formula_terms_local = re.findall(r"Q\('([^']+)'\)|([a-zA-Z_][a-zA-Z0-9_]*)", model_obj_local.formula)
+                for q_term, raw_term in formula_terms_local:
+                    term_to_add = q_term if q_term else raw_term
+                    if term_to_add and term_to_add not in ['Intercept', '0', '1'] and not any(func in term_to_add for func in ['cr(', 'bs(', 'C(']):
+                        if term_to_add in training_df.columns:
+                            candidates.add(term_to_add)
 
-        candidate_vars_for_plot = set()
-        if hasattr(cph_model_vip, 'formula') and cph_model_vip.formula:
-            formula_terms = re.findall(r"Q\('([^']+)'\)|([a-zA-Z_][a-zA-Z0-9_]*)", cph_model_vip.formula)
-            for q_term, raw_term in formula_terms:
-                term_to_add = q_term if q_term else raw_term
-                if term_to_add and term_to_add not in ['Intercept', '0', '1'] and not any(func in term_to_add for func in ['cr(', 'bs(', 'C(']):
-                    if term_to_add in original_training_data.columns:
-                        candidate_vars_for_plot.add(term_to_add)
+            for col_local in training_df.select_dtypes(include=np.number).columns:
+                if col_local not in [time_col_local, event_col_local]:
+                    candidates.add(col_local)
 
-        for col in original_training_data.select_dtypes(include=np.number).columns:
-            if col not in [md_vip.get('time_col_for_model'), md_vip.get('event_col_for_model')]:
-                 candidate_vars_for_plot.add(col)
+            return candidates
 
-        if not candidate_vars_for_plot:
-            messagebox.showinfo("Sin Covariables Adecuadas",
-                                "No se pudieron identificar covariables numéricas adecuadas para este gráfico.",
-                                parent=self.parent_for_dialogs)
-            self.log(f"No hay covariables numéricas adecuadas para el gráfico de efecto en el modelo '{model_name_vip}'.", "WARN")
+        model_wrappers = []
+        combined_options = []
+
+        for md in selected_models:
+            model_obj = md.get('model')
+            if not (model_obj and isinstance(model_obj, CoxPHFitter)):
+                self.log(f"Modelo seleccionado sin objeto Cox válido: {md.get('model_name', 'N/A')}.", "WARN")
+                continue
+
+            original_training_data = md.get('_df_for_fit_main_INTERNAL_USE')
+            if original_training_data is None or original_training_data.empty:
+                self.log(f"Datos de entrenamiento no disponibles para '{md.get('model_name', 'N/A')}'. Se omite en comparación.", "WARN")
+                continue
+
+            candidate_vars = _collect_candidate_vars(md, original_training_data)
+            if not candidate_vars:
+                self.log(f"Modelo '{md.get('model_name', 'N/A')}' sin covariables numéricas adecuadas para graficar.", "WARN")
+                continue
+
+            wrapper = {
+                "model_dict": md,
+                "model_obj": model_obj,
+                "training_df": original_training_data,
+                "time_col": md.get('time_col_for_model'),
+                "event_col": md.get('event_col_for_model'),
+                "spline_metadata": md.get('spline_basis_metadata', {}) or {},
+                "display_name": md.get('custom_model_name', md.get('model_name', 'Modelo Cox')),
+            }
+            model_wrappers.append(wrapper)
+
+            for var_name in sorted(candidate_vars):
+                combined_options.append({
+                    "wrapper": wrapper,
+                    "covariate": var_name,
+                    "label": f"{wrapper['display_name']} :: {var_name}"
+                })
+
+        if not combined_options:
+            messagebox.showinfo(
+                "Sin Covariables",
+                "Ninguno de los modelos seleccionados cuenta con covariables numéricas aptas para este gráfico.",
+                parent=self.parent_for_dialogs
+            )
             return
 
         dialog = Toplevel(self.parent_for_dialogs)
-        dialog.title("Seleccionar Covariable para Gráfico de Efecto")
-        dialog.geometry("400x400") # Adjusted height for radio buttons
-        ttk.Label(dialog, text="Seleccione la covariable (preferiblemente continua) para visualizar su efecto:", wraplength=380).pack(pady=10, padx=10)
-
-        covariate_var = StringVar() # This is for Listbox selection, not used directly if selection is fetched by index
-        sorted_candidates = sorted(list(candidate_vars_for_plot))
+        dialog.title("Seleccionar Covariable(s) y Modelo(s) para Gráfico de Efecto")
+        dialog.geometry("440x420")
+        ttk.Label(
+            dialog,
+            text="Seleccione una o más combinaciones Modelo::Variable para visualizar su efecto:",
+            wraplength=420
+        ).pack(pady=10, padx=10)
 
         listbox_frame = ttk.Frame(dialog)
         listbox_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
-        # Changed selectmode to tk.EXTENDED
-        listbox_covs_widget = Listbox(listbox_frame, selectmode=tk.EXTENDED, exportselection=False, height=8)
-        for cov_name_lb in sorted_candidates:
-            listbox_covs_widget.insert(tk.END, cov_name_lb)
-        if sorted_candidates: # Pre-select the first item if list is not empty
+        listbox_covs_widget = Listbox(listbox_frame, selectmode=tk.EXTENDED, exportselection=False, height=10)
+        for option in combined_options:
+            listbox_covs_widget.insert(tk.END, option["label"])
+        if combined_options:
             listbox_covs_widget.selection_set(0)
-            # covariate_var.set(sorted_candidates[0]) # Not strictly needed if we fetch by index
 
         scrollbar_y_covs = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=listbox_covs_widget.yview)
         listbox_covs_widget.config(yscrollcommand=scrollbar_y_covs.set)
         scrollbar_y_covs.pack(side=tk.RIGHT, fill=tk.Y)
         listbox_covs_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Frame for Y-axis scale options
         scale_frame = ttk.Frame(dialog)
         scale_frame.pack(pady=5, padx=10, fill=tk.X)
         ttk.Label(scale_frame, text="Escala Eje Y:").pack(side=tk.LEFT, padx=(0,5))
+        y_scale_choice_var = StringVar(value="log_hr")
+        ttk.Radiobutton(scale_frame, text="Log(Hazard Ratio)", variable=y_scale_choice_var, value="log_hr").pack(side=tk.LEFT)
+        ttk.Radiobutton(scale_frame, text="Hazard Ratio", variable=y_scale_choice_var, value="hr").pack(side=tk.LEFT, padx=(5,0))
 
-        y_scale_choice_var = StringVar(value="log_hr") # Default to Log(HR)
+        show_knots_var = BooleanVar(value=True)
+        show_ci_var = BooleanVar(value=True)
+        normalize_axes_var = BooleanVar(value=len(combined_options) > 1)
 
-        rb_log_hr = ttk.Radiobutton(scale_frame, text="Log(Hazard Ratio)", variable=y_scale_choice_var, value="log_hr")
-        rb_log_hr.pack(side=tk.LEFT)
-        rb_hr = ttk.Radiobutton(scale_frame, text="Hazard Ratio", variable=y_scale_choice_var, value="hr")
-        rb_hr.pack(side=tk.LEFT, padx=(5,0))
+        options_frame = ttk.LabelFrame(dialog, text="Opciones de visualización")
+        options_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Checkbutton(options_frame, text="Mostrar nodos del spline", variable=show_knots_var).pack(anchor='w', padx=5, pady=2)
+        ttk.Checkbutton(options_frame, text="Mostrar banda de IC 95%", variable=show_ci_var).pack(anchor='w', padx=5, pady=2)
+        ttk.Checkbutton(
+            options_frame,
+            text="Normalizar eje X (escala 0-1 para comparar)",
+            variable=normalize_axes_var
+        ).pack(anchor='w', padx=5, pady=2)
 
-        chosen_covariates_for_effect = [] # Now a list
-        chosen_y_scale = "log_hr" # Default, will be updated by on_ok
+        chosen_items = []
+        chosen_y_scale = "log_hr"
+        plot_show_knots = True
+        plot_show_ci = True
+        normalize_axes = normalize_axes_var.get()
 
         def on_ok():
-            nonlocal chosen_covariates_for_effect, chosen_y_scale # Make sure to declare nonlocal
-            selections = listbox_covs_widget.curselection() # Get tuple of selected indices
-            if selections: # Check if any item is selected
-                chosen_covariates_for_effect = [listbox_covs_widget.get(i) for i in selections]
-                chosen_y_scale = y_scale_choice_var.get() # Get the scale choice
-                dialog.destroy()
-            else:
-                 messagebox.showwarning("Selección Requerida", "Debe seleccionar al menos una covariable de la lista.", parent=dialog)
+            nonlocal chosen_items, chosen_y_scale, plot_show_knots, plot_show_ci, normalize_axes
+            selections = listbox_covs_widget.curselection()
+            if not selections:
+                messagebox.showwarning("Selección Requerida", "Seleccione al menos una combinación Modelo::Variable.", parent=dialog)
+                return
+            chosen_items.extend(combined_options[i] for i in selections)
+            chosen_y_scale = y_scale_choice_var.get()
+            plot_show_knots = bool(show_knots_var.get())
+            plot_show_ci = bool(show_ci_var.get())
+            normalize_axes = bool(normalize_axes_var.get())
+            dialog.destroy()
 
         def on_cancel():
             dialog.destroy()
@@ -4144,223 +8459,862 @@ class CoxModelingApp(ttk.Frame):
         dialog.grab_set()
         self.parent_for_dialogs.wait_window(dialog)
 
-        if not chosen_covariates_for_effect: # Check if list is empty
+        if not chosen_items:
             self.log("Selección de covariable(s) para gráfico de efecto cancelada o vacía.", "INFO")
             return
 
-        self.log(f"Generando datos para gráfico de efecto. Covariables: {', '.join(chosen_covariates_for_effect)}, Escala Y: {chosen_y_scale}", "INFO")
+        label_list = [item["label"] for item in chosen_items]
+        self.log(
+            f"Generando datos para gráfico de efecto. Selecciones: {', '.join(label_list)}, Escala Y: {chosen_y_scale}, Mostrar nodos={plot_show_knots}, Mostrar IC={plot_show_ci}",
+            "INFO"
+        )
 
-        plot_data_list = [] # To store data for each line to be plotted
+        plot_data_list = []
+        apply_normalization = bool(normalize_axes and len(chosen_items) > 1)
+        self.log(f"Normalización de eje X habilitada: {apply_normalization}", "DEBUG")
+        fig_effect, ax_effect = plt.subplots(figsize=(10, 6))
 
-        # Determine if normalization is needed (more than one variable selected for plotting)
-        apply_normalization = len(chosen_covariates_for_effect) > 1
+        for selection in chosen_items:
+            wrapper = selection["wrapper"]
+            current_cov_to_plot = selection["covariate"]
+            current_model_display = wrapper["display_name"]
+            cph_model_vip = wrapper["model_obj"]
+            original_training_data = wrapper["training_df"]
+            spline_metadata_for_model = wrapper["spline_metadata"]
 
-        # Get all columns that were part of the model's formula (original features before patsy)
-        # These are the columns that need to be present in the DataFrame passed to predict_log_partial_hazard
-        all_original_model_vars = [
-            col for col in original_training_data.columns
-            if col not in [md_vip.get('time_col_for_model'), md_vip.get('event_col_for_model')]
-        ]
-
-        fig_effect, ax_effect = plt.subplots(figsize=(10, 6)) # Create figure once, before the loop
-
-        for current_cov_to_plot in chosen_covariates_for_effect:
-            self.log(f"Preparando datos para: {current_cov_to_plot}", "DEBUG")
+            self.log(f"Preparando datos para: {current_model_display} :: {current_cov_to_plot}", "DEBUG")
 
             if current_cov_to_plot not in original_training_data.columns:
                 self.log(f"Advertencia: La covariable '{current_cov_to_plot}' no está en los datos de entrenamiento originales. Saltando.", "WARN")
-                messagebox.showwarning("Variable no Encontrada",
-                                       f"La covariable '{current_cov_to_plot}' no se encontró en los datos originales del modelo.",
-                                       parent=self.parent_for_dialogs)
+                messagebox.showwarning(
+                    "Variable no Encontrada",
+                    f"La covariable '{current_cov_to_plot}' no se encontró en los datos originales del modelo '{current_model_display}'.",
+                    parent=self.parent_for_dialogs
+                )
                 continue
 
-            # Create sequence of values for the current_cov_to_plot
+            spline_info_current = spline_metadata_for_model.get(current_cov_to_plot, {}) or {}
+            spline_type_current = (spline_info_current.get('spline_type') or "").lower()
+
             min_val = original_training_data[current_cov_to_plot].min()
             max_val = original_training_data[current_cov_to_plot].max()
             is_numeric_cov = pd.api.types.is_numeric_dtype(original_training_data[current_cov_to_plot])
 
-            if not is_numeric_cov and apply_normalization :
-                 self.log(f"Advertencia: Normalización no aplicable a variable no numérica '{current_cov_to_plot}' en gráfico multivariable. Se usará sin normalizar si es la única, o se omitirá.", "WARN")
-                 if len(chosen_covariates_for_effect) > 1: # Skip if multi-plot and non-numeric
-                     messagebox.showwarning("Variable No Numérica", f"La variable '{current_cov_to_plot}' no es numérica y no puede normalizarse para el gráfico multivariable. Será omitida.", parent=self.parent_for_dialogs)
-                     continue
+            if not is_numeric_cov and apply_normalization:
+                self.log(f"Advertencia: Normalización no aplicable a variable no numérica '{current_cov_to_plot}' en gráfico multivariable. Se omite para comparación.", "WARN")
+                messagebox.showwarning(
+                    "Variable No Numérica",
+                    f"La variable '{current_cov_to_plot}' no es numérica y no puede normalizarse junto con otras. Se omitirá.",
+                    parent=self.parent_for_dialogs
+                )
+                continue
 
-            x_plot_values_actual = [] # Actual values of the covariate for the x-axis of this line
-            x_axis_display_values = [] # Values to use for plotting on X (could be original or normalized)
-            normalization_info = None # For legend: "Var (0=min, 1=max)"
+            x_plot_values_actual = []
+            x_axis_display_values = []
+            normalization_info = None
 
             if pd.isna(min_val) or pd.isna(max_val) or (is_numeric_cov and min_val == max_val):
                 if is_numeric_cov and min_val == max_val and pd.notna(min_val):
                     self.log(f"Variable '{current_cov_to_plot}' tiene un único valor numérico ({min_val}). Usando pequeño rango.", "DEBUG")
                     delta = abs(min_val * 0.05) if min_val != 0 else 0.05
-                    if delta == 0: delta = 0.05
+                    if delta == 0:
+                        delta = 0.05
                     x_plot_values_actual = np.linspace(min_val - delta, max_val + delta, 100)
-                elif not is_numeric_cov: # Categorical with one level or all NaN after filtering
-                     unique_vals = original_training_data[current_cov_to_plot].unique()
-                     if len(unique_vals) == 1 and pd.notna(unique_vals[0]):
-                         x_plot_values_actual = [unique_vals[0]] * 2 # Plot as a point/short line
-                         self.log(f"Variable '{current_cov_to_plot}' tiene un único valor categórico ('{unique_vals[0]}').", "DEBUG")
-                     else:
-                         self.log(f"No se pudo determinar rango para '{current_cov_to_plot}'. Saltando.", "WARN")
-                         continue
-                else: # Numeric but problematic range
+                elif not is_numeric_cov:
+                    unique_vals = original_training_data[current_cov_to_plot].unique()
+                    if len(unique_vals) == 1 and pd.notna(unique_vals[0]):
+                        x_plot_values_actual = [unique_vals[0]] * 2
+                        self.log(f"Variable '{current_cov_to_plot}' tiene un único valor categórico ('{unique_vals[0]}').", "DEBUG")
+                    else:
+                        self.log(f"No se pudo determinar rango para '{current_cov_to_plot}'. Saltando.", "WARN")
+                        continue
+                else:
                     self.log(f"No se pudo determinar rango para '{current_cov_to_plot}'. Saltando.", "WARN")
                     continue
-            else: # Standard case for numeric with a range
+            else:
                 x_plot_values_actual = np.linspace(min_val, max_val, 100)
 
-            # Normalization if needed
+            extension_info = None
+            uses_natural_spline = is_numeric_cov and spline_type_current == "natural"
+            if uses_natural_spline and not apply_normalization and len(x_plot_values_actual) >= 2:
+                boundary_knots = spline_info_current.get('boundary_knots') or []
+                trained_min = min(min_val, min(boundary_knots)) if boundary_knots else min_val
+                trained_max = max(max_val, max(boundary_knots)) if boundary_knots else max_val
+                trained_range = trained_max - trained_min
+                if trained_range > 0:
+                    extension_fraction = 0.1
+                    extension_amount = trained_range * extension_fraction
+                    extended_min = trained_min - extension_amount
+                    extended_max = trained_max + extension_amount
+
+                    if trained_min > 0 and extended_min <= 0:
+                        smallest_positive = original_training_data[current_cov_to_plot][original_training_data[current_cov_to_plot] > 0]
+                        if not smallest_positive.empty:
+                            floor_val = float(smallest_positive.min()) * 0.5
+                            extended_min = max(floor_val, 1e-8)
+                        else:
+                            extended_min = max(trained_min * 0.5, 1e-8)
+                    elif trained_min == 0 and extended_min < 0:
+                        extended_min = 0.0
+
+                    if extended_max <= trained_max:
+                        extended_max = trained_max
+
+                    if extended_max > extended_min:
+                        x_plot_values_actual = np.linspace(extended_min, extended_max, 140)
+                        extension_info = {
+                            "extended_min": float(extended_min),
+                            "extended_max": float(extended_max),
+                            "trained_min": float(trained_min),
+                            "trained_max": float(trained_max)
+                        }
+                        self.log(
+                            f"RCS '{current_cov_to_plot}': rango de graficación extendido a [{extended_min:.3g}, {extended_max:.3g}] para resaltar colas lineales.",
+                            "DEBUG"
+                        )
+
             if apply_normalization and is_numeric_cov:
-                if max_val == min_val : # Avoid division by zero if somehow missed above
-                    x_axis_display_values = np.zeros_like(x_plot_values_actual) if min_val == 0 else np.full_like(x_plot_values_actual, 0.5) # Or handle as single point
+                if max_val == min_val:
+                    x_axis_display_values = np.zeros_like(x_plot_values_actual) if min_val == 0 else np.full_like(x_plot_values_actual, 0.5)
                 else:
                     x_axis_display_values = (x_plot_values_actual - min_val) / (max_val - min_val)
                 normalization_info = f"{current_cov_to_plot} (0={min_val:.2g}, 1={max_val:.2g})"
             else:
-                x_axis_display_values = x_plot_values_actual # Use original scale for single var plot or non-numeric
+                x_axis_display_values = x_plot_values_actual
 
-            # Create the prediction DataFrame grid
+            all_original_model_vars = [
+                col for col in original_training_data.columns
+                if col not in [wrapper["time_col"], wrapper["event_col"]]
+            ]
+
             predict_df_list_for_current_cov = []
-            for current_x_val in x_plot_values_actual: # Iterate using actual values
-                row = {}
-                row[current_cov_to_plot] = current_x_val # Set current plotting variable to its sequence value
-
+            for current_x_val in x_plot_values_actual:
+                row = {current_cov_to_plot: current_x_val}
                 for other_col in all_original_model_vars:
                     if other_col == current_cov_to_plot:
-                        continue # Already set
-
-                    # If this other_col is ALSO one of the chosen_covariates_for_effect (but not current_cov_to_plot)
-                    # it should be held at its mean/mode for the current_cov_to_plot's line.
-                    # All other non-plotting model variables also held at mean/mode.
+                        continue
                     if pd.api.types.is_numeric_dtype(original_training_data[other_col]):
                         row[other_col] = original_training_data[other_col].mean()
                     else:
-                        row[other_col] = original_training_data[other_col].mode(dropna=True)[0] if not original_training_data[other_col].mode(dropna=True).empty else None
+                        modes = original_training_data[other_col].mode(dropna=True)
+                        row[other_col] = modes.iloc[0] if not modes.empty else None
                 predict_df_list_for_current_cov.append(row)
 
             predict_df_current_cov = pd.DataFrame(predict_df_list_for_current_cov)
-            # Reindex to ensure all necessary columns for the model formula are present, in correct order.
             predict_df_current_cov = predict_df_current_cov.reindex(columns=all_original_model_vars, fill_value=np.nan)
-            # Note: fill_value for missing columns might need more thought if a variable was entirely missing
-            # from all_original_model_vars but was in the formula (unlikely if all_original_model_vars is derived correctly).
 
-            # Predict log-partial hazard
-            log_ph_preds = cph_model_vip.predict_log_partial_hazard(predict_df_current_cov)
+            try:
+                log_ph_preds = cph_model_vip.predict_log_partial_hazard(predict_df_current_cov)
+            except Exception as pred_err:
+                self.log(f"Error prediciendo efecto parcial para '{current_cov_to_plot}' en '{current_model_display}': {pred_err}", "ERROR")
+                continue
 
             y_values_for_plot = log_ph_preds
             if chosen_y_scale == "hr":
                 y_values_for_plot = np.exp(log_ph_preds)
 
-            # CI Calculation (attempt)
             ci_lower_plot, ci_upper_plot = None, None
             ci_available_for_this_line = False
-            if PATSY_AVAILABLE and hasattr(cph_model_vip, 'formula') and hasattr(cph_model_vip, 'variance_matrix_') and not predict_df_current_cov.empty:
+            design_matrix_pred_aligned = None
+            params_cols = cph_model_vip.params_.index if hasattr(cph_model_vip, 'params_') else []
+
+            if hasattr(cph_model_vip, 'regressors') and cph_model_vip.regressors is not None and not predict_df_current_cov.empty:
                 try:
-                    # Ensure predict_df_current_cov is suitable for dmatrix.
+                    transformed_design = cph_model_vip.regressors.transform_df(predict_df_current_cov)
+                    if isinstance(transformed_design.columns, pd.MultiIndex):
+                        try:
+                            design_matrix_pred_aligned = transformed_design.xs('beta_', axis=1, level='param')
+                        except Exception:
+                            design_matrix_pred_aligned = transformed_design.copy()
+                    else:
+                        design_matrix_pred_aligned = transformed_design.copy()
+                    if params_cols is not None and len(params_cols) > 0:
+                        design_matrix_pred_aligned = design_matrix_pred_aligned.reindex(columns=params_cols, fill_value=0.0)
+                    design_matrix_pred_aligned = design_matrix_pred_aligned.astype(float)
+                except Exception as e_transform_df:
+                    design_matrix_pred_aligned = None
+                    self.log(f"Advertencia: transform_df falló para {current_cov_to_plot} en '{current_model_display}': {e_transform_df}. Se intentará método alterno.", "WARN")
+
+            if design_matrix_pred_aligned is None and PATSY_AVAILABLE and hasattr(cph_model_vip, 'formula') and not predict_df_current_cov.empty:
+                try:
                     design_matrix_pred_current_cov = dmatrix(cph_model_vip.formula, predict_df_current_cov, return_type='dataframe')
+                    design_matrix_pred_aligned = design_matrix_pred_current_cov.reindex(columns=params_cols, fill_value=0.0).fillna(0.0)
+                except Exception as e_ci_loop:
+                    self.log(f"Error calculating CI (dmatrix) para {current_cov_to_plot} en '{current_model_display}': {e_ci_loop}. Se intentará método alterno.", "WARN")
+                    design_matrix_pred_aligned = None
 
-                    # Align columns of design_matrix_pred_current_cov with cph_model_vip.params_.index before matrix multiplication
-                    # This is a common point of failure if names/orders don't match.
-                    # A robust way is to reindex design_matrix_pred_current_cov by model's parameter names, filling missing with 0.
-                    params_cols = cph_model_vip.params_.index
-                    design_matrix_pred_aligned = design_matrix_pred_current_cov.reindex(columns=params_cols, fill_value=0)
+            if design_matrix_pred_aligned is not None and hasattr(cph_model_vip, 'variance_matrix_'):
+                try:
+                    variance_matrix_df = cph_model_vip.variance_matrix_
+                    if isinstance(variance_matrix_df, pd.DataFrame):
+                        variance_matrix_df = variance_matrix_df.reindex(index=params_cols, columns=params_cols, fill_value=0.0)
+                        variance_matrix_np = variance_matrix_df.to_numpy(dtype=float, copy=False)
+                    else:
+                        variance_matrix_np = np.asarray(variance_matrix_df, dtype=float)
 
-                    variance_pred = np.diag(design_matrix_pred_aligned @ cph_model_vip.variance_matrix_ @ design_matrix_pred_aligned.T)
+                    design_matrix_np = design_matrix_pred_aligned.to_numpy(dtype=float, copy=False)
+                    variance_pred = np.einsum('ij,jk,ik->i', design_matrix_np, variance_matrix_np, design_matrix_np, optimize=True)
+                    variance_pred = np.clip(variance_pred, a_min=0.0, a_max=None)
                     se_pred = np.sqrt(variance_pred)
 
                     if chosen_y_scale == "log_hr":
                         ci_lower_plot = log_ph_preds - 1.96 * se_pred
                         ci_upper_plot = log_ph_preds + 1.96 * se_pred
-                    else: # HR scale
+                    else:
                         ci_lower_plot = np.exp(log_ph_preds - 1.96 * se_pred)
                         ci_upper_plot = np.exp(log_ph_preds + 1.96 * se_pred)
                     ci_available_for_this_line = True
-                except Exception as e_ci_loop:
-                    self.log(f"Error calculating CI for {current_cov_to_plot}: {e_ci_loop}. CI will not be shown for this line.", "WARN")
+                except Exception as e_ci_variance:
+                    self.log(f"Error calculating CI (var-matrix) para {current_cov_to_plot} en '{current_model_display}': {e_ci_variance}.", "WARN")
+
+            if not ci_available_for_this_line and hasattr(cph_model_vip, '_compute_pointwise_statistics'):
+                try:
+                    stats_df = cph_model_vip._compute_pointwise_statistics(
+                        predict_df_current_cov,
+                        predict_function=cph_model_vip.predict_partial_hazard,
+                        predict_function_kwargs={}
+                    )
+                    if isinstance(stats_df, pd.DataFrame) and {'estimate', 'lower', 'upper'}.issubset(stats_df.columns):
+                        estimate_vals = stats_df['estimate'].to_numpy(dtype=float)
+                        lower_vals = stats_df['lower'].to_numpy(dtype=float)
+                        upper_vals = stats_df['upper'].to_numpy(dtype=float)
+                        if chosen_y_scale == "log_hr":
+                            y_values_for_plot = np.log(np.clip(estimate_vals, a_min=1e-12, a_max=None))
+                            ci_lower_plot = np.log(np.clip(lower_vals, a_min=1e-12, a_max=None))
+                            ci_upper_plot = np.log(np.clip(upper_vals, a_min=1e-12, a_max=None))
+                        else:
+                            y_values_for_plot = estimate_vals
+                            ci_lower_plot = lower_vals
+                            ci_upper_plot = upper_vals
+                        ci_available_for_this_line = True
+                except Exception as e_ci_alt:
+                    self.log(f"Fallback CI (pointwise stats) falló para {current_cov_to_plot} en '{current_model_display}': {e_ci_alt}.", "WARN")
+
+            knot_info_for_var = spline_metadata_for_model.get(current_cov_to_plot, {})
+            knots_axis_values = []
+            knots_y_values = []
+            knots_actual_vals = knot_info_for_var.get('internal_knots', []) or []
+            boundary_axis_values = []
+            boundary_actual_vals = knot_info_for_var.get('boundary_knots', []) or []
+
+            if knots_actual_vals and is_numeric_cov:
+                axis_min_val = float(np.min(x_axis_display_values)) if len(x_axis_display_values) else None
+                axis_max_val = float(np.max(x_axis_display_values)) if len(x_axis_display_values) else None
+
+                if axis_min_val is not None and axis_max_val is not None and axis_max_val != axis_min_val:
+                    for knot_actual in knots_actual_vals:
+                        axis_val = (knot_actual - min_val) / (max_val - min_val) if (apply_normalization and max_val != min_val) else knot_actual
+                        if axis_val < axis_min_val - 1e-9 or axis_val > axis_max_val + 1e-9:
+                            continue
+                        knots_axis_values.append(axis_val)
+                        try:
+                            knots_y_values.append(float(np.interp(axis_val, x_axis_display_values, y_values_for_plot)))
+                        except Exception:
+                            knots_y_values.append(None)
+
+                if knots_actual_vals:
+                    formatted_knots = ", ".join(f"{val:.4g}" for val in knots_actual_vals)
+                    self.log(f"Nodos internos para '{current_cov_to_plot}' en '{current_model_display}': {formatted_knots}", "INFO")
+
+            if boundary_actual_vals and is_numeric_cov and len(x_axis_display_values):
+                axis_min_val = float(np.min(x_axis_display_values)) if len(x_axis_display_values) else None
+                axis_max_val = float(np.max(x_axis_display_values)) if len(x_axis_display_values) else None
+                if axis_min_val is not None and axis_max_val is not None and axis_max_val != axis_min_val:
+                    for boundary_value in boundary_actual_vals:
+                        axis_val = (boundary_value - min_val) / (max_val - min_val) if (apply_normalization and max_val != min_val) else boundary_value
+                        boundary_axis_values.append(axis_val)
+
+            base_label = f"{current_model_display} :: {current_cov_to_plot}" if len(model_wrappers) > 1 else current_cov_to_plot
+            if normalization_info:
+                legend_label = normalization_info.replace(current_cov_to_plot, base_label)
+            else:
+                legend_label = base_label
 
             plot_data_list.append({
-                "cov_name": current_cov_to_plot,
-                "x_values_for_plot_axis": x_axis_display_values, # This is what's plotted on X
-                "y_values_for_plot": y_values_for_plot,    # This is what's plotted on Y
+                "covariate_name": current_cov_to_plot,
+                "model_display_name": current_model_display,
+                "legend_label": legend_label,
+                "x_values_for_plot_axis": x_axis_display_values,
+                "y_values_for_plot": y_values_for_plot,
                 "ci_lower": ci_lower_plot,
                 "ci_upper": ci_upper_plot,
                 "ci_available": ci_available_for_this_line,
-                "normalization_label": normalization_info if normalization_info else current_cov_to_plot
+                "knot_info": {
+                    "axis_positions": knots_axis_values,
+                    "y_positions": knots_y_values,
+                    "actual_positions": knots_actual_vals,
+                    "metadata": knot_info_for_var,
+                    "boundary_axis_positions": boundary_axis_values,
+                    "boundary_actual_positions": boundary_actual_vals
+                },
+                "extension_info": extension_info
             })
-        # End loop for chosen_covariates_for_effect
 
-        # --- Plotting logic will start here, using plot_data_list ---
         if not plot_data_list:
             messagebox.showerror("Error de Datos", "No se pudieron generar datos para graficar.", parent=self.parent_for_dialogs)
             self.log("plot_data_list vacío, no se puede graficar.", "ERROR")
-            if fig_effect: plt.close(fig_effect)
+            if fig_effect:
+                plt.close(fig_effect)
             return
 
-        # --- New Plotting Logic Starts Here ---
         try:
             num_lines = len(plot_data_list)
             y_scale_name_for_legend = "Log(HR)" if chosen_y_scale == "log_hr" else "HR"
 
+            shaded_training_range_done = False
+
             for i, line_data in enumerate(plot_data_list):
-                # Cycle through default matplotlib colors if more than one line
-                color = plt.cm.get_cmap('viridis')(i / max(1, num_lines -1)) if num_lines > 1 else 'blue'
+                color = plt.cm.get_cmap('viridis')(i / max(1, num_lines - 1)) if num_lines > 1 else 'blue'
 
-                ax_effect.plot(line_data["x_values_for_plot_axis"],
-                               line_data["y_values_for_plot"],
-                               label=line_data["normalization_label"], # This contains cov_name and norm info
-                               color=color)
-                if line_data["ci_available"]:
-                    ax_effect.fill_between(line_data["x_values_for_plot_axis"],
-                                           line_data["ci_lower"],
-                                           line_data["ci_upper"],
-                                           alpha=0.2,
-                                           color=color)
+                ax_effect.plot(
+                    line_data["x_values_for_plot_axis"],
+                    line_data["y_values_for_plot"],
+                    label=line_data["legend_label"],
+                    color=color
+                )
 
-            # Set common plot properties
+                if plot_show_ci and line_data["ci_available"]:
+                    ax_effect.fill_between(
+                        line_data["x_values_for_plot_axis"],
+                        line_data["ci_lower"],
+                        line_data["ci_upper"],
+                        alpha=0.2,
+                        color=color
+                    )
+                elif plot_show_ci and not line_data["ci_available"]:
+                    self.log(f"IC 95% no disponible para '{line_data['covariate_name']}' en '{line_data['model_display_name']}'.", "WARN")
+
+                knot_info_line = line_data.get("knot_info", {})
+                knot_axis_positions = knot_info_line.get("axis_positions") or []
+                knot_y_positions = knot_info_line.get("y_positions") or []
+                boundary_axis_positions = knot_info_line.get("boundary_axis_positions") or []
+
+                if plot_show_knots and knot_axis_positions and knot_y_positions:
+                    first_marker = True
+                    for xk, yk in zip(knot_axis_positions, knot_y_positions):
+                        ax_effect.axvline(xk, color=color, linestyle=':', linewidth=0.9, alpha=0.45)
+                        if yk is not None:
+                            marker_label = f"Nodos {line_data['model_display_name']}::{line_data['covariate_name']}" if first_marker else "_nolegend_"
+                            ax_effect.scatter([xk], [yk], color=color, marker='D', edgecolors='black', s=40, zorder=6, label=marker_label)
+                        first_marker = False
+
+                if boundary_axis_positions:
+                    first_boundary = True
+                    for xb in boundary_axis_positions:
+                        boundary_label = f"Límites {line_data['model_display_name']}::{line_data['covariate_name']}" if first_boundary else "_nolegend_"
+                        ax_effect.axvline(xb, color=color, linestyle='--', linewidth=0.8, alpha=0.35, label=boundary_label)
+                        first_boundary = False
+
+                extension_meta = line_data.get("extension_info")
+                if (
+                    extension_meta and not shaded_training_range_done and
+                    extension_meta.get("trained_min") is not None and
+                    extension_meta.get("trained_max") is not None and
+                    extension_meta["trained_max"] > extension_meta["trained_min"]
+                ):
+                    ax_effect.axvspan(
+                        extension_meta["trained_min"],
+                        extension_meta["trained_max"],
+                        color='grey',
+                        alpha=0.08,
+                        zorder=-5,
+                        label="Rango entrenado"
+                    )
+                    shaded_training_range_done = True
+
+            models_present = sorted({entry["model_display_name"] for entry in plot_data_list})
+
             title_text = ""
             xlabel_text = ""
             ylabel_text = f"{y_scale_name_for_legend} (Efecto Parcial Ajustado)"
 
             if num_lines == 1:
                 single_line_data = plot_data_list[0]
-                title_text = f"Efecto Ajustado de '{single_line_data['cov_name']}' sobre {y_scale_name_for_legend}\nModelo: {model_name_vip}"
-                # If not normalized (single plot), x-axis is actual value
-                if single_line_data["normalization_label"] == single_line_data["cov_name"]:
-                    xlabel_text = f"Valor de {single_line_data['cov_name']}"
-                else: # Was normalized even for single plot (e.g. if logic changes) or to show range
-                    xlabel_text = f"Valor Normalizado de {single_line_data['cov_name']} (0-1)"
+                single_model_name = single_line_data["model_display_name"]
+                single_cov_name = single_line_data["covariate_name"]
+                title_text = f"Efecto Ajustado de '{single_cov_name}' sobre {y_scale_name_for_legend}\nModelo: {single_model_name}"
+                if "(::" in single_line_data["legend_label"]:
+                    base_cov_text = single_line_data["legend_label"].split(" (::", 1)[0]
+                else:
+                    base_cov_text = single_line_data["legend_label"]
+                if apply_normalization:
+                    if base_cov_text == single_cov_name:
+                        xlabel_text = f"Valor Normalizado de {single_cov_name} (0-1)"
+                    else:
+                        xlabel_text = f"Valor Normalizado de {base_cov_text} (0-1)"
+                else:
+                    xlabel_text = f"Valor de {single_cov_name}"
 
-            else: # Multiple lines
-                title_text = f"Efecto Ajustado de Múltiples Covariables sobre {y_scale_name_for_legend}\nModelo: {model_name_vip}"
-                xlabel_text = "Valor Normalizado de Covariable (0-1)"
+                knot_info_single = single_line_data.get("knot_info", {})
+                if plot_show_knots and knot_info_single and knot_info_single.get("actual_positions"):
+                    formatted_knots = ", ".join(f"{val:.4g}" for val in knot_info_single.get("actual_positions", []))
+                    ax_effect.text(
+                        0.98,
+                        0.02,
+                        f"Nodos: {formatted_knots}",
+                        transform=ax_effect.transAxes,
+                        ha='right',
+                        va='bottom',
+                        fontsize=9,
+                        color='dimgray'
+                    )
+            else:
+                if len(models_present) == 1:
+                    title_text = f"Efecto Ajustado sobre {y_scale_name_for_legend}\nModelo: {models_present[0]}"
+                else:
+                    title_text = f"Efecto Ajustado sobre {y_scale_name_for_legend}\nModelos: {', '.join(models_present)}"
+                if apply_normalization:
+                    xlabel_text = "Valor Normalizado de Covariable (0-1)"
+                else:
+                    xlabel_text = "Valor de Covariable"
 
             if chosen_y_scale == "hr":
                 ax_effect.axhline(1, color='grey', linestyle='--', linewidth=0.8)
-            else: # log_hr scale
+            else:
                 ax_effect.axhline(0, color='grey', linestyle='--', linewidth=0.8)
 
             current_opts_effect = self.current_plot_options.copy()
             current_opts_effect['title'] = current_opts_effect.get('title', title_text)
-            current_opts_effect['xlabel'] = xlabel_text # Always use the specific one for this plot
-            current_opts_effect['ylabel'] = ylabel_text # Always use the specific one
+            current_opts_effect['xlabel'] = xlabel_text
+            current_opts_effect['ylabel'] = ylabel_text
 
             apply_plot_options(ax_effect, current_opts_effect, self.log)
 
-            if num_lines > 0 and ax_effect.has_data(): # Check if any data was actually plotted
+            if num_lines > 0 and ax_effect.has_data():
                 ax_effect.legend(fontsize='small')
 
             plt.tight_layout()
-            self._create_plot_window(fig_effect, f"Efecto Ajustado de Covariable(s) ({model_name_vip})")
-            self.log(f"Gráfico de efecto ajustado para {num_lines} covariable(s) ({chosen_y_scale}) generado.", "SUCCESS")
+            self._create_plot_window(fig_effect, "Efecto Ajustado de Covariable(s)")
+            self.log(f"Gráfico de efecto ajustado para {num_lines} línea(s) generado.", "SUCCESS")
 
         except Exception as e_plot_final:
             self.log(f"Error final al graficar efectos ajustados: {e_plot_final}", "ERROR")
-            if fig_effect: plt.close(fig_effect) # Ensure figure is closed on error
+            if fig_effect:
+                plt.close(fig_effect)
             traceback.print_exc(limit=5)
-            messagebox.showerror("Error de Gráfico Final",
-                               f"No se pudo generar el gráfico de efectos ajustados:\n{e_plot_final}",
-                               parent=self.parent_for_dialogs)
-        # --- End of New Plotting Logic ---
+            messagebox.showerror(
+                "Error de Gráfico Final",
+                f"No se pudo generar el gráfico de efectos ajustados:\n{e_plot_final}",
+                parent=self.parent_for_dialogs
+            )
+
+    def _compute_time_selected_impact_data(self, model_dict, covariate, eval_time=None, output_type="risk", manual_values_text="", baseline_text=""):
+        if not isinstance(model_dict, dict):
+            raise ValueError("No se encontró un modelo Cox válido.")
+
+        cph_model = model_dict.get('model')
+        if not (cph_model and isinstance(cph_model, CoxPHFitter)):
+            raise ValueError("El modelo seleccionado no es un Cox válido.")
+
+        data = model_dict.get('_df_for_fit_main_INTERNAL_USE')
+        if data is None or data.empty:
+            raise ValueError("No hay datos de entrenamiento disponibles para el modelo seleccionado.")
+
+        time_col = model_dict.get('time_col_for_model')
+        event_col = model_dict.get('event_col_for_model')
+        available_covariates = [col for col in data.columns if col not in [time_col, event_col]]
+        if covariate not in available_covariates:
+            raise ValueError(f"La covariable '{covariate}' no está disponible en el modelo.")
+
+        cov_series = data[covariate].dropna()
+        if cov_series.empty:
+            raise ValueError("La covariable seleccionada no tiene valores disponibles.")
+
+        is_numeric = pd.api.types.is_numeric_dtype(cov_series)
+        manual_values = self._parse_partial_effect_values(covariate, manual_values_text, data=data)
+
+        if manual_values:
+            values = manual_values
+        elif is_numeric:
+            numeric_values = pd.to_numeric(cov_series, errors='coerce').dropna()
+            values = np.linspace(float(numeric_values.min()), float(numeric_values.max()), num=60)
+            values = np.unique(values)
+            if values.size < 2:
+                center_val = float(numeric_values.iloc[0]) if not numeric_values.empty else 0.0
+                delta = abs(center_val * 0.05) if center_val != 0 else 0.05
+                values = np.array([center_val - delta, center_val + delta], dtype=float)
+        else:
+            values = sorted(cov_series.astype(str).unique().tolist())[:8]
+
+        if len(values) == 0:
+            raise ValueError("No se pudieron generar valores para la covariable seleccionada.")
+
+        baseline_overrides = self._parse_partial_effect_baseline_overrides(
+            baseline_text,
+            exclude_covariate=covariate,
+            data=data,
+            available_covariates=available_covariates,
+        )
+        base_row = self._build_plot_reference_row(
+            focal_covariate=covariate,
+            overrides=baseline_overrides,
+            data=data,
+            covariates=available_covariates,
+        )
+
+        predict_rows = []
+        labels = []
+        for value in values:
+            row = base_row.copy()
+            row[covariate] = value
+            predict_rows.append(row)
+            labels.append(self._format_plot_value_label(value))
+
+        predict_df = pd.DataFrame(predict_rows, columns=available_covariates)
+        survival_df = cph_model.predict_survival_function(predict_df)
+        if survival_df is None or survival_df.empty:
+            raise ValueError("El modelo no devolvió curvas de supervivencia para la covariable seleccionada.")
+
+        times = survival_df.index.to_numpy(dtype=float)
+        if times.size == 0:
+            raise ValueError("No se encontraron tiempos válidos en la predicción del modelo.")
+
+        try:
+            requested_time = float(eval_time)
+        except (TypeError, ValueError):
+            requested_time = np.nan
+
+        if not np.isfinite(requested_time) or requested_time <= 0:
+            if time_col and time_col in data.columns:
+                requested_time = float(np.nanmedian(pd.to_numeric(data[time_col], errors='coerce')))
+        if not np.isfinite(requested_time) or requested_time <= 0:
+            requested_time = float(times[-1]) if times.size else 1.0
+        if not np.isfinite(requested_time) or requested_time <= 0:
+            requested_time = 1.0
+
+        eval_time_clipped = float(np.clip(requested_time, times[0], times[-1]))
+
+        survival_at_t = []
+        for idx in range(survival_df.shape[1]):
+            curve_values = survival_df.iloc[:, idx].to_numpy(dtype=float)
+            survival_at_t.append(float(np.interp(eval_time_clipped, times, curve_values)))
+
+        survival_at_t = np.asarray(survival_at_t, dtype=float)
+        y_values = survival_at_t.copy()
+        ci_lower = None
+        ci_upper = None
+        ci_available = False
+
+        try:
+            log_partial_hazard = cph_model.predict_log_partial_hazard(predict_df)
+            lp_values = np.asarray(log_partial_hazard, dtype=float).reshape(-1)
+            params_cols = cph_model.params_.index if hasattr(cph_model, 'params_') else []
+            design_matrix_pred_aligned = None
+
+            if hasattr(cph_model, 'regressors') and cph_model.regressors is not None and not predict_df.empty:
+                transformed_design = cph_model.regressors.transform_df(predict_df)
+                if isinstance(transformed_design.columns, pd.MultiIndex):
+                    try:
+                        design_matrix_pred_aligned = transformed_design.xs('beta_', axis=1, level='param')
+                    except Exception:
+                        design_matrix_pred_aligned = transformed_design.copy()
+                else:
+                    design_matrix_pred_aligned = transformed_design.copy()
+
+            if design_matrix_pred_aligned is not None and len(params_cols) > 0:
+                design_matrix_pred_aligned = design_matrix_pred_aligned.reindex(columns=params_cols, fill_value=0.0)
+                design_matrix_pred_aligned = design_matrix_pred_aligned.astype(float)
+
+                variance_matrix_df = getattr(cph_model, 'variance_matrix_', None)
+                baseline_ch_df = getattr(cph_model, 'baseline_cumulative_hazard_', None)
+                if isinstance(variance_matrix_df, pd.DataFrame) and isinstance(baseline_ch_df, pd.DataFrame) and not baseline_ch_df.empty:
+                    variance_matrix_df = variance_matrix_df.reindex(index=params_cols, columns=params_cols, fill_value=0.0)
+                    variance_matrix_np = variance_matrix_df.to_numpy(dtype=float, copy=False)
+                    design_matrix_np = design_matrix_pred_aligned.to_numpy(dtype=float, copy=False)
+                    variance_pred = np.einsum('ij,jk,ik->i', design_matrix_np, variance_matrix_np, design_matrix_np, optimize=True)
+                    variance_pred = np.clip(variance_pred, a_min=0.0, a_max=None)
+                    se_lp = np.sqrt(variance_pred)
+
+                    baseline_times = baseline_ch_df.index.to_numpy(dtype=float)
+                    baseline_values = baseline_ch_df.iloc[:, 0].to_numpy(dtype=float)
+                    h0_t = float(np.interp(eval_time_clipped, baseline_times, baseline_values))
+                    h0_t = max(h0_t, 0.0)
+
+                    lp_lower = lp_values - 1.96 * se_lp
+                    lp_upper = lp_values + 1.96 * se_lp
+                    survival_lower = np.exp(-h0_t * np.exp(lp_upper))
+                    survival_upper = np.exp(-h0_t * np.exp(lp_lower))
+                    ci_lower = np.clip(survival_lower, 0.0, 1.0)
+                    ci_upper = np.clip(survival_upper, 0.0, 1.0)
+                    ci_available = True
+        except Exception as ci_exc:
+            self.log(f"IC 95% no disponible para impacto en t de '{covariate}': {ci_exc}", "WARN")
+
+        metric_key = str(output_type).strip().lower()
+        if metric_key in {"risk", "1-s", "1 - s", "evento", "event"}:
+            y_values = 1.0 - survival_at_t
+            output_type = "risk"
+            if ci_available and ci_lower is not None and ci_upper is not None:
+                risk_lower = 1.0 - ci_upper
+                risk_upper = 1.0 - ci_lower
+                ci_lower = np.clip(risk_lower, 0.0, 1.0)
+                ci_upper = np.clip(risk_upper, 0.0, 1.0)
+        else:
+            y_values = survival_at_t
+            output_type = "survival"
+
+        spline_metadata = model_dict.get('spline_basis_metadata', {}) or {}
+        spline_info = spline_metadata.get(covariate, {}) if isinstance(spline_metadata, dict) else {}
+        knot_values = spline_info.get('internal_knots', []) or []
+
+        x_numeric = np.asarray(values, dtype=float) if is_numeric else np.arange(len(labels), dtype=float)
+        return {
+            "covariate": covariate,
+            "is_numeric": is_numeric,
+            "x_numeric": x_numeric,
+            "raw_values": list(values),
+            "labels": labels,
+            "y_values": np.clip(np.asarray(y_values, dtype=float), 0.0, 1.0),
+            "ci_lower": np.asarray(ci_lower, dtype=float) if ci_lower is not None else None,
+            "ci_upper": np.asarray(ci_upper, dtype=float) if ci_upper is not None else None,
+            "ci_available": bool(ci_available and ci_lower is not None and ci_upper is not None),
+            "baseline_overrides": baseline_overrides,
+            "requested_time": float(requested_time),
+            "eval_time": float(eval_time_clipped),
+            "output_type": output_type,
+            "knot_values": knot_values,
+            "model_name": model_dict.get('custom_model_name', model_dict.get('model_name', 'Modelo Cox')),
+        }
+
+    def show_variable_impact_at_time_plot(self):
+        if not self._check_model_selected_and_valid(check_params=True):
+            return
+
+        md_vit = self.selected_model_in_treeview
+        training_df = md_vit.get('_df_for_fit_main_INTERNAL_USE')
+
+        if training_df is None or training_df.empty:
+            messagebox.showinfo("Sin Datos", "El modelo seleccionado no tiene datos de entrenamiento disponibles.", parent=self.parent_for_dialogs)
+            return
+
+        time_col = md_vit.get('time_col_for_model')
+        event_col = md_vit.get('event_col_for_model')
+        available_covariates = [col for col in training_df.columns if col not in [time_col, event_col]]
+        if not available_covariates:
+            messagebox.showinfo("Sin Covariables", "No hay covariables disponibles para estimar el impacto en el tiempo.", parent=self.parent_for_dialogs)
+            return
+
+        default_time = np.nan
+        if time_col and time_col in training_df.columns:
+            default_time = float(np.nanmedian(pd.to_numeric(training_df[time_col], errors='coerce')))
+        if not np.isfinite(default_time) or default_time <= 0:
+            default_time = 1.0
+
+        dialog = Toplevel(self.parent_for_dialogs)
+        dialog.title("Impacto en tiempo elegido")
+        dialog.geometry("560x320")
+
+        ttk.Label(
+            dialog,
+            text="Seleccione la covariable y el tiempo t para estimar S(t) o 1-S(t) como en AFT/RSF.",
+            wraplength=520
+        ).pack(pady=10, padx=12)
+
+        form_frame = ttk.Frame(dialog, padding=(12, 0, 12, 0))
+        form_frame.pack(fill=tk.BOTH, expand=True)
+        form_frame.columnconfigure(1, weight=1)
+
+        covariate_var = StringVar(value=available_covariates[0])
+        output_type_var = StringVar(value="risk")
+        time_var = StringVar(value=f"{default_time:.2f}")
+        manual_values_var = StringVar()
+        baseline_var = StringVar()
+        show_ci_var = BooleanVar(value=True)
+
+        ttk.Label(form_frame, text="Covariable:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Combobox(form_frame, textvariable=covariate_var, values=available_covariates, state="readonly", width=34).grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form_frame, text="Salida:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        output_frame = ttk.Frame(form_frame)
+        output_frame.grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Radiobutton(output_frame, text="Riesgo 1-S(t)", variable=output_type_var, value="risk").pack(side=tk.LEFT)
+        ttk.Radiobutton(output_frame, text="Supervivencia S(t)", variable=output_type_var, value="survival").pack(side=tk.LEFT, padx=(10, 0))
+
+        ttk.Label(form_frame, text="Tiempo t:").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(form_frame, textvariable=time_var, width=16).grid(row=2, column=1, sticky="w", pady=4)
+
+        ttk.Label(form_frame, text="Valores (opcional):").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(form_frame, textvariable=manual_values_var, width=42).grid(row=3, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form_frame, text="Otras vars fijas:").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(form_frame, textvariable=baseline_var, width=42).grid(row=4, column=1, sticky="ew", pady=4)
+
+        ttk.Checkbutton(form_frame, text="Mostrar IC 95%", variable=show_ci_var).grid(row=5, column=1, sticky="w", pady=(2, 2))
+
+        ttk.Label(
+            form_frame,
+            text="Formato sugerido: `Edad=60; Sexo=M` o `Edad:60, Sexo:F`.",
+            foreground="#555555",
+            wraplength=420
+        ).grid(row=6, column=1, sticky="w", pady=(0, 6))
+
+        chosen_options = {}
+
+        def on_ok():
+            selected_covariate = covariate_var.get().strip()
+            if not selected_covariate:
+                messagebox.showwarning("Selección requerida", "Debe elegir una covariable.", parent=dialog)
+                return
+            chosen_options.update({
+                "covariate": selected_covariate,
+                "output_type": output_type_var.get().strip() or "risk",
+                "time": time_var.get().strip(),
+                "manual_values_text": manual_values_var.get(),
+                "baseline_text": baseline_var.get(),
+                "show_ci": bool(show_ci_var.get()),
+            })
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT, padx=5)
+
+        dialog.transient(self.parent_for_dialogs)
+        dialog.grab_set()
+        self.parent_for_dialogs.wait_window(dialog)
+
+        if not chosen_options:
+            self.log("Selección para gráfico de impacto en tiempo cancelada.", "INFO")
+            return
+
+        fig_vit = None
+        try:
+            plot_payload = self._compute_time_selected_impact_data(
+                md_vit,
+                chosen_options["covariate"],
+                eval_time=chosen_options.get("time"),
+                output_type=chosen_options.get("output_type", "risk"),
+                manual_values_text=chosen_options.get("manual_values_text", ""),
+                baseline_text=chosen_options.get("baseline_text", ""),
+            )
+
+            fig_vit, ax_vit = plt.subplots(figsize=(10, 6))
+            color = "#d62728" if plot_payload["output_type"] == "risk" else "#1f77b4"
+            x_numeric = np.asarray(plot_payload["x_numeric"], dtype=float)
+            y_values = np.asarray(plot_payload["y_values"], dtype=float)
+
+            show_ci = bool(chosen_options.get("show_ci", True))
+            ci_available = bool(plot_payload.get("ci_available"))
+            ci_lower = np.asarray(plot_payload.get("ci_lower"), dtype=float) if plot_payload.get("ci_lower") is not None else None
+            ci_upper = np.asarray(plot_payload.get("ci_upper"), dtype=float) if plot_payload.get("ci_upper") is not None else None
+
+            if plot_payload["is_numeric"]:
+                order = np.argsort(x_numeric)
+                x_plot = x_numeric[order]
+                y_plot = y_values[order]
+                ax_vit.plot(x_plot, y_plot, color=color, linewidth=2, label=plot_payload['model_name'])
+                if show_ci and ci_available and ci_lower is not None and ci_upper is not None:
+                    ax_vit.fill_between(x_plot, ci_lower[order], ci_upper[order], color=color, alpha=0.18, label="IC 95%")
+                else:
+                    ax_vit.fill_between(x_plot, y_plot, color=color, alpha=0.12)
+                ax_vit.set_xlabel(plot_payload["covariate"])
+
+                knot_values = plot_payload.get("knot_values") or []
+                if knot_values:
+                    knot_positions = np.asarray(knot_values, dtype=float)
+                    knot_y = np.interp(knot_positions, x_plot, y_plot)
+                    for idx, knot in enumerate(knot_positions):
+                        ax_vit.axvline(
+                            knot,
+                            color="#9467bd",
+                            linestyle="--",
+                            linewidth=1.1,
+                            alpha=0.8,
+                            label="Nodos spline" if idx == 0 else None,
+                        )
+                    ax_vit.scatter(knot_positions, knot_y, color="#9467bd", s=35, zorder=4)
+            else:
+                x_positions = np.arange(len(plot_payload["labels"]))
+                ax_vit.bar(x_positions, y_values, color=color, alpha=0.82)
+                if show_ci and ci_available and ci_lower is not None and ci_upper is not None:
+                    lower_err = np.clip(y_values - ci_lower, 0.0, None)
+                    upper_err = np.clip(ci_upper - y_values, 0.0, None)
+                    ax_vit.errorbar(
+                        x_positions,
+                        y_values,
+                        yerr=np.vstack([lower_err, upper_err]),
+                        fmt='none',
+                        ecolor='black',
+                        elinewidth=1.0,
+                        capsize=4,
+                        label="IC 95%",
+                    )
+                ax_vit.set_xticks(x_positions)
+                ax_vit.set_xticklabels(plot_payload["labels"], rotation=15)
+                ax_vit.set_xlabel(plot_payload["covariate"])
+
+            if show_ci and not ci_available:
+                self.log(f"IC 95% no disponible para la gráfica en t de '{plot_payload['covariate']}'.", "WARN")
+
+            if plot_payload["output_type"] == "risk":
+                ylabel = f"Riesgo estimado (1 - S(t)) con t={plot_payload['eval_time']:.2f}"
+                title = f"Impacto de '{plot_payload['covariate']}' sobre el riesgo acumulado\nModelo: {plot_payload['model_name']}"
+            else:
+                ylabel = f"Supervivencia estimada S(t) con t={plot_payload['eval_time']:.2f}"
+                title = f"Impacto de '{plot_payload['covariate']}' sobre la supervivencia\nModelo: {plot_payload['model_name']}"
+
+            ax_vit.set_ylabel(ylabel)
+            ax_vit.set_title(title)
+            ax_vit.set_ylim(0, 1.05)
+            ax_vit.grid(True, alpha=0.2)
+            handles, legend_labels = ax_vit.get_legend_handles_labels()
+            if legend_labels:
+                ax_vit.legend(loc="best", fontsize=8)
+
+            if plot_payload["baseline_overrides"]:
+                overrides_text = ', '.join(
+                    f"{key}: {self._format_plot_value_label(val)}"
+                    for key, val in plot_payload["baseline_overrides"].items()
+                )
+                ax_vit.text(
+                    0.02,
+                    0.98,
+                    f"Otras vars fijas: {overrides_text}",
+                    transform=ax_vit.transAxes,
+                    ha='left',
+                    va='top',
+                    fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, edgecolor='#bbbbbb'),
+                )
+
+            if abs(plot_payload["requested_time"] - plot_payload["eval_time"]) > 1e-9:
+                ax_vit.text(
+                    0.98,
+                    0.02,
+                    f"t solicitado={plot_payload['requested_time']:.2f}; ajustado al rango={plot_payload['eval_time']:.2f}",
+                    transform=ax_vit.transAxes,
+                    ha='right',
+                    va='bottom',
+                    fontsize=8,
+                    color='dimgray',
+                )
+
+            current_opts_vit = self.current_plot_options.copy()
+            current_opts_vit['title'] = current_opts_vit.get('title') or title
+            current_opts_vit['xlabel'] = current_opts_vit.get('xlabel') or ax_vit.get_xlabel()
+            current_opts_vit['ylabel'] = current_opts_vit.get('ylabel') or ylabel
+            apply_plot_options(ax_vit, current_opts_vit, self.log)
+
+            plt.tight_layout()
+            self._create_plot_window(fig_vit, f"Impacto en t: {plot_payload['covariate']} ({plot_payload['model_name']})")
+            self.log(
+                f"Gráfico de impacto en tiempo generado para '{plot_payload['covariate']}' con t={plot_payload['eval_time']:.2f}.",
+                "SUCCESS"
+            )
+        except Exception as e_vit:
+            self.log(f"Error al generar gráfico de impacto en tiempo: {e_vit}", "ERROR")
+            self.log(traceback.format_exc(), "DEBUG")
+            messagebox.showerror(
+                "Error Gráfico",
+                f"No se pudo generar el gráfico de impacto en tiempo:\n{e_vit}",
+                parent=self.parent_for_dialogs,
+            )
+            if fig_vit:
+                plt.close(fig_vit)
 
     def show_variable_impact_plot_hr_scale(self):
         if not self._check_model_selected_and_valid(check_params=True):
@@ -4667,10 +9621,11 @@ class CoxModelingApp(ttk.Frame):
         if custom_notes_gst:
             s_txt_gst += f"\nNotas Personalizadas:\n{custom_notes_gst}\n"
 
+        formatted_terms_gst = [self._format_term_for_display(term) for term in model_dict_gst.get('covariates_processed', [])]
         s_txt_gst += "\nConfiguración Ajuste:\n"; s_txt_gst += f"  Tiempo: {model_dict_gst.get('time_col_for_model','N/A')}\n  Evento: {model_dict_gst.get('event_col_for_model','N/A')}\n"
         s_txt_gst += f"  Fórmula Patsy (usada en fit): {model_dict_gst.get('formula_patsy','N/A')}\n"
         s_txt_gst += f"  Fórmula Patsy (original completa para transformar nuevos datos): {model_dict_gst.get('full_patsy_formula_for_new_data_transform','N/A')}\n"
-        s_txt_gst += f"  Términos Modelo (columnas en X_design): {', '.join(model_dict_gst.get('covariates_processed',[]))}\n"
+        s_txt_gst += f"  Términos Modelo (columnas en X_design): {', '.join(formatted_terms_gst)}\n"
         s_txt_gst += f"  Penalización: {model_dict_gst.get('penalizer_value',0.0):.4g} (L1 Ratio: {model_dict_gst.get('l1_ratio_value',0.0):.2f})\n  Manejo Empates (UI): {model_dict_gst.get('tie_method_used','N/A')} (Lifelines usará su default: efron)\n"
         
         # Información de Escalado
@@ -4684,15 +9639,137 @@ class CoxModelingApp(ttk.Frame):
             s_txt_gst += "  (Método de escalado seleccionado, pero no se escalaron columnas numéricas.)\n"
         s_txt_gst += "\n" # Add a newline for separation
 
+        categorical_cfg_snapshot = model_dict_gst.get('categorical_compare_config', {}) or {}
+        ref_cfg_snapshot = model_dict_gst.get('ref_categories_config', {}) or {}
+        if categorical_cfg_snapshot or ref_cfg_snapshot:
+            s_txt_gst += "Configuración de Variables Cualitativas:\n"
+            relevant_cat_vars = set()
+            for raw_term in model_dict_gst.get('covariates_processed', []) or []:
+                raw_term_str = str(raw_term)
+                match_cat_var = re.search(r"C\(Q\('([^']+)'\)", raw_term_str)
+                if match_cat_var:
+                    relevant_cat_vars.add(match_cat_var.group(1))
+            if not relevant_cat_vars:
+                relevant_cat_vars = set(ref_cfg_snapshot.keys()) | set(categorical_cfg_snapshot.keys())
+
+            for cat_var in sorted(relevant_cat_vars):
+                ref_val = ref_cfg_snapshot.get(cat_var, 'N/A')
+                compare_cfg = categorical_cfg_snapshot.get(cat_var, {}) or {}
+                compare_mode = compare_cfg.get('mode', 'all')
+                selected_groups = compare_cfg.get('selected_groups', []) or []
+                if compare_mode == 'one_vs_rest':
+                    desc_mode = f"Dicotómica: {ref_val} vs RESTO"
+                elif compare_mode == 'selected':
+                    desc_mode = f"Solo grupos elegidos vs {ref_val}: {', '.join(map(str, selected_groups)) if selected_groups else '(sin grupos)'}"
+                else:
+                    desc_mode = f"Todos los grupos vs {ref_val}"
+                s_txt_gst += f"  - {cat_var}: {desc_mode}\n"
+            s_txt_gst += "\n"
+
+        spline_meta_snapshot = model_dict_gst.get('spline_basis_metadata', {}) or {}
+        penalizer_val_summary = model_dict_gst.get('penalizer_value', 0.0)
+        l1_ratio_val_summary = model_dict_gst.get('l1_ratio_value', 0.0)
+        s_txt_gst += "Configuración de Splines:\n"
+        if spline_meta_snapshot:
+            for cov_name_meta, meta_details in sorted(spline_meta_snapshot.items()):
+                meta_details = meta_details or {}
+                detail_parts = []
+
+                method_label = meta_details.get('spline_type', 'N/A')
+                detail_parts.append(f"método={method_label}")
+
+                detail_parts.append(f"penalización={penalizer_val_summary:.4g} (l1={l1_ratio_val_summary:.2f})")
+
+                degree_val = meta_details.get('degree')
+                if degree_val is not None:
+                    detail_parts.append("cúbico" if degree_val == 3 else f"grado={degree_val}")
+
+                df_requested_val = meta_details.get('df_requested')
+                df_applied_val = meta_details.get('df_applied')
+                df_effective_val = meta_details.get('df_effective')
+
+                if df_requested_val is not None:
+                    detail_parts.append(f"df pedido={df_requested_val}")
+                if df_applied_val is not None:
+                    detail_parts.append(f"df usado={df_applied_val}")
+                if df_effective_val is not None and df_effective_val != df_applied_val:
+                    detail_parts.append(f"df efectivo={df_effective_val}")
+
+                num_knots_req = meta_details.get('num_knots_requested')
+                num_knots_auto = meta_details.get('num_knots_derived_from_df')
+                num_knots_used = meta_details.get('num_knots_used')
+                if num_knots_req is not None:
+                    detail_parts.append(f"nodos pedidos={num_knots_req}")
+                if num_knots_auto is not None and (num_knots_req is None or num_knots_auto != num_knots_req):
+                    detail_parts.append(f"nodos df={num_knots_auto}")
+                if num_knots_used is not None:
+                    detail_parts.append(f"nodos usados={num_knots_used}")
+
+                knots_source = meta_details.get('internal_knots_source')
+                if knots_source:
+                    detail_parts.append(f"origen_nodos={knots_source}")
+
+                boundary_vals = meta_details.get('boundary_knots') or []
+                if boundary_vals:
+                    boundary_str = ", ".join(f"{val:.4g}" for val in boundary_vals)
+                    detail_parts.append(f"límites=[{boundary_str}]")
+
+                knot_values = meta_details.get('internal_knots') or []
+                if knot_values:
+                    knots_str = ", ".join(f"{val:.4g}" for val in knot_values)
+                    detail_parts.append(f"nodos=[{knots_str}]")
+
+                s_txt_gst += f"  - {cov_name_meta}: " + "; ".join(detail_parts) + "\n"
+        else:
+            s_txt_gst += "  (No se aplicaron splines a este modelo.)\n"
+        s_txt_gst += "\n"
+
         s_txt_gst += "Coeficientes (Resumen Lifelines):\n"
         sum_df_gst = model_dict_gst.get('metrics',{}).get('summary_df')
-        s_txt_gst += (sum_df_gst.to_string() + "\n\n") if sum_df_gst is not None and not sum_df_gst.empty else "  (No disponibles o modelo nulo)\n\n"
+        if sum_df_gst is not None and not sum_df_gst.empty:
+            sum_df_display = sum_df_gst.copy()
+            sum_df_display.index = [self._format_term_for_display(idx) for idx in sum_df_display.index]
+            # Show only HR (exp(coef)), its 95% CI, and p-value
+            display_cols = [c for c in ['exp(coef)', 'exp(coef) lower 95%', 'exp(coef) upper 95%', 'p'] if c in sum_df_display.columns]
+            if display_cols:
+                sum_df_display = sum_df_display[display_cols]
+            s_txt_gst += sum_df_display.to_string() + "\n\n"
+        else:
+            s_txt_gst += "  (No disponibles o modelo nulo)\n\n"
         
         s_txt_gst += "Métricas Evaluación:\n"
         metrics_gst = model_dict_gst.get('metrics',{})
+        cindex_ci_keys = {"C-Index (Training) CI", "C-Index (Test) CI", "C-Index (CV Mean) CI"}
         for k,v in metrics_gst.items():
-            if k in ["summary_df","schoenfeld_details","HR (individual)","HR_CI (individual)","Wald p-values (individual)"]: continue
-            if isinstance(v,pd.DataFrame): continue
+            if k in ["summary_df","schoenfeld_details","HR (individual)","HR_CI (individual)","Wald p-values (individual)"] or k in cindex_ci_keys:
+                continue
+            if isinstance(v,pd.DataFrame):
+                continue
+            if k == "C-Index (Training)":
+                s_txt_gst += f"  {k}: {self._format_c_index_display(v, metrics_gst.get('C-Index (Training) CI'), decimals=4)}\n"
+                continue
+            if k == "C-Index (Test)":
+                s_txt_gst += f"  {k}: {self._format_c_index_display(v, metrics_gst.get('C-Index (Test) CI'), decimals=4)}\n"
+                continue
+            if k == "C-Index Uno (IPCW)":
+                if v is not None and pd.notna(v):
+                    s_txt_gst += f"  {k}: {v:.4f} (IPCW = Inverse Probability of Censoring Weighting; corrige por censura)\n"
+                else:
+                    s_txt_gst += f"  {k}: N/A\n"
+                continue
+            if k == "C-Index Antolini (Ctd)":
+                if v is not None and pd.notna(v):
+                    s_txt_gst += f"  {k}: {v:.4f} (AUC dinámica media; generaliza C-index para predicciones dependientes del tiempo)\n"
+                else:
+                    s_txt_gst += f"  {k}: N/A\n"
+                continue
+            if k == "τ (tau)":
+                if v is not None and pd.notna(v):
+                    s_txt_gst += f"  {k}: {v:.2f} (truncamiento IPCW para Uno y Antolini)\n"
+                continue
+            if k == "C-Index (CV Mean)":
+                s_txt_gst += f"  {k}: {self._format_c_index_display(v, metrics_gst.get('C-Index (CV Mean) CI'), decimals=4)}\n"
+                continue
             s_txt_gst += f"  {k}: {f'{v:.4f}' if isinstance(v,(float,np.floating)) else (str(v)[:200] if pd.notna(v) else 'N/A')}\n"
         s_txt_gst += "\nTest de Supuesto de Riesgos Proporcionales:\n"
         sch_df_detailed_residuals = model_dict_gst.get("schoenfeld_results") # This is now the primary source from the new logic
@@ -4731,18 +9808,91 @@ class CoxModelingApp(ttk.Frame):
         s_txt_gst += f"  Estado General del Test (interpretación del proceso): {schoenfeld_status_msg}\n"
         s_txt_gst += "\n--- Fin Resumen ---\n"; return s_txt_gst
 
-    def save_model(self):
-        if not self._check_model_selected_and_valid(): return
-        md_save = self.selected_model_in_treeview; name_save = md_save.get('model_name','Modelo_Guardado')
-        
-        model_dict_to_save = md_save.copy()
+    def _build_pickle_safe_model_copy(self, model_dict):
+        """Create a pickle-safe copy of a Cox model snapshot for export to disk."""
+        if not isinstance(model_dict, dict):
+            raise TypeError("El modelo a guardar debe ser un diccionario.")
 
-        fpath_save = filedialog.asksaveasfilename(title="Guardar Modelo Como...",defaultextension=".pkl",initialfile=f"{name_save.replace(' ','_').replace(':','')}.pkl",filetypes=[("Pickle","*.pkl"),("Todos","*.*")])
-        if not fpath_save: self.log("Guardado cancelado.", "INFO"); return
+        safe_copy = {}
+        skipped_keys = []
+
+        for key, value in model_dict.items():
+            if key == "design_info":
+                safe_copy[key] = None
+                skipped_keys.append(key)
+                continue
+
+            try:
+                pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+                safe_copy[key] = value
+            except Exception as exc:
+                skipped_keys.append(key)
+                self.log(
+                    f"Guardado de modelo: se omitió '{key}' porque no es serializable ({exc}).",
+                    "WARN"
+                )
+
+        if skipped_keys:
+            safe_copy["_serialization_skipped_keys"] = skipped_keys
+            safe_copy.setdefault(
+                "_serialization_warning",
+                "Algunos campos auxiliares no serializables se omitieron al guardar el modelo."
+            )
+
+        return safe_copy
+
+    def _sanitize_model_filename(self, raw_name):
+        safe_name = str(raw_name if raw_name is not None else 'Modelo_Guardado').strip()
+        safe_name = re.sub(r'[<>:"/\\|?*]+', '_', safe_name)
+        safe_name = re.sub(r'\s+', '_', safe_name)
+        safe_name = safe_name.strip('._')
+        return safe_name or 'Modelo_Guardado'
+
+    def save_model(self):
+        if not self.selected_model_in_treeview and self.generated_models_data:
+            try:
+                fallback_idx = len(self.generated_models_data) - 1
+                fallback_iid = str(fallback_idx)
+                if hasattr(self, 'treeview_lista_modelos'):
+                    self.treeview_lista_modelos.selection_set(fallback_iid)
+                    self.treeview_lista_modelos.focus(fallback_iid)
+                    self.treeview_lista_modelos.see(fallback_iid)
+                self._on_model_select_from_treeview()
+            except Exception as err_autoselect:
+                self.log(f"No se pudo auto-seleccionar un modelo antes de guardar: {err_autoselect}", "WARN")
+
+        if not self._check_model_selected_and_valid(): return
+        md_save = self.selected_model_in_treeview
+        name_save = md_save.get('custom_model_name', md_save.get('model_name', 'Modelo_Guardado'))
+        safe_initial_name = self._sanitize_model_filename(name_save)
+
+        model_dict_to_save = self._build_pickle_safe_model_copy(md_save)
+
+        fpath_save = filedialog.asksaveasfilename(
+            title="Guardar Modelo Como...",
+            defaultextension=".pkl",
+            initialfile=f"{safe_initial_name}.pkl",
+            filetypes=[("Pickle", "*.pkl"), ("Todos", "*.*")]
+        )
+        if not fpath_save:
+            self.log("Guardado cancelado.", "INFO")
+            return
+
+        temp_save_path = fpath_save + ".tmp"
         try:
-            with open(fpath_save, "wb") as f_save: pickle.dump(model_dict_to_save, f_save)
-            self.log(f"Modelo '{name_save}' guardado en: {fpath_save}", "SUCCESS"); messagebox.showinfo("Modelo Guardado",f"Modelo guardado en:\n{fpath_save}",parent=self.parent_for_dialogs)
-        except Exception as e_save: self.log(f"Error guardando modelo: {e_save}","ERROR"); messagebox.showerror("Error Guardando",f"No se pudo guardar:\n{e_save}",parent=self.parent_for_dialogs)
+            with open(temp_save_path, "wb") as f_save:
+                pickle.dump(model_dict_to_save, f_save, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(temp_save_path, fpath_save)
+            self.log(f"Modelo '{name_save}' guardado en: {fpath_save}", "SUCCESS")
+            messagebox.showinfo("Modelo Guardado", f"Modelo guardado en:\n{fpath_save}", parent=self.parent_for_dialogs)
+        except Exception as e_save:
+            try:
+                if os.path.exists(temp_save_path):
+                    os.remove(temp_save_path)
+            except Exception:
+                pass
+            self.log(f"Error guardando modelo: {e_save}", "ERROR")
+            messagebox.showerror("Error Guardando", f"No se pudo guardar:\n{e_save}", parent=self.parent_for_dialogs)
 
     def load_model_from_file(self):
         fpath_load = filedialog.askopenfilename(title="Cargar Modelo Pickle",filetypes=[("Pickle","*.pkl"),("Todos","*.*")])
@@ -4764,14 +9914,97 @@ class CoxModelingApp(ttk.Frame):
         except (pickle.UnpicklingError, ValueError) as e_load_val: self.log(f"Error carga/formato modelo: {e_load_val}","ERROR"); messagebox.showerror("Error Carga/Formato",f"Error al cargar o formato inválido:\n{e_load_val}",parent=self.parent_for_dialogs)
         except Exception as e_load_gen: self.log(f"Error general cargando modelo: {e_load_gen}","ERROR"); traceback.print_exc(limit=3); messagebox.showerror("Error Carga",f"No se pudo cargar:\n{e_load_gen}",parent=self.parent_for_dialogs)
 
+    def _delete_selected_model(self):
+        selected_items = self.treeview_lista_modelos.selection()
+        if not selected_items:
+            messagebox.showwarning("Sin Selección", "Seleccione uno o más modelos para eliminar.", parent=self.parent_for_dialogs)
+            return
+
+        selected_map = {}
+        for iid in selected_items:
+            try:
+                idx = int(iid)
+            except ValueError:
+                self.log(f"Eliminar modelo: ítem '{iid}' no convertible a índice.", "ERROR")
+                continue
+
+            if idx < 0 or idx >= len(self.generated_models_data):
+                self.log(f"Eliminar modelo: índice {idx} fuera de rango.", "ERROR")
+                continue
+
+            md_to_remove = self.generated_models_data[idx]
+            model_display_name = md_to_remove.get('custom_model_name', md_to_remove.get('model_name', f"Modelo {idx+1}"))
+            selected_map[idx] = model_display_name
+
+        if not selected_map:
+            messagebox.showerror("Selección Inválida", "No se encontraron modelos válidos para eliminar.", parent=self.parent_for_dialogs)
+            return
+
+        sorted_indices_asc = sorted(selected_map.keys())
+        sorted_indices_desc = sorted(selected_map.keys(), reverse=True)
+
+        if len(sorted_indices_asc) == 1:
+            prompt = f"¿Desea eliminar el modelo '{selected_map[sorted_indices_asc[0]]}'?"
+        else:
+            preview_names = ", ".join(selected_map[idx] for idx in sorted_indices_asc[:3])
+            if len(sorted_indices_asc) > 3:
+                preview_names += ", ..."
+            prompt = (
+                f"¿Desea eliminar los {len(sorted_indices_asc)} modelos seleccionados?\n"
+                f"{preview_names}"
+            )
+
+        if not messagebox.askyesno("Confirmar Eliminación", prompt, parent=self.parent_for_dialogs):
+            return
+
+        for idx in sorted_indices_desc:
+            self.generated_models_data.pop(idx)
+
+        removed_names = [selected_map[idx] for idx in sorted_indices_asc]
+
+        self.selected_model_in_treeview = None
+        self.selected_models_in_treeview = []
+        self._update_models_treeview()
+
+        if self.generated_models_data:
+            next_index = min(sorted_indices_asc[0], len(self.generated_models_data) - 1)
+            if next_index >= 0:
+                self.treeview_lista_modelos.selection_set(str(next_index))
+                self.treeview_lista_modelos.focus(str(next_index))
+                self._on_model_select_from_treeview()
+        else:
+            remaining_items = self.treeview_lista_modelos.get_children()
+            if remaining_items:
+                self.treeview_lista_modelos.selection_remove(*remaining_items)
+            if self.btn_oos_calibration:
+                self.btn_oos_calibration.config(state=tk.DISABLED)
+            if self.btn_collinearity_diag:
+                self.btn_collinearity_diag.config(state=tk.DISABLED)
+            if self.btn_nomogram:
+                self.btn_nomogram.config(state=tk.DISABLED)
+            if self.btn_delete_model:
+                self.btn_delete_model.config(state=tk.DISABLED)
+            if self.entry_custom_model_name:
+                self.entry_custom_model_name_var.set("")
+            if self.text_custom_model_notes:
+                self.text_custom_model_notes.config(state=tk.NORMAL)
+                self.text_custom_model_notes.delete("1.0", tk.END)
+                self.text_custom_model_notes.config(state=tk.DISABLED)
+            self._update_results_buttons_state()
+
+        self.log(f"Modelos eliminados: {', '.join(removed_names)}", "INFO")
+
     def _clear_all_generated_models(self):
         """Elimina todos los modelos generados de la lista y actualiza la Treeview."""
         if messagebox.askyesno("Confirmar Limpieza", "¿Está seguro de que desea eliminar todos los modelos generados?", parent=self.parent_for_dialogs):
             self.generated_models_data = []
             self._update_models_treeview()
             self.selected_model_in_treeview = None
+            self.selected_models_in_treeview = []
             if self.btn_oos_calibration:
                 self.btn_oos_calibration.config(state=tk.DISABLED)
+            if self.btn_delete_model:
+                self.btn_delete_model.config(state=tk.DISABLED)
             self._update_results_buttons_state() # Deshabilitar botones de resultados
             self.log("Todos los modelos generados han sido eliminados.", "INFO")
 
@@ -4872,7 +10105,9 @@ class CoxModelingApp(ttk.Frame):
             "Incidencia Acumulada Base F₀(t)": self.show_baseline_cumulative_incidence, # New entry
             "Forest Plot (HRs)": self.generar_forest_plot,
             "Gráf. Calibración": self.generate_calibration_plot,
-            "Análisis de Efecto de Covariable(s)": self.show_variable_impact_plot
+            "Gráf. Brier / IBS": self.generate_brier_plot,
+            "Análisis de Efecto de Covariable(s)": self.show_variable_impact_plot,
+            "Impacto en tiempo elegido S(t) / 1-S(t)": self.show_variable_impact_at_time_plot
             # Add more graph types here if needed in the future
         }
 
@@ -4937,7 +10172,26 @@ class CoxModelingApp(ttk.Frame):
             try: num_events_rep_meth = int(md_rep['_y_survival_rm_INTERNAL_USE'][md_rep.get('event_col_for_model')].sum())
             except: pass
 
-        report_full += f"2. Datos Usados (post-preparación para este modelo):\n   - Observaciones: {num_obs_rep_meth}\n   - Eventos: {num_events_rep_meth}\n\n"
+        report_full += f"2. Datos Usados (post-preparación para este modelo):\n   - Observaciones totales: {num_obs_rep_meth}\n   - Eventos: {num_events_rep_meth}\n"
+
+        # Holdout info
+        test_prop_rep = md_rep.get('test_proportion') or md_rep.get('metrics', {}).get('Test Proportion')
+        if test_prop_rep and pd.notna(test_prop_rep) and float(test_prop_rep) > 0:
+            n_total = int(num_obs_rep_meth) if isinstance(num_obs_rep_meth, (int, float)) else 0
+            n_test = int(round(n_total * float(test_prop_rep))) if n_total > 0 else 'N/A'
+            n_train = (n_total - n_test) if isinstance(n_test, int) else 'N/A'
+            report_full += f"   - Proporción test: {float(test_prop_rep):.0%}\n"
+            report_full += f"   - Casos entrenamiento: {n_train}\n"
+            report_full += f"   - Casos prueba (test): {n_test}\n"
+            c_test_val = md_rep.get('c_index_test') or md_rep.get('metrics', {}).get('C-Index (Test)')
+            c_test_ci = md_rep.get('c_index_test_ci') or md_rep.get('metrics', {}).get('C-Index (Test) CI')
+            c_gap_val = md_rep.get('c_index_gap') or md_rep.get('metrics', {}).get('C-Index Gap (Test-Train)')
+            if c_test_val and pd.notna(c_test_val):
+                report_full += f"   - C-Index (Test): {self._format_c_index_display(c_test_val, c_test_ci, decimals=4)}\n"
+            if c_gap_val and pd.notna(c_gap_val):
+                report_full += f"   - Δ C-Index (Test-Train): {float(c_gap_val):.4f}\n"
+            report_full += "   Nota: todas las métricas (AIC, Wald, Schoenfeld) provienen del modelo entrenado solo con el subset de entrenamiento.\n"
+        report_full += "\n"
         report_full += "3. Contenido Resumen Técnico (ver abajo):\n"
         report_full += "   - Configuración ajuste.\n   - Coeficientes (HRs, ICs).\n   - Métricas ajuste/evaluación.\n   - Test Supuestos (Schoenfeld).\n\n"
         report_full += text_summary_rep
@@ -5983,8 +11237,6 @@ if __name__ == "__main__":
     else: app.log("'MATLAB_filter_component' cargado.", "INFO")
     if LIFELINES_CALIBRATION_AVAILABLE: app.log("'survival_probability_calibration' disponible.", "INFO")
     else: app.log("ADVERTENCIA: 'survival_probability_calibration' NO disponible.", "WARN")
-    if LIFELINES_BRIER_SCORE_AVAILABLE: app.log("'brier_score' disponible.", "INFO")
-    else: app.log("ADVERTENCIA: 'brier_score' NO disponible.", "WARN")
     
     root.mainloop()
 
